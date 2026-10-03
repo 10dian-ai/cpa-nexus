@@ -1,4 +1,4 @@
-import { defineEventHandler } from 'h3'
-import { listPresets } from '../../lib/presets'
+import { defineEventHandler, getQuery } from 'h3'
+import { listPresets, listPresetSummaries } from '../../lib/presets'
 import { isModuleEnabled } from '../../lib/modules'
-export default defineEventHandler(async () => { const [presets, moduleEnabled] = await Promise.all([listPresets(), isModuleEnabled('presets')]); return { presets, moduleEnabled } })
+export default defineEventHandler(async event => { const summary = getQuery(event).view === 'summary'; const [presets, moduleEnabled] = await Promise.all([summary ? listPresetSummaries() : listPresets(), isModuleEnabled('presets')]); return { presets, moduleEnabled } })

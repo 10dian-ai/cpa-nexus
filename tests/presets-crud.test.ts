@@ -11,21 +11,29 @@ vi.mock('../server/lib/db', () => {
     const query = strings.join('?').replace(/\s+/g, ' ').trim(), now = new Date('2026-10-03T00:00:00Z')
     if (query.startsWith('SELECT pg_advisory')) return []
     if (query.startsWith('SELECT count')) return [{ count: fixture.presets.size }]
+    if (query.startsWith('SELECT COALESCE(MAX(sort_order)')) return [{ next_order: Math.max(-1, ...[...fixture.presets.values()].map(row => row.sort_order)) + 1 }]
+    if (query.startsWith('SELECT id,name,enabled,sort_order')) return [...fixture.presets.values()].sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
+    if (query.startsWith('SELECT * FROM nexus_presets WHERE enabled=true')) return [...fixture.presets.values()].filter(row => row.enabled).sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
     if (query.startsWith('SELECT * FROM nexus_presets WHERE')) { const row = fixture.presets.get(values[0]); return row ? [row] : [] }
     if (query.startsWith('SELECT * FROM nexus_presets ORDER')) return [...fixture.presets.values()]
     if (query.startsWith('INSERT INTO nexus_presets')) {
-      const [id, name, description, source_json, variables] = values
-      const row = { id, name, description, source_json, variables, created_at: now, updated_at: now }; fixture.presets.set(id, row); return [row]
+      const [id, name, description, source_json, variables, enabled, sort_order] = values
+      const row = { id, name, description, source_json, variables, enabled, sort_order, created_at: now, updated_at: now }; fixture.presets.set(id, row); return [row]
     }
+    if (query.startsWith('UPDATE nexus_presets SET sort_order=')) { const row = fixture.presets.get(values[1]); row.sort_order = values[0]; row.updated_at = now; return [row] }
     if (query.startsWith('UPDATE nexus_presets')) {
-      const [name, description, source_json, variables, id] = values, current = fixture.presets.get(id)
-      const row = { ...current, name, description, source_json, variables, updated_at: now }; fixture.presets.set(id, row); return [row]
+      const [name, description, source_json, variables, enabled, sort_order, id] = values, current = fixture.presets.get(id)
+      const row = { ...current, name, description, source_json, variables, enabled, sort_order, updated_at: now }; fixture.presets.set(id, row); return [row]
     }
     if (query.startsWith('SELECT 1 FROM nexus_preset_bindings')) return [...fixture.bindings.values()].filter(row => row.preset_id === values[0]).slice(0, 1)
     if (query.startsWith('SELECT 1 FROM nexus_key_preset_bindings')) return [...fixture.keyBindings.values()].filter(row => row.preset_id === values[0]).slice(0, 1)
     if (query.startsWith('DELETE FROM nexus_presets')) { const exists = fixture.presets.delete(values[0]); return exists ? [{ id: values[0] }] : [] }
     if (query.startsWith('SELECT * FROM nexus_preset_bindings')) return [...fixture.bindings.values()]
     if (query.startsWith('SELECT b.*,k.module_id')) return [...fixture.keyBindings.values()].map(row => ({ ...row, module_id: fixture.keys.get(row.key_id)?.module_id }))
+    if (query.startsWith('SELECT b.mode,b.preset_id')) {
+      const binding = fixture.keyBindings.get(values[0]), key = fixture.keys.get(values[0])
+      return binding && key && !key.prefix.startsWith('ccm_nexus_') && ['commandcode', 'cpa'].includes(key.module_id) ? [binding] : []
+    }
     if (query.startsWith('SELECT id,module_id FROM gateway_keys')) {
       const key = fixture.keys.get(values[0])
       return key && !key.prefix.startsWith('ccm_nexus_') && ['commandcode', 'cpa'].includes(key.module_id) ? [key] : []
@@ -46,6 +54,7 @@ vi.mock('../server/lib/db', () => {
       fixture.routeReads++
       if (query.includes('nexus_key_preset_bindings')) {
         const binding = fixture.keyBindings.get(values[0]), key = fixture.keys.get(values[0])
+        if (query.includes('p.enabled=true') && binding?.mode === 'stack' && key && !key.prefix.startsWith('ccm_nexus_')) return [...fixture.presets.values()].filter(row => row.enabled).sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id)).map(row => ({ ...row, mode: 'stack' }))
         return binding && key && !key.prefix.startsWith('ccm_nexus_') ? [{ mode: binding.mode, ...fixture.presets.get(binding.preset_id) }] : []
       }
       const [moduleId, accountId] = values, binding = fixture.bindings.get(`${moduleId}:${accountId}`) || fixture.bindings.get(`${moduleId}:`)
@@ -66,7 +75,8 @@ import exportHandler from '../server/api/presets/[id]/export.get'
 import validateHandler from '../server/api/presets/validate.post'
 import bindingsHandler from '../server/api/presets/routes.get'
 import setBindingHandler from '../server/api/presets/routes.put'
-import { resolveKeyPresetRoute, resetPresetRouteCache, updatePreset, setKeyPresetBinding, setPresetBinding } from '../server/lib/presets'
+import orderHandler from '../server/api/presets/order.put'
+import { resolveKeyPresetRoute, resolveKeyPresetStack, resetPresetRouteCache, updatePreset, setKeyPresetBinding, setPresetBinding } from '../server/lib/presets'
 
 const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const keyA = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -84,6 +94,7 @@ describe('persistent preset CRUD, model key routing and request validation', () 
     const router = createRouter()
     router.get('/api/presets', listHandler); router.post('/api/presets', createHandler)
     router.get('/api/presets/routes', bindingsHandler); router.put('/api/presets/routes', setBindingHandler)
+    router.put('/api/presets/order', orderHandler)
     router.post('/api/presets/validate', validateHandler)
     router.get('/api/presets/:id/export', exportHandler); router.get('/api/presets/:id', getHandler)
     router.patch('/api/presets/:id', updateHandler); router.delete('/api/presets/:id', deleteHandler)
@@ -185,5 +196,42 @@ describe('persistent preset CRUD, model key routing and request validation', () 
     await setKeyPresetBinding({ keyId: keyB, mode: 'bypass' }); expect(await resolveKeyPresetRoute(keyB)).toBeNull(); expect(fixture.routeReads).toBe(4)
     for (let index = 0; index < 140; index++) await resolveKeyPresetRoute('00000000-0000-4000-8000-' + String(index).padStart(12, '0'))
     const reads = fixture.routeReads; await resolveKeyPresetRoute(keyB); expect(fixture.routeReads).toBe(reads + 1)
+  })
+
+  it('shares enabled presets across opted-in keys, persists ordering, and omits documents from the library summary', async () => {
+    const first = await create(), second = await create({ ...document, temperature: 0.7 })
+    const third = await create()
+    expect(first).toMatchObject({ enabled: false, sortOrder: 0 })
+    await request(`/api/presets/${first.id}`, 'PATCH', { enabled: true })
+    await request(`/api/presets/${second.id}`, 'PATCH', { enabled: true })
+    fixture.enabled = true
+    await request('/api/presets/routes', 'PUT', { keyId: keyA, mode: 'stack' })
+    await request('/api/presets/routes', 'PUT', { keyId: keyB, mode: 'stack' })
+    expect((await resolveKeyPresetStack(keyA)).map(item => item.id)).toEqual([first.id, second.id])
+    expect((await resolveKeyPresetStack(keyB)).map(item => item.id)).toEqual([first.id, second.id])
+    const order = await request('/api/presets/order', 'PUT', { ids: [second.id, first.id, third.id] })
+    expect(order.status).toBe(200)
+    expect((await resolveKeyPresetStack(keyA)).map(item => item.id)).toEqual([second.id, first.id])
+    const summary = await (await request('/api/presets?view=summary')).json()
+    expect(summary.presets.map((item: any) => item.id)).toEqual([second.id, first.id, third.id])
+    expect(summary.presets[0]).not.toHaveProperty('sourceJson')
+    expect(summary.presets[0]).not.toHaveProperty('variables')
+    expect((await request('/api/presets/order', 'PUT', { ids: [first.id, second.id] })).status).toBe(409)
+    expect((await request('/api/presets/order', 'PUT', { ids: [first.id, first.id, third.id] })).status).toBe(400)
+    await request(`/api/presets/${second.id}`, 'PATCH', { enabled: false })
+    expect((await resolveKeyPresetStack(keyA)).map(item => item.id)).toEqual([first.id])
+    await request('/api/presets/routes', 'PUT', { keyId: keyB, mode: 'bypass' })
+    expect(await resolveKeyPresetStack(keyB)).toEqual([])
+    fixture.enabled = false
+    expect(await resolveKeyPresetStack(keyA)).toEqual([])
+  })
+
+  it('cannot enable incompatible content or break an enabled preset; disabling remains possible', async () => {
+    const unsupported = await create({ main_prompt: '{{unknown}}' })
+    expect((await request(`/api/presets/${unsupported.id}`, 'PATCH', { enabled: true })).status).toBe(409)
+    const first = await create()
+    expect((await request(`/api/presets/${first.id}`, 'PATCH', { enabled: true })).status).toBe(200)
+    expect((await request(`/api/presets/${first.id}`, 'PATCH', { sourceJson: { main_prompt: '{{unknown}}' } })).status).toBe(409)
+    expect((await request(`/api/presets/${first.id}`, 'PATCH', { enabled: false, sourceJson: { main_prompt: '{{unknown}}' } })).status).toBe(200)
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyPreset, inspectPreset, parsePresetJson, validatePresetVariables } from '../server/lib/presets/engine'
+import { applyPreset, applyPresetStack, inspectPreset, parsePresetJson, validatePresetVariables } from '../server/lib/presets/engine'
 
 const prompt = (id: string, content: string, extras: Record<string, unknown> = {}) => ({ identifier: id, role: 'system', content, ...extras })
 const source = (prompts: Record<string, unknown>[], ids = prompts.map(p => String(p.identifier))) => ({ prompts, prompt_order: [{ character_id: 100000, order: ids.map(identifier => ({ identifier, enabled: true })) }] })
@@ -149,5 +149,37 @@ describe('SillyTavern preset import and precise API transformations', () => {
     expect((applyPreset(preset(wrapper, { scenario: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' }).messages as any[])[0].content).toHaveLength(10_000_000)
     const collective = source([history, ...Array.from({ length: 80 }, (_, index) => prompt('p' + index, '{{char}}'))])
     expect((applyPreset(preset(collective, { char: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' }).messages as any[])).toHaveLength(80)
+  })
+
+  it('stacks prefixes, suffixes and depth against the original history without reversing order or duplicating tools', () => {
+    const first = { ...source([prompt('main', 'A {{lastUserMessage}} / {{char}}'), history, prompt('tail', 'A tail'), prompt('depth', 'A depth', { injection_position: 1, injection_depth: 1 })]), temperature: 0.2, top_p: 0.8 }
+    const second = { ...source([prompt('main', 'B {{lastMessage}} / {{char}}'), history, prompt('tail', 'B tail'), prompt('depth', 'B depth', { injection_position: 1, injection_depth: 1 })]), temperature: 0.7, top_p: 0.9 }
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }
+    const messages = [{ role: 'user', content: [{ type: 'text', text: 'Original' }, image] }, { role: 'assistant', tool_calls: [{ id: 'tool-a' }], content: null }, { role: 'tool', tool_call_id: 'tool-a', content: 'Result' }]
+    const body = { messages, top_p: 0.4, tools: [{ type: 'function', function: { name: 'lookup' } }] }
+    const result = applyPresetStack([preset(first, { char: 'First' }), preset(second, { char: 'Second' })], body, { protocol: 'chat' })
+    expect(result).toMatchObject({ temperature: 0.7, top_p: 0.4, tools: body.tools })
+    expect(result.messages).toEqual([
+      { role: 'system', content: 'A Original / First' }, { role: 'system', content: 'B Result / Second' }, messages[0],
+      { role: 'system', content: 'A depth\nB depth' }, messages[1], messages[2],
+      { role: 'system', content: 'A tail' }, { role: 'system', content: 'B tail' },
+    ])
+    expect((result.messages as any[]).filter(item => item.tool_call_id === 'tool-a')).toHaveLength(1)
+    expect(messages[0]!.content[1]).toBe(image)
+    expect(applyPresetStack([], body, { protocol: 'chat' })).toEqual(body)
+  })
+
+  it('converts an entire Claude stack once and preserves Responses client instructions and token controls', () => {
+    const first = { ...source([prompt('main', 'A'), history, prompt('tail', 'A tail')]), openai_max_tokens: 300 }
+    const second = { ...source([prompt('main', 'B'), history, prompt('tail', 'B tail')]), openai_max_tokens: 400 }
+    const block = { type: 'tool_result', tool_use_id: 'a', content: 'Result', cache_control: { type: 'ephemeral' } }
+    const messages = [{ role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'lookup', input: {} }] }, { role: 'user', content: [block] }]
+    const claude = applyPresetStack([preset(first), preset(second)], { messages, system: 'Client' }, { protocol: 'messages' })
+    expect(claude.system).toEqual([{ type: 'text', text: 'Client' }, { type: 'text', text: 'A' }, { type: 'text', text: 'B' }])
+    expect(claude.messages).toEqual([messages[0], { role: 'user', content: [block, { type: 'text', text: 'A tail' }, { type: 'text', text: 'B tail' }] }])
+    expect(claude.max_tokens).toBe(400)
+    const response = applyPresetStack([preset(first), preset(second)], { input: 'Hello', instructions: 'Original', max_output_tokens: 99 }, { protocol: 'responses' })
+    expect(response).toMatchObject({ instructions: 'Original', max_output_tokens: 99 })
+    expect((response.input as any[]).map(item => item.content)).toEqual(['A', 'B', 'Hello', 'A tail', 'B tail'])
   })
 })

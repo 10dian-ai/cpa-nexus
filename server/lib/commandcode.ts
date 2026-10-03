@@ -72,7 +72,7 @@ function sessionCookieFromResponse(response: Response, current: string): string 
   for (const setCookie of setCookies) {
     if (!setCookie.startsWith(`${SESSION_COOKIE}=`) || /(?:^|;)\s*(?:max-age=0|expires=Thu, 01 Jan 1970)/i.test(setCookie)) continue
     const token = setCookie.slice(SESSION_COOKIE.length + 1).split(';', 1)[0]!
-    if (token.length < 16 || token.length > 8192 || !/^[\x21-\x7E]+$/.test(token) || /[;,"\\]/.test(token)) continue
+    if (token.length < 16 || !/^[\x21-\x7E]+$/.test(token) || /[;,"\\]/.test(token)) continue
     const pairs = current.split(';').map(part => part.trim()).filter(Boolean)
     const index = pairs.findIndex(part => part.startsWith(`${SESSION_COOKIE}=`))
     if (index >= 0) pairs[index] = `${SESSION_COOKIE}=${token}`

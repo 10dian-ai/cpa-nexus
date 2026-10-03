@@ -19,8 +19,8 @@ import { acquireLease, releaseLease, renewLease, RENEW_INTERVAL_MS, type Lease }
 import { classifyFailure, type UpstreamFailure } from './errors'
 import { ResponseCapture, ResponseInspection, MAX_RESPONSE_LOG_BYTES } from './response'
 import { readJsonBodyLimited, writeWithBackpressure } from './transport'
-import { resolveKeyPresetRoute } from '../presets'
-import { applyPreset } from '../presets/engine'
+import { resolveKeyPresetStack } from '../presets'
+import { applyPresetStack } from '../presets/engine'
 
 type Protocol = ProviderProtocol
 const PROTOCOLS: readonly Protocol[] = PROVIDER_PROTOCOLS
@@ -226,10 +226,10 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
         const upstreamKey = decryptSecret(account.apiKeyCiphertext)
         effectiveBody = body
         if (protocol !== 'systemone') {
-          const preset = presetKeyId ? await resolveKeyPresetRoute(presetKeyId) : null
-          if (preset) {
-            effectiveBody = applyPreset(preset, body, { protocol: protocol === 'chat/completions' ? 'chat' : protocol })
-            event.node.res.setHeader('x-nexus-preset-id', preset.id)
+          const presets = presetKeyId ? await resolveKeyPresetStack(presetKeyId) : []
+          if (presets.length) {
+            effectiveBody = applyPresetStack(presets, body, { protocol: protocol === 'chat/completions' ? 'chat' : protocol })
+            event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
           } else event.node.res.removeHeader('x-nexus-preset-id')
         }
         resetIdle()

@@ -178,11 +178,13 @@ function messageText(message: JsonObject): string {
 
 /** Independent implementation of the public ST JSON format; no browser JS or extension scripts run here. */
 export function applyPreset(preset: Pick<PresetView, 'sourceJson' | 'variables'>, body: JsonObject, options: PresetApplyOptions): JsonObject {
+  return applyPresetStack([preset], body, options)
+}
+
+/** Compile each preset against the original history, then insert that history once. */
+export function applyPresetStack(presets: Array<Pick<PresetView, 'sourceJson' | 'variables'>>, body: JsonObject, options: PresetApplyOptions): JsonObject {
   if (!isObject(body)) throw error('模型请求必须是 JSON 对象')
-  const context = { ...validatePresetVariables(preset.variables), ...validatePresetVariables(options.context || {}) }
-  const compatibility = inspectPreset(preset.sourceJson, context)
-  if (!compatibility.supported) throw error('预设存在不支持的内容，请编辑后再使用', { issues: compatibility.issues.filter(issue => issue.severity === 'error') })
-  const compiled = compile(preset.sourceJson)
+  if (!presets.length) return { ...body }
   const result = { ...body }, protocol = options.protocol
   let history: JsonObject[]
   if (protocol === 'responses') {
@@ -195,28 +197,43 @@ export function applyPreset(preset: Pick<PresetView, 'sourceJson' | 'variables'>
     history = body.messages as JsonObject[]
   }
   const last = (role?: string) => messageText([...history].reverse().find(item => !role || item.role === role) || {})
-  const macros: Record<string, string> = { ...context, lastMessage: last(), lastUserMessage: last('user'), lastCharMessage: last('assistant'), newline: '\n' }
-  const substitute = (text: string): string => {
-    return text.replace(/\{\{([\s\S]*?)\}\}/g, (match: string, expression: string) => {
-      const key = expression.trim()
-      if (!allowedMacros.has(key) || !Object.hasOwn(macros, key)) throw error(`无法展开宏 {{${key}}}`)
-      const value = macros[key]!
-      return value
-    })
-  }
-  const active = compiled.prompts.filter(prompt => !prompt.triggers.length || prompt.triggers.includes(options.generationType || 'normal'))
-  if (!active.some(prompt => prompt.id === 'chatHistory')) throw error('当前生成触发类型未保留 chatHistory')
-  const expanded = new Map<Prompt, string>()
-  for (const prompt of active) {
-    if (prompt.id === 'chatHistory') continue
-    let text = prompt.marker ? context[markers[prompt.id]!] || '' : prompt.content
-    if (!text) continue
-    if (prompt.marker && prompt.id === 'scenario' && typeof compiled.settings.scenario_format === 'string' && compiled.settings.scenario_format) text = replaceTemplate(compiled.settings.scenario_format, '{{scenario}}', text)
-    if (prompt.marker && prompt.id === 'charPersonality' && typeof compiled.settings.personality_format === 'string' && compiled.settings.personality_format) text = replaceTemplate(compiled.settings.personality_format, '{{personality}}', text)
-    if (prompt.marker && ['worldInfoBefore', 'worldInfoAfter'].includes(prompt.id) && typeof compiled.settings.wi_format === 'string' && compiled.settings.wi_format) text = replaceTemplate(compiled.settings.wi_format, '{0}', text)
-    if (text) {
-      const content = substitute(text)
-      expanded.set(prompt, content)
+  const prefix: JsonObject[] = [], suffix: JsonObject[] = [], depthPrompts: Prompt[] = []
+  const expanded = new Map<Prompt, string>(), parameters: JsonObject = {}
+  for (const preset of presets) {
+    const context = { ...validatePresetVariables(preset.variables), ...validatePresetVariables(options.context || {}) }
+    const compatibility = inspectPreset(preset.sourceJson, context)
+    if (!compatibility.supported) throw error('预设存在不支持的内容，请编辑后再使用', { issues: compatibility.issues.filter(issue => issue.severity === 'error') })
+    const compiled = compile(preset.sourceJson)
+    Object.assign(parameters, compiled.parameters)
+    const macros: Record<string, string> = { ...context, lastMessage: last(), lastUserMessage: last('user'), lastCharMessage: last('assistant'), newline: '\n' }
+    const substitute = (text: string): string => {
+      return text.replace(/\{\{([\s\S]*?)\}\}/g, (match: string, expression: string) => {
+        const key = expression.trim()
+        if (!allowedMacros.has(key) || !Object.hasOwn(macros, key)) throw error(`无法展开宏 {{${key}}}`)
+        const value = macros[key]!
+        return value
+      })
+    }
+    const active = compiled.prompts.filter(prompt => !prompt.triggers.length || prompt.triggers.includes(options.generationType || 'normal'))
+    if (!active.some(prompt => prompt.id === 'chatHistory')) throw error('当前生成触发类型未保留 chatHistory')
+    for (const prompt of active) {
+      if (prompt.id === 'chatHistory') continue
+      let text = prompt.marker ? context[markers[prompt.id]!] || '' : prompt.content
+      if (!text) continue
+      if (prompt.marker && prompt.id === 'scenario' && typeof compiled.settings.scenario_format === 'string' && compiled.settings.scenario_format) text = replaceTemplate(compiled.settings.scenario_format, '{{scenario}}', text)
+      if (prompt.marker && prompt.id === 'charPersonality' && typeof compiled.settings.personality_format === 'string' && compiled.settings.personality_format) text = replaceTemplate(compiled.settings.personality_format, '{{personality}}', text)
+      if (prompt.marker && ['worldInfoBefore', 'worldInfoAfter'].includes(prompt.id) && typeof compiled.settings.wi_format === 'string' && compiled.settings.wi_format) text = replaceTemplate(compiled.settings.wi_format, '{0}', text)
+      if (text) {
+        const content = substitute(text)
+        expanded.set(prompt, content)
+      }
+    }
+    let afterHistory = false
+    for (const prompt of active) {
+      if (prompt.id === 'chatHistory') { afterHistory = true; continue }
+      if (!expanded.has(prompt)) continue
+      if (prompt.position === 1) depthPrompts.push(prompt)
+      else (afterHistory ? suffix : prefix).push({ role: prompt.role, content: expanded.get(prompt)! })
     }
   }
   // Depth counts user/assistant turns; tool call + results are indivisible history spans.
@@ -230,7 +247,7 @@ export function applyPreset(preset: Pick<PresetView, 'sourceJson' | 'variables'>
   }
   boundaries.push(history.length)
   const injections = new Map<number, Prompt[]>()
-  for (const prompt of active.filter(item => item.position === 1 && expanded.has(item))) {
+  for (const prompt of depthPrompts) {
     const offset = prompt.depth === 0 ? history.length : boundaries[Math.max(0, boundaries.length - 1 - prompt.depth)]!
     const group = injections.get(offset) || []; group.push(prompt); injections.set(offset, group)
   }
@@ -246,11 +263,7 @@ export function applyPreset(preset: Pick<PresetView, 'sourceJson' | 'variables'>
     }
     if (index < history.length) enriched.push(history[index]!)
   }
-  const outgoing: JsonObject[] = []
-  for (const prompt of active.filter(item => item.position === 0)) {
-    if (prompt.id === 'chatHistory') outgoing.push(...enriched)
-    else if (expanded.has(prompt)) outgoing.push({ role: prompt.role, content: expanded.get(prompt)! })
-  }
+  const outgoing: JsonObject[] = [...prefix, ...enriched, ...suffix]
   if (protocol === 'messages') {
     const system: unknown[] = [], messages: JsonObject[] = []
     if (typeof body.system === 'string') { if (body.system) system.push({ type: 'text', text: body.system }) }
@@ -278,7 +291,7 @@ export function applyPreset(preset: Pick<PresetView, 'sourceJson' | 'variables'>
   } else if (protocol === 'responses') result.input = outgoing
   else result.messages = outgoing
   const allowed = protocol === 'responses' ? new Set(['temperature', 'top_p', 'max_tokens']) : protocol === 'messages' ? new Set(['temperature', 'top_p', 'top_k', 'max_tokens', 'stop']) : new Set(['temperature', 'top_p', 'frequency_penalty', 'presence_penalty', 'max_tokens', 'seed', 'stop'])
-  for (const [key, value] of Object.entries(compiled.parameters)) {
+  for (const [key, value] of Object.entries(parameters)) {
     if (!allowed.has(key)) continue
     const target = key === 'max_tokens' && protocol === 'responses' ? 'max_output_tokens' : key === 'stop' && protocol === 'messages' ? 'stop_sequences' : key
     if (result[target] === undefined && !(key === 'max_tokens' && result.max_completion_tokens !== undefined)) result[target] = value

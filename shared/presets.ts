@@ -9,12 +9,15 @@ export interface PresetView {
   id: string
   name: string
   description: string
+  enabled: boolean
+  sortOrder: number
   sourceJson: Record<string, unknown>
   variables: Record<string, string>
   compatibility: PresetCompatibility
   createdAt: string
   updatedAt: string
 }
+export type PresetSummary = Pick<PresetView, 'id' | 'name' | 'enabled' | 'sortOrder' | 'createdAt' | 'updatedAt'>
 export interface PresetBinding {
   moduleId: string
   accountId: string | null
@@ -31,13 +34,13 @@ export interface PresetRouteInput {
 export interface KeyPresetBinding {
   keyId: string
   moduleId: 'commandcode' | 'cpa'
-  mode: 'preset' | 'bypass'
+  mode: 'preset' | 'stack' | 'bypass'
   presetId: string | null
   updatedAt: string
 }
 export interface KeyPresetRouteInput {
   keyId: string
-  mode: 'inherit' | 'preset' | 'bypass'
+  mode: 'inherit' | 'preset' | 'stack' | 'bypass'
   presetId?: string | null
 }
 export type PresetProtocol = 'chat' | 'messages' | 'responses'

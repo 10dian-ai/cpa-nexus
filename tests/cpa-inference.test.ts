@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), compat: vi.fn(), internal: vi.fn(), limit: 1 }))
 vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
-vi.mock('../server/lib/presets', () => ({ resolveKeyPresetRoute: fixture.route }))
+vi.mock('../server/lib/presets', () => ({ resolveKeyPresetStack: async (...args: unknown[]) => { const value = await fixture.route(...args); return Array.isArray(value) ? value : value ? [value] : [] } }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.limit }) }))
 vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: fixture.compat }))
 vi.mock('../server/lib/gateway/handler', () => ({ handleGateway: fixture.internal }))
@@ -53,6 +53,16 @@ describe('public CPA and original CCM inference routing', () => {
     vi.unstubAllEnvs(); resetCpaInferenceAuthCache()
   })
   const post = (body: Record<string, unknown>, key = 'native-key', protocol = 'chat/completions') => fetch(url + '/' + protocol, { method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json', 'anthropic-beta': 'tools-fixture' }, body: JSON.stringify(body) })
+
+  it('forwards all enabled presets for an opted-in key exactly once in library order', async () => {
+    fixture.route.mockResolvedValue([preset('First'), preset('Second')])
+    const response = await post({ model: 'fixture', messages: [{ role: 'user', content: 'Client' }] }, 'ccm_KB')
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-nexus-preset-id')).toBe('First,Second')
+    expect((await response.json()).body.messages).toEqual([{ role: 'system', content: 'First' }, { role: 'system', content: 'Second' }, { role: 'user', content: 'Client' }])
+    expect(received).toHaveLength(1)
+    expect(fixture.route).toHaveBeenCalledWith('KB')
+  })
 
   it('keeps native body bytes, protocol headers and core authentication untouched when disabled', async () => {
     const raw = '{ "model": "fixture", "messages": [{"role":"user","content":"hello"}], "tools": [] }'

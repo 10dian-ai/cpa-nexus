@@ -11,12 +11,14 @@ interface StoredKey {
 const fixture = vi.hoisted(() => ({
   keys: new Map<string, StoredKey>(), sessions: new Map<string, string>(),
   disabled: new Set<string>(), queries: [] as { sql: string; values: unknown[] }[],
+  presetModes: new Map<string, boolean>(), failPresetSave: false,
   publish: vi.fn(async () => 1),
 }))
 vi.mock('../server/lib/modules', () => ({ requireModule: async (id: string) => {
   if (fixture.disabled.has(id)) throw createError({ statusCode: 503, message: '此模块已停用' })
 } }))
-vi.mock('../server/lib/db', () => ({ getDb: () => async (strings: TemplateStringsArray, ...values: unknown[]) => {
+vi.mock('../server/lib/db', () => {
+  const sqlQuery = async (strings: TemplateStringsArray, ...values: unknown[]) => {
   const sql = strings.join('?').replace(/\s+/g, ' ').trim()
   fixture.queries.push({ sql, values })
   if (sql.startsWith('INSERT INTO gateway_keys')) {
@@ -51,7 +53,21 @@ vi.mock('../server/lib/db', () => ({ getDb: () => async (strings: TemplateString
     return []
   }
   throw new Error('Unexpected model key fixture query: ' + sql)
-} }))
+  }
+  return { getDb: () => Object.assign(sqlQuery, { begin: async (callback: (tx: typeof sqlQuery) => Promise<unknown>) => {
+    const keys = new Map([...fixture.keys].map(([id, row]) => [id, { ...row }]))
+    const modes = new Map(fixture.presetModes)
+    try { return await callback(sqlQuery) }
+    catch (error) { fixture.keys = keys; fixture.presetModes = modes; throw error }
+  } }) }
+})
+vi.mock('../server/lib/presets', () => ({
+  saveKeyPresetMode: async (_tx: unknown, keyId: string, enabled: boolean) => {
+    if (fixture.failPresetSave) throw createError({ statusCode: 503, message: 'Preset storage unavailable' })
+    fixture.presetModes.set(keyId, enabled)
+  },
+  resetPresetRouteCache: vi.fn(),
+}))
 vi.mock('../server/lib/redis', () => ({ getRedis: () => ({
   get: async (key: string) => fixture.sessions.get(key) ?? null, publish: fixture.publish,
 }) }))
@@ -81,7 +97,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(3000),
   })
   beforeEach(async () => {
-    fixture.keys.clear(); fixture.sessions.clear(); fixture.disabled.clear(); fixture.queries.length = 0; fixture.publish.mockClear()
+    fixture.keys.clear(); fixture.sessions.clear(); fixture.disabled.clear(); fixture.queries.length = 0; fixture.publish.mockClear(); fixture.presetModes.clear(); fixture.failPresetSave = false
     seed(KEY_ID, KEY); seed(BRIDGE_ID, BRIDGE_KEY)
     fixture.sessions.set('ccm:admin:session:' + hashGatewayKey('admin-model-keys'), 'admin')
     const app = createApp(); app.use(adminMiddleware)
@@ -125,11 +141,51 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     expect(await findEnabledModelKey(KEY_ID)).toEqual(key)
   })
 
-  it('retains CommandCode for old creation payloads and key identities without a binding field', async () => {
+  it('defaults new model keys to CPA while retaining CommandCode for legacy key identities', async () => {
     const created = await (await request('/api/keys', 'POST', { name: 'Old client' })).json()
-    expect(created.item.moduleId).toBe('commandcode')
+    expect(created.item.moduleId).toBe('cpa')
+    expect(fixture.presetModes.get(created.item.id)).toBe(false)
     await expect(requireModelKeyModule({ id: KEY_ID, name: 'Legacy integration' }, 'commandcode')).resolves.toBeUndefined()
     await expect(requireModelKeyModule({ id: KEY_ID, name: 'Legacy integration' }, 'cpa')).rejects.toMatchObject({ statusCode: 403 })
+  })
+
+  it('saves the module and preset stack option with key creation, even when the preset module is stopped', async () => {
+    fixture.disabled.add('presets')
+    const response = await request('/api/keys', 'POST', { name: 'Stack key', presetEnabled: true })
+    expect(response.status).toBe(200)
+    const created = await response.json()
+    expect(created.key).toMatch(/^ccm_[A-Za-z0-9_-]{43}$/)
+    expect(created.item.moduleId).toBe('cpa')
+    expect(fixture.presetModes.get(created.item.id)).toBe(true)
+    fixture.publish.mockRejectedValueOnce(new Error('Notification unavailable'))
+    const second = await request('/api/keys', 'POST', { name: 'No notification', presetEnabled: true })
+    expect(second.status).toBe(200)
+    expect((await second.json()).key).toMatch(/^ccm_[A-Za-z0-9_-]{43}$/)
+  })
+
+  it('changes only the supplied preset option and preserves it during unrelated edits', async () => {
+    const stack = await request(`/api/keys/${KEY_ID}`, 'PATCH', { presetEnabled: true })
+    expect(stack.status).toBe(200); await stack.arrayBuffer()
+    expect(fixture.presetModes.get(KEY_ID)).toBe(true)
+    const rename = await request(`/api/keys/${KEY_ID}`, 'PATCH', { name: 'Renamed stack key' })
+    expect(rename.status).toBe(200); await rename.arrayBuffer()
+    expect(fixture.presetModes.get(KEY_ID)).toBe(true)
+    fixture.disabled.add('presets')
+    const direct = await request(`/api/keys/${KEY_ID}`, 'PATCH', { presetEnabled: false })
+    expect(direct.status).toBe(200); await direct.arrayBuffer()
+    expect(fixture.presetModes.get(KEY_ID)).toBe(false)
+  })
+
+  it('rolls back a new or edited key if saving its preset route fails', async () => {
+    fixture.failPresetSave = true
+    const creation = await request('/api/keys', 'POST', { name: 'Must roll back', presetEnabled: true })
+    expect(creation.status).toBe(503); await creation.arrayBuffer()
+    expect(fixture.keys.size).toBe(2)
+    expect(fixture.presetModes.size).toBe(0)
+    const edit = await request(`/api/keys/${KEY_ID}`, 'PATCH', { name: 'Must roll back edit', moduleId: 'cpa', presetEnabled: true })
+    expect(edit.status).toBe(503); await edit.arrayBuffer()
+    expect(fixture.keys.get(KEY_ID)).toMatchObject({ name: 'Existing key', module_id: 'commandcode' })
+    expect(fixture.publish).not.toHaveBeenCalled()
   })
 
   it('blocks creation and rebinding to disabled modules while allowing old keys to be disabled or revoked', async () => {
@@ -158,11 +214,11 @@ describe('unified model keys with persistent module binding over HTTP', () => {
   })
 
   it('rejects unsupported module types and malformed edits before persistence', async () => {
-    for (const body of [{ name: 'Invalid', moduleId: 'presets' }, { name: 'Invalid', moduleId: [] }, { name: 'Invalid', extra: true }]) {
+    for (const body of [{ name: 'Invalid', moduleId: 'presets' }, { name: 'Invalid', moduleId: [] }, { name: 'Invalid', extra: true }, { name: 'Invalid', presetEnabled: 'true' }]) {
       const response = await request('/api/keys', 'POST', body)
       expect(response.status).toBe(400); await response.arrayBuffer()
     }
-    for (const body of [{ moduleId: 'platform' }, { moduleId: null }, {}, { unrelated: true }]) {
+    for (const body of [{ moduleId: 'platform' }, { moduleId: null }, {}, { unrelated: true }, { presetEnabled: null }]) {
       const response = await request(`/api/keys/${KEY_ID}`, 'PATCH', body)
       expect(response.status).toBe(400); await response.arrayBuffer()
     }

@@ -27,7 +27,7 @@ vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({
 vi.mock('../server/lib/queues', () => ({ enqueueAccountRefresh: fixture.refresh }))
 vi.mock('../server/lib/logs', () => ({ insertRequestLog: fixture.log }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: async () => {} }))
-vi.mock('../server/lib/presets', () => ({ resolveKeyPresetRoute: fixture.preset }))
+vi.mock('../server/lib/presets', () => ({ resolveKeyPresetStack: async (...args: unknown[]) => { const value = await fixture.preset(...args); return Array.isArray(value) ? value : value ? [value] : [] } }))
 vi.mock('../server/lib/gateway/accounts', () => ({
   listCandidates: fixture.candidates, listGatewayModels: async () => ({ object: 'list', data: [] }),
   touchAccount: async () => {}, recordFailure: fixture.recordFailure, recordModelAllowed: fixture.recordAllowed,

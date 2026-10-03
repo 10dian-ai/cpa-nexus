@@ -46,8 +46,8 @@ describe('official account request contract',()=>{
     expect(()=>buildSnapshot(session,{data:{}},subscriptions,usage)).toThrow('INVALID_CREDITS_RESPONSE')
     expect(()=>buildSnapshot(session,credits,{data:{subscription:subscriptions.data}},usage)).toThrow('INVALID_SUBSCRIPTION_RESPONSE')
   })
-  it('keeps the session cookie rotated by Better Auth for later requests',async()=>{
-    const rotated=`${SESSION_COOKIE}=rotated-session-token-123456`
+  it.each([32,16384])('keeps a rotated session cookie of %i characters for later requests',async length=>{
+    const rotated=`${SESSION_COOKIE}=${'r'.repeat(length)}`
     const fetcher=vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(session),{headers:{'content-type':'application/json','set-cookie':rotated+'; Path=/; HttpOnly'}}))
       .mockResolvedValueOnce(Response.json(credits))

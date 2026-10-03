@@ -3,9 +3,9 @@ import { request as httpsRequest } from 'node:https'
 import { getRequestURL, type H3Event } from 'h3'
 import { CPA_DEFAULT_URL, validateCpaBaseUrl } from './client'
 import { handleCommandcodeCompatibility } from '../commandcode-compat'
-import { resolveKeyPresetRoute } from '../presets'
+import { resolveKeyPresetStack } from '../presets'
 import { authenticateGatewayKey } from '../auth'
-import { applyPreset } from '../presets/engine'
+import { applyPresetStack } from '../presets/engine'
 import { getSettings } from '../settings'
 import { readJsonBodyLimited } from '../gateway/transport'
 import { requireModule } from '../modules'
@@ -128,10 +128,10 @@ export async function handleNexusInference(event: H3Event) {
     if (!model || model.length > 256) { fail(event, path, 400, 'model must be a non-empty string of at most 256 characters'); return }
     if (model.startsWith('commandcode/')) { fail(event, path, 403, 'This key is bound to CPA; choose a key bound to Command Code for this model'); return }
     body.model = model
-    const preset = await resolveKeyPresetRoute(key.id)
-    if (preset) {
-      body = applyPreset(preset, body, { protocol: protocol! })
-      event.node.res.setHeader('x-nexus-preset-id', preset.id)
+    const presets = await resolveKeyPresetStack(key.id)
+    if (presets.length) {
+      body = applyPresetStack(presets, body, { protocol: protocol! })
+      event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
     }
     return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey)
   } catch (error) {

@@ -7,7 +7,7 @@ const fixture = vi.hoisted(() => ({ sql: undefined as Sql | undefined }))
 vi.mock('../server/lib/db', () => ({ getDb: () => fixture.sql }))
 vi.mock('../server/lib/modules', () => ({ isModuleEnabled: async (id: string) => (await fixture.sql!`SELECT enabled FROM platform_modules WHERE id=${id}`)[0]?.enabled === true }))
 vi.mock('../server/lib/cpa/preset-routing', () => ({ ensureCpaPresetAccountRoute: async () => { throw new Error('Native CPA account mutations are outside this database test') } }))
-import { createPreset, deletePreset, getPreset, listKeyPresetBindings, listPresetBindings, listPresets, resetPresetRouteCache, resolveKeyPresetRoute, resolvePresetRoute, setKeyPresetBinding, setPresetBinding, updatePreset } from '../server/lib/presets'
+import { createPreset, deletePreset, getPreset, listKeyPresetBindings, listPresetBindings, listPresets, reorderPresets, resetPresetRouteCache, resolveKeyPresetRoute, resolveKeyPresetStack, resolvePresetRoute, saveKeyPresetMode, setKeyPresetBinding, setPresetBinding, updatePreset } from '../server/lib/presets'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const schema = 'nexus_presets_test_' + randomUUID().replaceAll('-', '')
@@ -114,5 +114,55 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
     expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='commandcode' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
     await deletePreset(preset.id)
     expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='commandcode' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
+  })
+
+  it('persists shared enabled stack ordering and model-key choices atomically', async () => {
+    const first = await createPreset({ name: 'Stack A', sourceJson: document, variables: { char: 'A' }, enabled: true })
+    const second = await createPreset({ name: 'Stack B', sourceJson: document, variables: { char: 'B' }, enabled: true })
+    const keyId = randomUUID()
+    try {
+      await sql.begin(async tx => {
+        await tx`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${keyId},'Stack key','ccm_test',${randomUUID()},'cpa')`
+        await saveKeyPresetMode(tx, keyId, true)
+      })
+      resetPresetRouteCache()
+      expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([first.id, second.id])
+      const library = await listPresets(), ids = [second.id, first.id, ...library.filter(item => ![first.id, second.id].includes(item.id)).map(item => item.id)]
+      const ordered = await reorderPresets(ids)
+      expect(ordered.map(item => item.id)).toEqual(ids)
+      expect(ordered.every((item, index) => item.sortOrder === index)).toBe(true)
+      expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([second.id, first.id])
+      await expect(reorderPresets(ids.slice(1))).rejects.toMatchObject({ statusCode: 409 })
+      await updatePreset(second.id, { enabled: false })
+      expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([first.id])
+      await expect(updatePreset(first.id, { variables: {} })).rejects.toMatchObject({ statusCode: 409 })
+      await sql.begin(tx => saveKeyPresetMode(tx, keyId, false))
+      resetPresetRouteCache()
+      expect(await resolveKeyPresetStack(keyId)).toEqual([])
+    } finally {
+      await sql`DELETE FROM gateway_keys WHERE id=${keyId}`
+      await deletePreset(first.id); await deletePreset(second.id)
+    }
+  })
+
+  it('upgrades stored single-preset key choices to the shared stack and leaves bypass choices intact', async () => {
+    const preset = await createPreset({ name: 'Before stack migration', sourceJson: document, variables: { char: 'Legacy key' } })
+    const keyId = randomUUID(), directKeyId = randomUUID()
+    try {
+      for (const id of [keyId, directKeyId]) await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${id},'Migration key','ccm_test',${randomUUID()},'cpa')`
+      await setKeyPresetBinding({ keyId, mode: 'preset', presetId: preset.id })
+      await setKeyPresetBinding({ keyId: directKeyId, mode: 'bypass' })
+      await sql`DELETE FROM schema_migrations WHERE name='012_preset_stacks.sql'`
+      await migrate(sql)
+      resetPresetRouteCache()
+      expect((await getPreset(preset.id)).enabled).toBe(true)
+      expect((await listKeyPresetBindings()).find(item => item.keyId === keyId)).toMatchObject({ mode: 'stack', presetId: null })
+      expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([preset.id])
+      expect(await resolveKeyPresetStack(directKeyId)).toEqual([])
+      await expect(sql`UPDATE nexus_key_preset_bindings SET preset_id=${preset.id} WHERE key_id=${keyId}`).rejects.toMatchObject({ code: '23514' })
+    } finally {
+      await sql`DELETE FROM gateway_keys WHERE id IN (${keyId},${directKeyId})`
+      await deletePreset(preset.id)
+    }
   })
 })

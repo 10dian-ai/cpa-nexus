@@ -16,9 +16,9 @@ Types are in shared/types.ts; DTOs use camelCase, DB uses snake_case.
 - GET /api/models -> {items:ModelView[],updatedAt:string|null}
 - GET /api/service-keys -> {items:GatewayKeyView[]}; POST {name} -> {key:string,item:GatewayKeyView} (independent external service keys)
 - PATCH /api/service-keys/:id {name?,enabled?} -> {ok:true}; DELETE /api/service-keys/:id -> {ok:true}
-- GET /api/keys -> {items:GatewayKeyView[]}; POST {name,moduleId?:'cpa'|'commandcode'} -> {key:string,item:GatewayKeyView}; omitted moduleId keeps the legacy CommandCode binding.
-- PATCH /api/keys/:id {name?,enabled?,moduleId?} -> {ok:true,moduleId}; DELETE /api/keys/:id -> {ok:true}. Model DTOs expose moduleId, internal ccm_nexus_ bridge keys are hidden and immutable.
-- GET /api/presets/routes -> {bindings:KeyPresetBinding[]}; PUT {keyId,mode:'inherit'|'preset'|'bypass',presetId?} -> {binding:KeyPresetBinding|null}. An unbound model key runs directly; account and module preset records are not inherited.
+- GET /api/keys -> {items:GatewayKeyView[]}; POST {name,moduleId?:'cpa'|'commandcode',presetEnabled?:boolean} -> {key:string,item:GatewayKeyView}; new keys default to CPA and ordinary model calls (`presetEnabled:false`). The key and its stack/bypass route are committed together, so a route failure cannot leave a key whose one-time secret was never returned. Existing CommandCode bindings are preserved.
+- PATCH /api/keys/:id {name?,enabled?,moduleId?,presetEnabled?} -> {ok:true,moduleId}; DELETE /api/keys/:id -> {ok:true}. `presetEnabled:true` applies all enabled presets in their configured order; false bypasses them. Omission leaves the saved route unchanged. Name, module and preset changes are atomic. A stopped preset module allows saving this choice; it takes effect after the module is enabled. Model DTOs expose moduleId, internal ccm_nexus_ bridge keys are hidden and immutable.
+- GET /api/presets/routes -> {bindings:KeyPresetBinding[]}; PUT {keyId,mode:'inherit'|'stack'|'preset'|'bypass',presetId?} -> {binding:KeyPresetBinding|null}. New UI routes use stack/bypass with null presetId; legacy single-preset payloads remain compatible. An unbound model key runs directly; account and module preset records are not inherited.
 - GET /api/logs?page=&pageSize=&model=&status= -> {items:RequestLogView[],total,page,pageSize}
 - GET /api/logs/:id -> RequestLogView & {requestBody:unknown,responseBody:unknown,sessionId:string|null}
 - GET /api/settings -> {settings:SystemSettings,kernel:{version,upstreamCommit,cliVersion}}
@@ -59,7 +59,7 @@ reason TEXT NULL, cooldown_until TIMESTAMPTZ NULL,last_checked_at TIMESTAMPTZ, P
 model_catalog: model_id TEXT PK,name TEXT,metadata JSONB,updated_at TIMESTAMPTZ.
 gateway_keys: id UUID,name TEXT,prefix TEXT,secret_hash TEXT UNIQUE,enabled BOOL,module_id TEXT CHECK IN ('cpa','commandcode') DEFAULT 'commandcode',created_at,last_used_at NULL (migration 009_unified_model_keys.sql).
 service_keys: id UUID,name TEXT,prefix TEXT,secret_hash TEXT UNIQUE,enabled BOOL,created_at,last_used_at NULL; separate table for external service credentials (migration 002_service_keys.sql).
-nexus_key_preset_bindings: key_id UUID PRIMARY KEY REFERENCES gateway_keys ON DELETE CASCADE,mode TEXT ('preset'|'bypass'),preset_id UUID,updated_at; new model-key routing (migration 010_key_preset_bindings.sql).
+nexus_key_preset_bindings: key_id UUID PRIMARY KEY REFERENCES gateway_keys ON DELETE CASCADE,mode TEXT ('stack'|'preset'|'bypass'),preset_id UUID NULL,updated_at; stack and bypass have no preset_id. Ordered multi-preset routing is introduced by migration 012.
 app_settings: id INT PK=1,value JSONB,updated_at.
 request_logs: id UUID,key_id UUID NULL,account_id UUID NULL,model TEXT,protocol TEXT,
 session_id TEXT NULL,status TEXT,http_status INT NULL,duration_ms INT,streaming BOOL,

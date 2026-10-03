@@ -52,11 +52,12 @@ export function presetPromptRows(source: Record<string, unknown>): PresetPromptR
   if (!Array.isArray(source.prompts)) return []
   const order = promptOrder(source)
   const entries = Array.isArray(order?.order) ? order.order.map(record).filter((value): value is Record<string, unknown> => !!value) : []
+  const byIdentifier = new Map(entries.map(entry => [String(entry.identifier), entry]))
   const rows = source.prompts.flatMap((value, index) => {
     const prompt = record(value)
     if (!prompt) return []
     const identifier = typeof prompt.identifier === 'string' ? prompt.identifier : String(index)
-    const entry = entries.find(item => item.identifier === identifier)
+    const entry = byIdentifier.get(identifier)
     return [{ index, identifier, name: String(prompt.name || identifier), role: String(prompt.role || 'system'), content: typeof prompt.content === 'string' ? prompt.content : '',
       enabled: entry ? entry.enabled !== false : entries.length ? false : prompt.enabled !== false, marker: prompt.marker === true }]
   })

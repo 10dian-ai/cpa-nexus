@@ -6,7 +6,7 @@
 
 ## 更新已有部署
 
-CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；`009_unified_model_keys.sql` 为旧模型 Key 绑定 CommandCode，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 在统一页面选择 CPA 或 CommandCode。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
+CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；`009_unified_model_keys.sql` 为旧模型 Key 绑定 CommandCode，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 默认绑定 CPA，也可在 CommandCode 启用时选择该模块。创建和编辑模型 Key 时，可选择普通调用或经过酒馆模块；经过酒馆模块的 Key 会按顺序叠加全部已开启预设。外调服务 Key 不经过酒馆模块。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
 
 ## 认证
 
@@ -37,12 +37,12 @@ export CCM_SERVICE_KEY='ccm_service_替换为后台创建的完整密钥'
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `text` | string | 批量导入，每行一个 Token 或完整 Cookie；最多 2,000 行、2,000,000 个字符。 |
-| `token` | string | 单个账号的原始会话 Token，最多 8,192 个字符，不允许换行。 |
-| `cookie` | string | 单个账号的 Cookie，最多 2,000,000 个字符，不允许换行。 |
+| `text` | string | 批量导入，每行一个 Token 或完整 Cookie；应用不限制行数或文本大小。 |
+| `token` | string | 单个账号的原始会话 Token，不限制长度，不允许换行。 |
+| `cookie` | string | 单个账号的 Cookie，不限制长度，不允许换行。 |
 | `groupName` | string | 可选分组，首尾空白会被去除，最多 100 个字符。 |
 
-Cookie 支持 `__Secure-commandcode_prod_.session_token=实际Token`，也支持带其他 Cookie 字段的完整 Cookie 请求头；可包含开头的 `Cookie:`。每行必须恰好包含一个正确名称的会话 Cookie。原始 Token 必须为 16–8,192 个可打印 ASCII 字符，不能包含空白、分号、逗号、双引号或反斜杠。凭证不会被 URL 解码或修补。
+Cookie 支持 `__Secure-commandcode_prod_.session_token=实际Token`，也支持带其他 Cookie 字段的完整 Cookie 请求头；可包含开头的 `Cookie:`。每行必须恰好包含一个正确名称的会话 Cookie。原始 Token 至少为 16 个可打印 ASCII 字符，不能包含空白、分号、逗号、双引号或反斜杠。凭证不会被 URL 解码或修补。
 
 单个账号：
 
@@ -225,7 +225,7 @@ curl --fail-with-body "$CCM_URL/api/external/pool" \
 
 ## 错误与密钥管理
 
-- **400**：JSON 结构、字段、分页筛选参数、账号或任务 ID 格式无效；批量文本超限也会被拒绝。逐行凭证格式错误通常记录到 `rejected`，随后可在任务结果中查看。
+- **400**：JSON 结构、字段、分页筛选参数、账号或任务 ID 格式无效。逐行凭证格式错误通常记录到 `rejected`，随后可在任务结果中查看。
 - **401**：外调 Key 缺失、无效、停用或已撤销，或使用了模型 Key。
 - **404**：账号不存在，或导入任务不存在、已过期。
 - **503**：CommandCode 模块已停用，或者数据库、队列等依赖暂时不可用。

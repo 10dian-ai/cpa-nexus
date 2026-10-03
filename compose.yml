@@ -59,7 +59,7 @@ services:
       retries: 5
   app:
     build: { context: ., dockerfile: Dockerfile }
-    image: cpa-nexus:0.4.1
+    image: cpa-nexus:0.5.0
     restart: unless-stopped
     env_file: [.env.cpa]
     environment: *app-env
@@ -74,7 +74,7 @@ services:
       retries: 5
   worker:
     build: { context: ., dockerfile: Dockerfile }
-    image: cpa-nexus:0.4.1
+    image: cpa-nexus:0.5.0
     restart: unless-stopped
     env_file: [.env.cpa]
     environment: *app-env
