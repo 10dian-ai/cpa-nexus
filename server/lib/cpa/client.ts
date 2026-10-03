@@ -17,6 +17,7 @@ export class CpaClientError extends Error {
 export interface CpaClientOptions {
   baseUrl?: string
   managementKey?: string
+  clientKey?: string
   fetch?: typeof globalThis.fetch
   timeoutMs?: number
   longOperationTimeoutMs?: number
@@ -42,9 +43,9 @@ export interface CpaResponse {
 }
 
 export function cpaRequestTimeoutMs(request: Pick<CpaRequest, 'path' | 'method'>, options: Pick<CpaClientOptions, 'timeoutMs' | 'longOperationTimeoutMs'> = {}): number {
-  const path = cpaPathSegments(request.path).join('/')
+  const path = cpaPathSegments(request.path).join('/').replace(/^v[08]\/management\//, '')
   const longOperation = (request.method || 'GET').toUpperCase() === 'POST' &&
-    (path === 'credentials/refresh' || path === 'requests/api-call' || /^plugins\/store\/[^/]+\/install$/.test(path))
+    (path === 'credentials/refresh' || path === 'requests/api-call' || path === 'quota/fetch' || path === 'quota/reset' || /^plugins\/store\/[^/]+\/install$/.test(path) || /^plugins\/[^/]+\/quota$/.test(path))
   const timeout = longOperation ? options.longOperationTimeoutMs ?? LONG_OPERATION_TIMEOUT_MS : options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   return Math.min(LONG_OPERATION_TIMEOUT_MS, Math.max(1, timeout))
 }
@@ -69,10 +70,10 @@ const routes: RouteContract[] = [
   { path: /^credentials\/(?:download|models)$/, methods: ['GET'], query: ['name'] },
   { path: /^credentials\/(?:status|fields)$/, methods: ['PATCH'] },
   { path: /^credentials\/refresh$/, methods: ['POST'], query: ['name', 'auth_index', 'all'] },
-  { path: /^oauth\/auth-url$/, methods: ['GET'], query: ['provider', 'is_webui', 'domain', 'channel'] },
+  { path: /^oauth\/auth-url$/, methods: ['GET'], query: ['provider', 'is_webui', 'domain', 'channel', 'project_id'] },
   { path: /^oauth\/status$/, methods: ['GET'], query: ['state'] },
   { path: /^oauth\/session$/, methods: ['DELETE'], query: ['state'] },
-  { path: /^oauth\/import$/, methods: ['POST'], query: ['provider'] },
+  { path: /^oauth\/import$/, methods: ['POST'], query: ['provider', 'location'] },
   { path: /^oauth\/callback$/, methods: ['GET', 'POST'], query: ['provider', 'state', 'code', 'error', 'error_description'] },
   { path: /^plugins$/, methods: ['GET'] },
   { path: /^plugins\/store$/, methods: ['GET'] },
@@ -167,12 +168,12 @@ export function createCpaClient(options: CpaClientOptions = {}) {
   const fetcher = options.fetch ?? globalThis.fetch
   const maxBytes = Math.max(1, options.maxResponseBytes ?? MAX_RESPONSE_BYTES)
 
-  const execute = async (input: CpaRequest, url: URL, method: string, authenticated = true): Promise<CpaResponse> => {
+  const execute = async (input: CpaRequest, url: URL, method: string, authenticated: boolean | string = true): Promise<CpaResponse> => {
     if (!managementKey) throw new CpaClientError('not_configured', '尚未配置 CPA_MANAGEMENT_KEY', 503)
     if (/[\r\n]/.test(managementKey)) throw new CpaClientError('invalid_configuration', 'CPA 管理密钥配置无效', 503)
     if (input.signal?.aborted) throw new CpaClientError('cancelled', 'CPA 管理请求已取消', 499)
     const headers = new Headers({ accept: 'application/json' })
-    if (authenticated) headers.set('authorization', 'Bearer ' + managementKey)
+    if (authenticated) headers.set('authorization', 'Bearer ' + (typeof authenticated === 'string' ? authenticated : managementKey))
     // Never forward browser cookies, authorization, host or proxy headers.
     const supplied = new Headers(input.headers)
     for (const key of ['content-type', 'accept']) {
@@ -231,6 +232,42 @@ export function createCpaClient(options: CpaClientOptions = {}) {
     return execute(input, url, method)
   }
 
+  /** Complete official console scope: fixed core only, authenticated by Nexus on every request. */
+  const consoleRequest = async (input: CpaRequest): Promise<CpaResponse> => {
+    const segments = cpaPathSegments(input.path)
+    const path = segments.join('/')
+    const resource = segments[0] === 'v0' && segments[1] === 'resource' && segments[2] === 'plugins' && segments.length >= 5
+    const management = ['v0', 'v8'].includes(segments[0] || '') && segments[1] === 'management' && segments.length >= 3
+    const models = path === 'v1/models'
+    const method = (input.method || 'GET').toUpperCase()
+    if (!resource && !management && !models) throw new CpaClientError('unsupported_path', '此路径不属于 CPA 原版控制台', 404)
+    if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method) || ((resource || models) && !['GET', 'HEAD'].includes(method)))
+      throw new CpaClientError('unsupported_method', 'CPA 原版接口不支持该请求方法', 405)
+    const query = input.query instanceof URLSearchParams ? input.query : new URLSearchParams(Object.entries(input.query || {}).map(([key, value]) => [key, String(value)]))
+    if ([...query].length > 64 || query.toString().length > 16384 || [...query].some(([key, value]) => key.length > 128 || value.length > 8192 || /[\u0000-\u001f\u007f]/.test(key + value)))
+      throw new CpaClientError('invalid_query', 'CPA 原版查询参数过长或无效', 400)
+    const url = new URL('/' + segments.map(encodeURIComponent).join('/'), validateCpaBaseUrl(baseUrl))
+    url.search = query.toString()
+    const modelKey = (options.clientKey ?? process.env.CPA_CLIENT_KEY ?? '').trim()
+    if (models && (!modelKey || /[\r\n]/.test(modelKey))) throw new CpaClientError('not_configured', '尚未配置 CPA_CLIENT_KEY', 503)
+    const result = await execute(input, url, method === 'HEAD' ? 'GET' : method, models ? modelKey : management)
+    if (method === 'HEAD') result.body = new Uint8Array()
+    return result
+  }
+
+  const legacyQuotaRequest = (input: CpaRequest): Promise<CpaResponse> => {
+    const path = cpaPathSegments(input.path).join('/')
+    const method = (input.method || 'GET').toUpperCase()
+    if (!((path === 'quota/providers' && method === 'GET') || (['quota/fetch', 'quota/reset'].includes(path) && method === 'POST')))
+      throw new CpaClientError('unsupported_path', '此接口不属于 CPA 原生配额管理', 404)
+    return consoleRequest({ ...input, path: 'v0/management/' + path })
+  }
+
+  const nativePanelRequest = (signal?: AbortSignal): Promise<CpaResponse> => execute(
+    { path: 'management.html', headers: { accept: 'text/html' }, signal },
+    new URL('/management.html', validateCpaBaseUrl(baseUrl)), 'GET', false,
+  )
+
   const pluginRequest = async (input: CpaPluginRequest): Promise<CpaResponse> => {
     const discovery = await request({ path: 'plugins', signal: input.signal })
     if (discovery.status < 200 || discovery.status >= 300) return discovery
@@ -277,5 +314,5 @@ export function createCpaClient(options: CpaClientOptions = {}) {
     }
     return result
   }
-  return { request, status, pluginRequest }
+  return { request, status, pluginRequest, consoleRequest, legacyQuotaRequest, nativePanelRequest }
 }

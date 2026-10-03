@@ -5,6 +5,7 @@
 ## 功能
 
 - CPA 配置、凭证与 OAuth、渠道与模型、日志与用量、原生插件。
+- CPA 原版完整控制台、独立 OAuth 与供应商配额中心、Google 官方提供器和完整插件页面。
 - 统一 API Key 页面：模型 Key 绑定 CPA 或 CommandCode，按 Key 启停、撤销和选择预设；CommandCode 开启后可创建外调服务 Key。
 - GOAT 账号池：批量导入、保活、真实额度、自动恢复、并发租约、会话亲和和调用日志。
 - 官方模型与套餐目录：准确模型 ID、原生协议、包含范围、来源和检查时间；未知资料保留未知。
@@ -61,6 +62,8 @@ Worker 自动检查：API 目录每 5 分钟、官网每 15 分钟。面板每�
 
 [目录与数据语义](docs/official-catalog.md) · [外调 API](docs/external-api.md) · [模块契约](docs/platform-requirements.md) · [酒馆预设与 API Key 路由](docs/presets.md)。
 
+[CPA 原生功能与完整控制台](docs/cpa-native.md) 列出原版 OAuth、配额、插件、原生密钥及高级管理入口。
+
 酒馆预设模块默认关闭，支持导入/编辑/导出 JSON、提示词编排和采样默认值。启用后在酒馆页面选择模型 API Key：例如 KA 保持直连，KB 绑定预设，客户端使用 KB 时才执行该预设。路由按客户端 Key 决定，与账号池最终选择的上游账号无关；System One 保持原通路。
 
 ## 本机开发与验证
@@ -85,7 +88,7 @@ npm run check
 
 一起备份 PostgreSQL、Redis、`.env`、`.env.cpa` 和 `.runtime/cpa/`，保留 `APP_ENCRYPTION_KEY`。候选 CPA 更新先验证接口、协议、插件和模块，再切换生产；配置与凭证必须匹配回退版本。
 
-本地模拟上游验证不等于真实供应商账号验收。高级网络能力、生产 Linux / 1Panel 和真实 OAuth 按部署环境验证。插件动态资源仍需专属适配清单。
+本地模拟上游验证不等于真实供应商账号验收。高级网络能力、生产 Linux / 1Panel 和真实 OAuth 按部署环境验证。原版完整控制台支持插件资源、子资源和管理扩展的管理员会话代理，无需手写资源清单。
 
 ## 上游许可
 

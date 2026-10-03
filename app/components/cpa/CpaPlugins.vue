@@ -32,12 +32,12 @@ function menus(plugin: Record<string, unknown>) { return Array.isArray(plugin.me
 function menuHref(id: string, menu: Record<string, unknown>) {
   const path = String(menu.path || menu.url || '')
   const prefix = `/v0/resource/plugins/${id}/`
-  if (!path.startsWith(prefix) || path.includes('..') || /[?#]/.test(path)) return ''
-  return path.replace('/v0/resource/plugins/', '/api/cpa/resources/')
+  if (!path.startsWith(prefix) || path.includes('..') || /[\\\u0000-\u001f]/.test(path)) return ''
+  return '/api/cpa/console' + path
 }
 </script>
 <template>
-  <section class="table-panel"><div class="table-toolbar"><span class="status-badge" :class="root.plugins_enabled ? 'green' : 'neutral'">原生插件总开关：{{ root.plugins_enabled ? '开启' : '关闭' }}</span><button class="button small" :disabled="busy || !data" @click="toggleAll">{{ root.plugins_enabled ? '关闭总开关' : '开启总开关' }}</button><button class="button small" :disabled="busy || pending" @click="refresh()">重新读取</button><span class="toolbar-meta">{{ plugins.length }} 个插件</span></div>
+  <section class="table-panel"><div class="table-toolbar"><span class="status-badge" :class="root.plugins_enabled ? 'green' : 'neutral'">原生插件总开关：{{ root.plugins_enabled ? '开启' : '关闭' }}</span><button class="button small" :disabled="busy || !data" @click="toggleAll">{{ root.plugins_enabled ? '关闭总开关' : '开启总开关' }}</button><button class="button small" :disabled="busy || pending" @click="refresh()">重新读取</button><NuxtLink to="/cpa/oauth" class="button small">OAuth 登录中心</NuxtLink><NuxtLink to="/cpa/quota" class="button small">额度中心</NuxtLink><span class="toolbar-meta">{{ plugins.length }} 个插件</span></div>
     <AppState v-if="error" :error="error" @retry="refresh()" /><AppState v-else-if="pending && !data" loading /><AppState v-else-if="!plugins.length" title="尚未发现原生插件" description="可在插件商店安装插件，或配置 CPA 原生插件目录。" />
     <div v-else class="table-scroll"><table class="data-table"><thead><tr><th>插件</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="plugin in plugins" :key="cpaDisplay(plugin.id)">
       <td><strong class="nexus-table-name">{{ cpaDisplay(plugin.id) }}</strong><div class="cell-secondary">{{ cpaDisplay(plugin.version || (plugin.metadata as Record<string, unknown> | undefined)?.version, '版本未返回') }}</div></td>
@@ -47,6 +47,6 @@ function menuHref(id: string, menu: Record<string, unknown>) {
   </section>
   <CpaResourceEditor v-if="selectedId" :key="selectedId" class="section-gap" :path="`config/plugins/configs/${encodeURIComponent(selectedId)}`" :title="`${selectedId} 配置`" description="插件字段由插件定义，保存后由内核加载。部分插件变更需要重启内核。" writable allow-create />
   <section v-if="quotaPlugin" class="panel section-gap"><div class="panel-heading"><h2>{{ quotaPlugin }} 额度</h2><button class="button small" @click="quotaPlugin = ''">收起</button></div><form class="nexus-form-line" @submit.prevent="readQuota()"><label class="field"><span>凭证 auth_index</span><input v-model="quotaAuthIndex" required placeholder="从凭证详情中复制"></label><button class="button" :disabled="busy || !quotaAuthIndex.trim()">读取额度</button><button type="button" class="button" :disabled="busy || !quotaAuthIndex.trim()" @click="readQuota(true)">刷新额度</button></form><JsonViewer v-if="quotaData !== null" :value="quotaData" title="插件返回的额度记录" /></section>
-  <details class="raw-details section-gap"><summary><UIcon name="i-ph-code-bold" />插件发现记录与菜单信息</summary><JsonViewer :value="data" title="CPA 返回的原生插件记录" /></details><p class="panel-note">平台模块和 CPA 原生插件分别管理。插件页面通过平台代理访问；插件额外管理接口需要服务端适配清单。</p>
+  <details class="raw-details section-gap"><summary><UIcon name="i-ph-code-bold" />插件发现记录与菜单信息</summary><JsonViewer :value="data" title="CPA 返回的原生插件记录" /></details><p class="panel-note">平台模块和 CPA 原生插件分别管理。插件页面、子资源和原生管理接口通过当前管理员会话访问完整内核。</p>
   <AppDialog v-model="removeOpen" title="移除原生插件" :description="`移除 ${removeId} 的插件文件和保存配置。`" :close-disabled="busy"><p class="nexus-description">某些插件无法在运行中卸载，内核会返回需要重启的状态。</p><template #footer><button class="button" :disabled="busy" @click="removeId = ''">取消</button><button class="button danger-solid" :disabled="busy" @click="remove">移除插件</button></template></AppDialog>
 </template>

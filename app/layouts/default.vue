@@ -16,11 +16,15 @@ const groups = computed(() => [
   { label: 'CPA 内核', links: [
     { to: '/cpa', label: '内核运行', icon: 'i-ph-cpu-bold' },
     { to: '/cpa/config', label: '内核配置', icon: 'i-ph-sliders-horizontal-bold' },
-    { to: '/cpa/credentials', label: '凭证与授权', icon: 'i-ph-identification-card-bold' },
+    { to: '/cpa/credentials', label: '凭证管理', icon: 'i-ph-identification-card-bold' },
+    { to: '/cpa/oauth', label: 'OAuth 授权', icon: 'i-ph-sign-in-bold' },
+    { to: '/cpa/quota', label: '配额管理', icon: 'i-ph-gauge-bold' },
     { to: '/cpa/channels', label: '渠道与模型', icon: 'i-ph-git-branch-bold' },
     { to: '/cpa/requests', label: '上游请求检查', icon: 'i-ph-arrows-left-right-bold' },
+    { to: '/cpa/keys', label: '原生访问密钥', icon: 'i-ph-key-bold' },
     { to: '/cpa/logs', label: '日志与用量', icon: 'i-ph-list-bullets-bold' },
     { to: '/cpa/plugins', label: '原生插件', icon: 'i-ph-plugs-connected-bold' },
+    { to: '/cpa/native', label: '原版完整控制台', icon: 'i-ph-browser-bold' },
   ] },
   ...(commandcodeEnabled.value ? [{ label: 'CommandCode', links: [
     { to: '/commandcode', label: '账号池概览', icon: 'i-ph-chart-bar-bold' },

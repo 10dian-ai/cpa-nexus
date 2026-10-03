@@ -20,7 +20,7 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
   {
     id: 'cpa', name: 'CPA 核心', kind: 'kernel', required: true, version: 'v8',
     description: '统一模型调用入口，管理原生渠道、凭证、配置与插件。',
-    capabilities: ['原生模型入口', '渠道与凭证', 'OAuth 登录', '配置与路由', '日志与插件'],
+    capabilities: ['完整原版控制台', '原生模型入口', '渠道与凭证', 'OAuth 登录', '供应商配额', '配置与路由', '日志与插件'],
     navigation: [{ to: '/cpa', label: 'CPA 核心', icon: 'i-ph-cpu-bold' }],
   },
   {

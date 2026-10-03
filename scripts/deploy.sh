@@ -44,9 +44,21 @@ case "$ACTION" in
   init) initialize ;;
   up|update)
     initialize
+    docker run --rm --user "$(id -u):$(id -g)" \
+      --mount "type=bind,src=$PROJECT_DIR,dst=/workspace" --workdir /workspace \
+      node:24-alpine node scripts/setup-native-cpa.mjs assets
     # CPA_IMAGE remains the explicit version/digest in .env.cpa. No latest tag,
     # automatic source pull, account import, or real upstream request is used.
     compose up -d --build --wait --wait-timeout 180
+    native_status=0
+    compose exec -T app node .worker/setup-native-cpa.mjs providers || native_status=$?
+    if [[ "$native_status" == 10 ]]; then
+      compose restart cpa
+      compose up -d --wait --wait-timeout 180 cpa
+    elif [[ "$native_status" != 0 ]]; then
+      echo 'Native CPA provider setup failed. Check official plugin availability, then retry update.' >&2
+      exit "$native_status"
+    fi
     # Git can replace the mounted Nginx config inode. Recreate the edge so the
     # current file and routing rules are loaded after every source update.
     compose up -d --force-recreate --no-deps --wait --wait-timeout 180 edge

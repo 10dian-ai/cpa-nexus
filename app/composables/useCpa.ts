@@ -6,6 +6,53 @@ export function useCpaStatus() {
   return useFetch<CpaStatus>('/api/cpa/status', { key: 'nexus-cpa-status' })
 }
 
+export interface CpaOAuthProvider {
+  id: string
+  name: string
+  source: 'core' | 'plugin'
+  available: boolean
+  enabled?: boolean
+  pluginId?: string
+  reason?: string
+  message?: string
+  flow?: string
+  supportsCallback?: boolean
+  supportsCodeImport?: boolean
+}
+export interface CpaQuotaProvider {
+  id: string
+  name: string
+  source?: 'core' | 'probe' | 'core-api-call' | 'plugin'
+  provider?: string
+  pluginId?: string
+  available: boolean
+  enabled?: boolean
+  credentialProviders?: string[]
+  authIndices?: string[]
+  supportsReset?: boolean
+  reason?: string
+  message?: string
+}
+export interface CpaManagementCapabilities {
+  coreVersion?: string | null
+  checkedAt: string
+  pluginsEnabled?: boolean
+  oauthProviders: CpaOAuthProvider[]
+  quotaProviders: CpaQuotaProvider[]
+  errors?: (string | { source?: string; message: string })[]
+}
+export function useCpaCapabilities() {
+  return useFetch<CpaManagementCapabilities>('/api/cpa/capabilities', { key: 'cpa-management-capabilities' })
+}
+
+export function cpaCredentialName(value: Record<string, unknown>): string {
+  return cpaDisplay(value.name || value.id, '')
+}
+
+export function cpaCapabilityError(value: string | { source?: string; message: string }): string {
+  return typeof value === 'string' ? value : [value.source, value.message].filter(Boolean).join('：')
+}
+
 export function cpaEntries(value: unknown, key: string): Record<string, unknown>[] {
   if (!value || typeof value !== 'object') return []
   const rows = (value as Record<string, unknown>)[key]
@@ -24,5 +71,5 @@ export async function cpaDownload(path: string, name: string) {
   anchor.href = url
   anchor.download = name
   anchor.click()
-  URL.revokeObjectURL(url)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+const emit = defineEmits<{ imported: [] }>()
 const file = shallowRef<File | null>(null)
 const location = ref('us-central1')
 const resultData = ref<unknown>(null)
@@ -17,7 +18,7 @@ async function upload() {
   const body = new FormData(); body.set('file', file.value)
   if (location.value.trim()) body.set('location', location.value.trim())
   const result = await run(() => $fetch(cpaManagementUrl('oauth/import'), { method: 'POST', query: { provider: 'vertex' }, body }), 'Vertex 服务账号已导入')
-  if (result.ok) { resultData.value = result.value; file.value = null; if (fileInput.value) fileInput.value.value = '' }
+  if (result.ok) { resultData.value = result.value; file.value = null; if (fileInput.value) fileInput.value.value = ''; emit('imported') }
 }
 </script>
 <template>

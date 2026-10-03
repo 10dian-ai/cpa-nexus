@@ -74,7 +74,7 @@ export async function setupCpa(directory = process.cwd(), log = console.log) {
       'api-keys:',
       '  openai-compatibility: []',
       'plugins:',
-      '  enabled: false',
+      '  enabled: true',
       '  dir: "/CLIProxyAPI/plugins"',
       'observability:',
       '  logs:',
