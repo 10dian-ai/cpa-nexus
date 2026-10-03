@@ -1,0 +1,14 @@
+node_modules
+.nuxt
+.output
+.worker
+.env
+.env.*
+!.env.example
+.git
+artifacts
+.runtime
+coverage
+*.log
+.claude
+core/dist

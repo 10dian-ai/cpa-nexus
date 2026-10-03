@@ -1,0 +1,11 @@
+services:
+  edge:
+    networks:
+      default:
+      panel:
+        # Preserve the existing reverse proxy target while routing through CPA.
+        aliases: [ccm-app, nexus-edge]
+networks:
+  panel:
+    external: true
+    name: ${PANEL_NETWORK:?Set the existing OpenResty network name}

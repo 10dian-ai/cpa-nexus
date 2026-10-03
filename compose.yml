@@ -1,0 +1,104 @@
+# Fresh Nexus deployment. Existing deployments may explicitly retain their old project name.
+name: ${NEXUS_COMPOSE_PROJECT:-cpa-nexus}
+x-app-env: &app-env
+  NODE_ENV: production
+  APP_URL: ${APP_URL:-http://localhost:3000}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run bash scripts/deploy.sh init first}
+  APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Run bash scripts/deploy.sh init first}
+  DATABASE_URL: postgres://ccm:${POSTGRES_PASSWORD}@postgres:5432/commandcode
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  COMMANDCODE_API_URL: ${COMMANDCODE_API_URL:-https://api.commandcode.ai/provider/v1}
+  COMMANDCODE_MANAGEMENT_URL: ${COMMANDCODE_MANAGEMENT_URL:-https://api.commandcode.ai}
+  CPA_URL: http://cpa:8317
+  CPA_COMMANDCODE_BASE_URL: http://app:3000/v1
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ccm
+      POSTGRES_DB: commandcode
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run bash scripts/deploy.sh init first}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccm -d commandcode"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run bash scripts/deploy.sh init first}
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  cpa:
+    # Official v8.0.11 multi-architecture manifest, verified at the registry.
+    image: ${CPA_IMAGE:-eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9}
+    restart: unless-stopped
+    command: ["./CLIProxyAPI", "--config", "/CLIProxyAPI/config/config.yaml"]
+    volumes:
+      - ./.runtime/cpa/config:/CLIProxyAPI/config
+      - ./.runtime/cpa/auth:/root/.cli-proxy-api
+      - ./.runtime/cpa/plugins:/CLIProxyAPI/plugins
+      - ./.runtime/cpa/logs:/CLIProxyAPI/logs
+    healthcheck:
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/8317; printf 'GET /healthz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3; head -n 1 <&3 | grep -q ' 200 '"]
+      interval: 15s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+  app:
+    build: { context: ., dockerfile: Dockerfile }
+    image: cpa-nexus:0.2.0
+    restart: unless-stopped
+    env_file: [.env.cpa]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 5
+  worker:
+    build: { context: ., dockerfile: Dockerfile }
+    image: cpa-nexus:0.2.0
+    restart: unless-stopped
+    env_file: [.env.cpa]
+    environment: *app-env
+    command: ["node", ".worker/index.mjs"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL,{lazyConnect:true,connectTimeout:2000,maxRetriesPerRequest:0,retryStrategy:()=>null});r.get('ccm:worker:heartbeat').then(v=>{if(!v||Date.now()-Date.parse(v)>45000)process.exitCode=1}).catch(()=>{process.exitCode=1}).finally(()=>r.disconnect())"]
+      interval: 15s
+      timeout: 5s
+      start_period: 45s
+      retries: 5
+  edge:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports: ["${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"]
+    volumes: [./ops/nexus-nginx.conf:/etc/nginx/conf.d/default.conf:ro]
+    depends_on:
+      app: { condition: service_healthy }
+      cpa: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+volumes:
+  postgres-data:
+  redis-data:
