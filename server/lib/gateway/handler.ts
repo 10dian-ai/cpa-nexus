@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { H3Event } from 'h3'
 import { getRequestURL } from 'h3'
-import { authenticateGatewayKey } from '../auth'
+import { authenticateGatewayKey, findEnabledModelKey, requireModelKeyModule } from '../auth'
 import { getConfig } from '../config'
 import { getProviderModel } from '../official-catalog'
 import { PROVIDER_PROTOCOLS, requestCommandCodeProvider, type ProviderProtocol } from '../commandcode-provider'
@@ -19,7 +19,7 @@ import { acquireLease, releaseLease, renewLease, RENEW_INTERVAL_MS, type Lease }
 import { classifyFailure, type UpstreamFailure } from './errors'
 import { ResponseCapture, ResponseInspection, MAX_RESPONSE_LOG_BYTES } from './response'
 import { readJsonBodyLimited, writeWithBackpressure } from './transport'
-import { resolvePresetRoute } from '../presets'
+import { resolveKeyPresetRoute } from '../presets'
 import { applyPreset } from '../presets/engine'
 
 type Protocol = ProviderProtocol
@@ -97,6 +97,18 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
     gatewayError(event, path, 401, 'authentication_error', 'A valid manager API key is required')
     return
   }
+  const internalBridge = secret?.startsWith('ccm_nexus_') === true
+  const originalKeyId = internalBridge ? verifyOriginalGatewayKey(event.node.req.headers) : null
+  const presetKeyId = internalBridge ? originalKeyId : key.id
+  try {
+    const caller = originalKeyId ? await findEnabledModelKey(originalKeyId) : key
+    if (!caller) { gatewayError(event, path, 403, 'permission_error', 'The original model API key is disabled or revoked'); return }
+    await requireModelKeyModule(caller, 'commandcode')
+  } catch (error) {
+    const status = Number((error as { statusCode?: number }).statusCode) || 403
+    gatewayError(event, path, status, 'permission_error', error instanceof Error ? error.message : 'This API key cannot call CommandCode')
+    return
+  }
   if (path === 'models') return listGatewayModels()
 
   const protocol = path as Protocol
@@ -142,8 +154,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
   }
   let logKeyId = key.id
   let affinityKeyId = key.id
-  if (secret?.startsWith('ccm_nexus_')) {
-    const originalKeyId = verifyOriginalGatewayKey(event.node.req.headers)
+  if (internalBridge) {
     if (originalKeyId) { affinityKeyId = originalKeyId; logKeyId = originalKeyId }
     else {
       const clientAuth = event.node.req.headers['x-nexus-client-authorization']
@@ -215,7 +226,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
         const upstreamKey = decryptSecret(account.apiKeyCiphertext)
         effectiveBody = body
         if (protocol !== 'systemone') {
-          const preset = await resolvePresetRoute('commandcode', accountId)
+          const preset = presetKeyId ? await resolveKeyPresetRoute(presetKeyId) : null
           if (preset) {
             effectiveBody = applyPreset(preset, body, { protocol: protocol === 'chat/completions' ? 'chat' : protocol })
             event.node.res.setHeader('x-nexus-preset-id', preset.id)

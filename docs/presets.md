@@ -14,23 +14,25 @@
 
 Claude Messages 按酒馆的转换规则：开头的 system 进入独立 system 字段，历史中或历史后的 system 在原位置转换为 user 内容，再合并相邻同角色内容。Responses 保留输入、工具与指令；如果请求使用 `previous_response_id` 或 `conversation` 引用不可见历史，无法准确按酒馆顺序编排，返回 422，请发送完整上下文。System One 决策、图片/视频及 WebSocket 会话沿用原生调用，不处理聊天预设。
 
-## 路由选择
+## 按 API key 选择
 
-模块默认可选择直连或一个预设。账号可选择「跟随模块默认设置」「直连，不使用预设」或一个独立预设；账号的明确设置覆盖模块默认。路由配置可以在模块关闭时提前保存。仍被绑定的预设不能删除；修改成不兼容内容之前必须解除绑定。
+在统一「API key」页面创建模型调用 key，并将每个 key 绑定到 CommandCode 或 CPA。随后在「酒馆预设」页面选择这个平台 API key，选择「普通调用，不使用预设」或「使用酒馆预设」。外调服务密钥和内部桥接密钥不能绑定预设。
 
-### CommandCode 账号
+例如创建 KA、KB 两个模型 key，只给 KB 绑定酒馆预设。同一个模型通过 KA 调用时保留客户端消息，通过 KB 调用时应用选定预设。模块和上游账号不会成为 key 的默认预设来源；模型模块仍负责账号池选号、额度与并发控制。key 改绑模块后保留自己的预设选择，预设绑定随 key 一同撤销。
 
-在账号详情选择请求预设。账号池先按真实额度、权限、会话亲和与并发租约选定账号，再应用这个账号的预设。一次明确拒绝重试到另一个账号时，重新从原客户端请求生成新账号的预设，避免重复叠加。日志记录实际发送的请求。
+模块关闭时可以提前保存 key 选择，启用后生效。仍被 key 使用的预设不能删除或改成不兼容内容，需要先解除绑定。System One 等非聊天接口继续沿用原生调用。
 
-原有 `ccm_` 模型密钥同时支持 `/v1` 和 `/commandcode/v1`，使用原始官方模型 ID。CPA 客户端密钥通过 `/v1` 使用 `commandcode/<官方模型ID>`；两种入口都在最终账号执行处应用一次 CommandCode 预设。
+### CommandCode 调用
 
-### CPA 原生账号
+CommandCode key 可以使用原始官方模型 ID。经 CPA 兼容转换后，内部回调使用签名恢复原 key 的身份，重新验证 key 当前启用状态和 CommandCode 绑定，然后仅应用这个 key 的预设。没有可信原 key 身份的内部桥接调用不应用预设。一次明确拒绝重试到另一个上游账号时，从原客户端请求重新生成同一个 key 的预设，避免重复叠加；日志记录实际发送的请求。
 
-在 CPA 凭证详情设置 OAuth 账号路由，或在预设页面选择 CPA API Key 账号。保存账号路由时，为账号保留已有独占模型前缀；没有前缀或共用前缀时设置稳定的独占前缀，并核对持久配置与实际模型目录。
+### CPA 调用
 
-使用面板显示的 `前缀/原模型名` 发起调用，会先使用对应账号预设，再由 CPA 执行该账号。未使用独占前缀的 CPA 池调用使用 CPA 模块默认预设，账号仍由 CPA 自动选择。关闭预设模块后前缀模型继续可用，只跳过预设处理。
+CPA 模型 key 由平台认证，再使用配置好的 CPA 客户端密钥调用内核。预设按平台 key 选择，不按凭证账号或模型前缀选择；未绑定预设的 key 保持直连。CPA 原生旧客户端密钥继续透传，预设请使用平台创建的模型 key。
 
-原生 provider 的 API Key 使用 v8 每 key 的 prefix 覆盖，不改动同组其他 Key。OpenAI 兼容渠道的前缀属于整个渠道，选中多 Key 渠道中的一个账号时，会把该 Key 拆为保留所有其他设置的独立渠道；原渠道继续保留其他 Key。Config 账号绑定使用稳定的 `config:<auth_index>`，前缀改变后运行时 credential ID 改变也不会丢失绑定。重复的同 provider/上游/Key 无法获得唯一身份，须先合并。CommandCode 托管桥和没有持久配置的插件/临时 WebSocket 凭据不能作为 CPA 独立账号修改。
+### 旧账号配置迁移
+
+升级时，旧模块默认和账号路由完整归档到 `nexus_legacy_preset_bindings`，停止生效。预设库和 CPA 原有模型前缀仍保留，可在新页面为 API key 重新选择预设。历史归档不引用活跃预设的外键，因此不会阻止删除已不再使用的预设。
 
 ## 管理接口
 
@@ -42,12 +44,11 @@ Claude Messages 按酒馆的转换规则：开头的 system 进入独立 system 
 | GET / PATCH / DELETE | `/api/presets/:id` | 查看/编辑/删除 |
 | GET | `/api/presets/:id/export` | 导出原始 JSON |
 | POST | `/api/presets/validate` | 检查名称、JSON 与变量 |
-| GET / PUT | `/api/presets/routes` | 读取/设置绑定；mode 为 inherit、bypass 或 preset |
-| GET | `/api/presets/cpa-routes` | 非敏感 CPA 账号路由能力和模型前缀 |
+| GET / PUT | `/api/presets/routes` | 读取/设置 API key 绑定；PUT 使用 keyId，mode 为 inherit、bypass 或 preset |
 | PATCH | `/api/modules` | `{ "id": "presets", "enabled": true }` |
 
-启用的预设请求使用平台的 `maxRequestBodyMb` JSON 限制，不接受压缩请求体。未启用预设时 CPA 请求与响应流式透传；CPA 保留认证、协议转换和执行，原生非聊天能力继续走完整内核入口。`x-nexus-preset-id` 响应头标记实际使用的预设，流式响应不缓冲，客户端断开会取消上游。
+启用的预设请求使用平台的 `maxRequestBodyMb` JSON 限制，不接受压缩请求体。CPA 原生旧密钥请求继续流式透传；平台模型 key 经过认证与请求校验，响应仍流式传递。CPA 保留协议转换和执行，原生非聊天能力继续走完整内核入口。`x-nexus-preset-id` 响应头标记实际使用的预设，流式响应不缓冲，客户端断开会取消上游。
 
-预设和绑定持久化在 PostgreSQL（迁移 008），进程短缓存减少重复解析，修改立即使当前进程缓存失效；多应用实例最迟在短缓存过期后更新，不增加服务或部署依赖。
+预设和绑定持久化在 PostgreSQL（迁移 008、010），进程短缓存减少重复解析，修改立即使当前进程缓存失效；多应用实例最迟在短缓存过期后更新，不增加服务或部署依赖。
 
 格式及行为依据：[SillyTavern Prompt Manager](https://docs.sillytavern.app/usage/prompts/prompt-manager/)、[官方消息转换源码](https://github.com/SillyTavern/SillyTavern/blob/release/src/prompt-converters.js)。CPA 账号路由依据项目固定的官方 [v8.0.11 源码](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.11)。本模块独立实现 JSON 兼容处理。

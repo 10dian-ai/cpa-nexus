@@ -1,15 +1,17 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createApp, defineEventHandler, toNodeListener } from 'h3'
+import { createApp, defineEventHandler, getRequestURL, toNodeListener } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const fixture = vi.hoisted(() => ({ enabled: false, route: vi.fn(), account: vi.fn(), compat: vi.fn(), limit: 1 }))
-vi.mock('../server/lib/modules', () => ({ isModuleEnabled: async () => fixture.enabled }))
-vi.mock('../server/lib/presets', () => ({ resolvePresetRoute: fixture.route }))
-vi.mock('../server/lib/cpa/preset-routing', () => ({ findCpaPresetAccountForModel: fixture.account }))
+const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), compat: vi.fn(), internal: vi.fn(), limit: 1 }))
+vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module }))
+vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
+vi.mock('../server/lib/presets', () => ({ resolveKeyPresetRoute: fixture.route }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.limit }) }))
 vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: fixture.compat }))
+vi.mock('../server/lib/gateway/handler', () => ({ handleGateway: fixture.internal }))
 import { handleNexusInference, resetCpaInferenceAuthCache } from '../server/lib/cpa/inference'
+import modelRoute from '../server/routes/v1/[...path]'
 
 const preset = (name = 'Default') => ({ id: name, sourceJson: { prompts: [{ identifier: 'main', role: 'system', content: name }, { identifier: 'chatHistory', marker: true }], prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] }], temperature: 0.4 }, variables: {} })
 describe('public CPA and original CCM inference routing', () => {
@@ -17,16 +19,20 @@ describe('public CPA and original CCM inference routing', () => {
   let received: { path: string; headers: Record<string, unknown>; raw: string }[]
   let release: (() => void) | undefined, cancelled: boolean
   beforeEach(async () => {
-    vi.resetAllMocks(); resetCpaInferenceAuthCache(); fixture.enabled = false; fixture.limit = 1
-    fixture.route.mockResolvedValue(null); fixture.account.mockResolvedValue(null)
+    vi.resetAllMocks(); resetCpaInferenceAuthCache(); fixture.limit = 1
+    fixture.route.mockResolvedValue(null); fixture.module.mockResolvedValue(undefined)
+    fixture.authenticate.mockImplementation(async (secret: string) => secret === 'ccm_KA' || secret === 'ccm_KB'
+      ? { id: secret.slice(4), name: secret.slice(4), moduleId: 'cpa' }
+      : secret === 'ccm_original' ? { id: 'original', name: 'legacy', moduleId: 'commandcode' } : null)
     fixture.compat.mockImplementation(event => { event.node.res.end('CCM') })
+    fixture.internal.mockImplementation(event => { event.node.res.end('internal bridge') })
     received = []; cancelled = false
     core = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk))
       const raw = Buffer.concat(chunks).toString()
       received.push({ path: req.url!, headers: req.headers, raw })
-      if (req.headers.authorization !== 'Bearer native-key') { res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"invalid core key"}'); return }
-      if (req.url === '/v1/models') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"object":"list","data":[]}'); return }
+      if (!['Bearer native-key', 'Bearer core-client-key'].includes(String(req.headers.authorization))) { res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"invalid core key"}'); return }
+      if (req.url?.startsWith('/v1/models')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"object":"list","data":[{"id":"native-model"},{"id":"commandcode/fixture"},{"id":"custom/model"}]}'); return }
       if (raw.includes('"stream":true')) {
         res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: first\n\n')
         release = () => res.end('data: [DONE]\n\n')
@@ -36,7 +42,8 @@ describe('public CPA and original CCM inference routing', () => {
     })
     await new Promise<void>(resolve => core.listen(0, '127.0.0.1', resolve))
     vi.stubEnv('CPA_URL', 'http://127.0.0.1:' + (core.address() as AddressInfo).port)
-    const h3 = createApp(); h3.use(defineEventHandler(handleNexusInference)); app = createServer(toNodeListener(h3))
+    vi.stubEnv('CPA_CLIENT_KEY', 'core-client-key')
+    const h3 = createApp(); h3.use(defineEventHandler(event => getRequestURL(event).pathname.startsWith('/v1/') ? modelRoute(event) : handleNexusInference(event))); app = createServer(toNodeListener(h3))
     await new Promise<void>(resolve => app.listen(0, '127.0.0.1', resolve))
     url = 'http://127.0.0.1:' + (app.address() as AddressInfo).port + '/nexus/cpa/v1'
   })
@@ -53,7 +60,7 @@ describe('public CPA and original CCM inference routing', () => {
     expect(response.status).toBe(200); expect(response.headers.get('x-cpa-version')).toBe('v8.0.11')
     expect((await response.json()).raw).toBe(raw)
     expect(received[0]).toMatchObject({ path: '/v1/chat/completions?test=1', headers: { authorization: 'Bearer native-key', 'anthropic-beta': 'fixture' } })
-    expect(fixture.route).not.toHaveBeenCalled(); expect(fixture.account).not.toHaveBeenCalled()
+    expect(fixture.route).not.toHaveBeenCalled()
     const denied = await post({ model: 'fixture' }, 'invalid'); expect(denied.status).toBe(401); await denied.text()
   })
 
@@ -66,38 +73,52 @@ describe('public CPA and original CCM inference routing', () => {
     expect(received).toHaveLength(0)
   })
 
-  it('applies the selected account preset once and preserves client controls and original model prefix', async () => {
-    fixture.enabled = true; fixture.account.mockResolvedValue('config:stable-account'); fixture.route.mockResolvedValue(preset('Account rule'))
+  it('supports the same public /v1 URL in local development and keeps private bridge callbacks separate', async () => {
+    const direct = url.replace('/nexus/cpa/v1', '/v1')
+    const response = await post({ model: 'fixture', messages: [] }, 'ccm_KA').then(reply => reply.json())
+    expect(response.body.model).toBe('fixture')
+    const catalog = await fetch(direct + '/models', { headers: { authorization: 'Bearer ccm_KA' } })
+    expect(catalog.status).toBe(200); expect((await catalog.json()).data.map((model: { id: string }) => model.id)).toEqual(['native-model', 'custom/model'])
+    const bridge = await fetch(direct + '/messages', { method: 'POST', headers: { authorization: 'Bearer ccm_nexus_internal' }, body: '{}' })
+    expect(await bridge.text()).toBe('internal bridge'); expect(fixture.internal).toHaveBeenCalledTimes(1)
+    const publicBridge = await post({ model: 'fixture' }, 'ccm_nexus_internal')
+    expect(publicBridge.status).toBe(401); await publicBridge.text()
+  })
+
+  it('applies KB preset once and preserves client controls and original model prefix', async () => {
+    fixture.route.mockResolvedValue(preset('KB rule'))
     const tools = [{ type: 'function', function: { name: 'lookup' } }]
-    const response = await post({ model: 'nexus-prefix/fixture', messages: [{ role: 'user', content: 'hello' }], temperature: 0.9, tools })
-    expect(response.status).toBe(200); expect(response.headers.get('x-nexus-preset-id')).toBe('Account rule')
+    const response = await post({ model: 'nexus-prefix/fixture', messages: [{ role: 'user', content: 'hello' }], temperature: 0.9, tools }, 'ccm_KB')
+    expect(response.status).toBe(200); expect(response.headers.get('x-nexus-preset-id')).toBe('KB rule')
     const { body } = await response.json()
-    expect(body).toMatchObject({ model: 'nexus-prefix/fixture', temperature: 0.9, tools, messages: [{ role: 'system', content: 'Account rule' }, { role: 'user', content: 'hello' }] })
-    expect(fixture.route).toHaveBeenCalledWith('cpa', 'config:stable-account')
+    expect(body).toMatchObject({ model: 'nexus-prefix/fixture', temperature: 0.9, tools, messages: [{ role: 'system', content: 'KB rule' }, { role: 'user', content: 'hello' }] })
+    expect(fixture.route).toHaveBeenCalledWith('KB')
     expect(received.filter(request => request.path === '/v1/chat/completions')).toHaveLength(1)
   })
 
-  it('respects explicit account bypass and leaves CommandCode models for their own selected-account step', async () => {
-    fixture.enabled = true; fixture.account.mockResolvedValue('account-bypass'); fixture.route.mockResolvedValue(null)
+  it('keeps KA ordinary and transforms only KB for the same model', async () => {
+    fixture.route.mockImplementation(async (keyId: string) => keyId === 'KB' ? preset('KB rule') : null)
     const body = { model: 'prefix/fixture', messages: [{ role: 'user', content: 'hello' }] }
-    expect((await (await post(body)).json()).body).toEqual(body)
-    fixture.route.mockResolvedValue(preset())
-    const commandcode = { ...body, model: 'commandcode/fixture' }
-    expect((await (await post(commandcode)).json()).body).toEqual(commandcode)
-    expect(fixture.route).toHaveBeenCalledTimes(1)
+    const ordinary = await post(body, 'ccm_KA')
+    expect(ordinary.headers.get('x-nexus-preset-id')).toBeNull()
+    expect((await ordinary.json()).body).toEqual(body)
+    const customized = await post(body, 'ccm_KB')
+    expect(customized.headers.get('x-nexus-preset-id')).toBe('KB rule')
+    expect((await customized.json()).body.messages).toEqual([{ role: 'system', content: 'KB rule' }, ...body.messages])
+    expect(received).toHaveLength(2)
   })
 
   it('rejects invalid credentials before reading or transforming a preset request', async () => {
-    fixture.enabled = true; fixture.route.mockResolvedValue(preset())
-    const response = await post({ model: 'fixture', messages: [] }, 'invalid')
-    expect(response.status).toBe(401); expect(await response.json()).toEqual({ error: 'invalid core key' })
-    expect(fixture.route).not.toHaveBeenCalled(); expect(fixture.account).not.toHaveBeenCalled()
-    expect(received).toHaveLength(1); expect(received[0]!.path).toBe('/v1/models')
+    fixture.route.mockResolvedValue(preset())
+    const response = await post({ model: 'fixture', messages: [] }, 'ccm_invalid')
+    expect(response.status).toBe(401); await response.text()
+    expect(fixture.route).not.toHaveBeenCalled()
+    expect(received).toHaveLength(0)
   })
 
   it('keeps Responses input, instructions and tools while adding a preset', async () => {
-    fixture.enabled = true; fixture.route.mockResolvedValue(preset())
-    const response = await post({ model: 'fixture', input: 'hello', instructions: 'Client instruction', tools: [{ type: 'web_search' }] }, 'native-key', 'responses')
+    fixture.route.mockResolvedValue(preset())
+    const response = await post({ model: 'fixture', input: 'hello', instructions: 'Client instruction', tools: [{ type: 'web_search' }] }, 'ccm_KB', 'responses')
     expect(response.status).toBe(200)
     const { body } = await response.json()
     expect(body.tools).toEqual([{ type: 'web_search' }]); expect(body.model).toBe('fixture')
@@ -105,10 +126,40 @@ describe('public CPA and original CCM inference routing', () => {
   })
 
   it('returns bounded JSON errors for invalid preset input without invoking inference', async () => {
-    fixture.enabled = true
-    const response = await fetch(url + '/messages', { method: 'POST', headers: { authorization: 'Bearer native-key', 'content-type': 'application/json' }, body: '{' })
+    const response = await fetch(url + '/messages', { method: 'POST', headers: { authorization: 'Bearer ccm_KB', 'content-type': 'application/json' }, body: '{' })
     expect(response.status).toBe(400); expect((await response.json()).type).toBe('error')
-    expect(received.map(request => request.path)).toEqual(['/v1/models'])
+    expect(received).toHaveLength(0)
+  })
+
+  it('uses the private core key for CPA and removes client credentials and bridge identity headers', async () => {
+    const response = await fetch(url + '/messages', { method: 'POST', headers: {
+      'x-api-key': 'ccm_KA', cookie: 'admin=private', 'x-goog-api-key': 'untrusted', 'anthropic-beta': 'fixture',
+      'x-nexus-original-key-id': 'forged', 'x-nexus-original-key-signature': 'forged',
+    }, body: JSON.stringify({ model: 'fixture', messages: [{ role: 'user', content: 'hello' }] }) })
+    expect(response.status).toBe(200); await response.text()
+    expect(received[0]!.headers).toMatchObject({ authorization: 'Bearer core-client-key', 'anthropic-beta': 'fixture' })
+    for (const header of ['cookie', 'x-api-key', 'x-goog-api-key', 'x-nexus-original-key-id', 'x-nexus-original-key-signature']) expect(received[0]!.headers[header]).toBeUndefined()
+  })
+
+  it('filters Command Code models and rejects crossing a CPA key module binding', async () => {
+    const catalog = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_KA' } })
+    expect(await catalog.json()).toEqual({ object: 'list', data: [{ id: 'native-model' }, { id: 'custom/model' }] })
+    received.length = 0
+    for (const protocol of ['chat/completions', 'messages', 'responses', 'systemone']) {
+      const response = await post({ model: 'commandcode/fixture', messages: [] }, 'ccm_KA', protocol)
+      expect(response.status).toBe(403); await response.text()
+    }
+    expect(received).toHaveLength(0); expect(fixture.route).not.toHaveBeenCalled(); expect(fixture.compat).not.toHaveBeenCalled()
+  })
+
+  it('fails before forwarding when the selected module is disabled or the private CPA key is absent', async () => {
+    fixture.module.mockRejectedValueOnce(Object.assign(new Error('模块已停用'), { statusCode: 503 }))
+    const disabled = await post({ model: 'fixture' }, 'ccm_KA')
+    expect(disabled.status).toBe(503); await disabled.text()
+    vi.stubEnv('CPA_CLIENT_KEY', '')
+    const missing = await post({ model: 'fixture' }, 'ccm_KA')
+    expect(missing.status).toBe(503); await missing.text()
+    expect(received).toHaveLength(0); expect(fixture.route).not.toHaveBeenCalled()
   })
 
   it('streams the first event promptly and cancels the core when the client disconnects', async () => {
@@ -119,5 +170,16 @@ describe('public CPA and original CCM inference routing', () => {
     abort.abort(); await reader.cancel().catch(() => {})
     for (let i = 0; i < 50 && !cancelled; i++) await new Promise(resolve => setTimeout(resolve, 20))
     expect(cancelled).toBe(true)
+  })
+
+  it('preserves streaming for a unified CPA key with its selected preset', async () => {
+    fixture.route.mockResolvedValue(preset('KB rule'))
+    const response = await post({ model: 'fixture', messages: [{ role: 'user', content: 'hello' }], stream: true }, 'ccm_KB')
+    expect(response.headers.get('x-nexus-preset-id')).toBe('KB rule')
+    const reader = response.body!.getReader()
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('data: first')
+    expect(JSON.parse(received[0]!.raw).messages[0].content).toBe('KB rule')
+    release!()
+    while (!(await reader.read()).done) { /* Drain the streamed response. */ }
   })
 })

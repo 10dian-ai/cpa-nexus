@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import type { PresetView, PresetBinding } from '#shared/presets'
+import type { PresetView, KeyPresetBinding } from '#shared/presets'
 import { PRESET_MAX_BYTES } from '#shared/presets'
-interface CpaPresetAccount { accountId: string; credentialName: string; prefix: string; supported: boolean; message?: string; provider?: string; group?: string; name?: string }
+interface ModelKey { id: string; name: string; prefix: string; enabled: boolean; moduleId: 'commandcode' | 'cpa' }
 
 useHead({ title: '请求预设 · CPA Nexus' })
 const api = useRequestFetch()
 const { data, pending, error, refresh } = await useFetch<{ presets: PresetView[]; moduleEnabled: boolean }>('/api/presets', { key: 'nexus-preset-list' })
-const { data: routes, error: routesError, refresh: refreshRoutes } = await useFetch<{ bindings: PresetBinding[] }>('/api/presets/routes', { key: 'nexus-preset-routes' })
-const accountBindings = computed(() => routes.value?.bindings.filter(binding => !!binding.accountId) || [])
-const { data: cpaRoutes, pending: cpaRoutesPending, error: cpaRoutesError, refresh: refreshCpaRoutes } = await useFetch<{ accounts: CpaPresetAccount[] }>('/api/presets/cpa-routes', { key: 'nexus-preset-cpa-routes' })
-const cpaApiAccounts = computed(() => cpaRoutes.value?.accounts.filter(account => account.accountId.startsWith('config:')) || [])
-const cpaSelectedId = ref('')
-watch(cpaApiAccounts, accounts => { if (!accounts.some(account => account.accountId === cpaSelectedId.value)) cpaSelectedId.value = accounts[0]?.accountId || '' }, { immediate: true })
+const { data: routes, error: routesError, refresh: refreshRoutes } = await useFetch<{ bindings: KeyPresetBinding[] }>('/api/presets/routes', { key: 'nexus-preset-routes' })
+const keyBindings = computed(() => routes.value?.bindings || [])
+const { data: keys, pending: keysPending, error: keysError, refresh: refreshKeys } = await useFetch<{ items: ModelKey[] }>('/api/keys', { key: 'nexus-model-keys' })
+const modelKeys = computed(() => keys.value?.items || [])
+const selectedKeyId = ref('')
+watch(modelKeys, items => { if (!items.some(item => item.id === selectedKeyId.value)) selectedKeyId.value = items[0]?.id || '' }, { immediate: true })
+const selectedKey = computed(() => modelKeys.value.find(item => item.id === selectedKeyId.value))
 const { busy, run } = useApiAction()
 const search = ref('')
 const visible = computed(() => (data.value?.presets || []).filter(item => [item.name, item.description].some(value => value.toLowerCase().includes(search.value.toLowerCase()))))
@@ -128,12 +129,12 @@ async function toggleModule() {
   const result = await run(() => api('/api/modules', { method: 'PATCH', body: { id: 'presets', enabled: !data.value?.moduleEnabled } }), data.value?.moduleEnabled ? '预设模块已停用' : '预设模块已启用')
   if (result.ok) { await refresh(); await refreshNuxtData('nexus-modules') }
 }
-async function resetRoute(binding: PresetBinding) {
-  const result = await run(() => api('/api/presets/routes', { method: 'PUT', body: { moduleId: binding.moduleId, accountId: binding.accountId, mode: 'inherit', presetId: null } }), '账号已恢复跟随模块默认路由')
-  if (result.ok) { await refreshRoutes(); await refreshNuxtData('nexus-preset-cpa-routes') }
+async function resetRoute(binding: KeyPresetBinding) {
+  const result = await run(() => api('/api/presets/routes', { method: 'PUT', body: { keyId: binding.keyId, mode: 'inherit', presetId: null } }), 'API key 已恢复默认直连')
+  if (result.ok) await refreshRoutes()
 }
 function presetName(id: string | null) { return data.value?.presets.find(item => item.id === id)?.name || '预设已不存在' }
-function bindingAccountName(binding: PresetBinding) { return binding.moduleId === 'cpa' ? cpaRoutes.value?.accounts.find(account => account.accountId === binding.accountId)?.credentialName || binding.accountId : binding.accountId }
+function bindingKeyName(binding: KeyPresetBinding) { return modelKeys.value.find(item => item.id === binding.keyId)?.name || binding.keyId }
 async function download() {
   if (!selected.value) return
   const preset = selected.value
@@ -148,7 +149,7 @@ async function download() {
 
 <template>
   <div class="presets-page">
-    <AppPageHeader title="请求预设" description="导入 SillyTavern JSON，编辑提示词与参数，再选择需要使用它的模块或账号。">
+    <AppPageHeader title="请求预设" description="导入 SillyTavern JSON，编辑提示词与参数，再选择需要使用它的模型 API key。">
       <button class="button" :disabled="pending || busy" @click="refresh()"><UIcon name="i-ph-arrow-clockwise-bold" />重新读取</button>
       <button class="button primary" :disabled="busy" @click="importOpen = true"><UIcon name="i-ph-upload-simple-bold" />导入预设</button>
     </AppPageHeader>
@@ -167,17 +168,17 @@ async function download() {
             <div v-else-if="editorTab === 'variables'" class="form-stack"><p class="preset-section-intro">为预设中实际使用的宏提供文本。例如 user、char、description、personality、scenario、persona、mesExamples、wiBefore、wiAfter。值必须是字符串，未提供的必需变量会阻止绑定。</p><label class="field"><span>上下文变量 JSON</span><textarea v-model="variablesDraft" class="nexus-code-editor" rows="12" spellcheck="false" /></label></div>
             <div v-else class="form-stack"><p class="preset-section-intro">完整保留导入的字段。高级内容修改后点击“应用 JSON”，或者直接检查、保存；导出的是已保存的原始预设。</p><label class="field"><span>原始预设 JSON</span><textarea v-model="jsonDraft" class="nexus-code-editor" rows="20" spellcheck="false" /></label><div class="inline-actions"><button class="button small" @click="applyRaw">应用 JSON 到编辑器</button></div></div>
           </fieldset>
-          <div v-if="compatibility" class="preset-compatibility" :class="{ supported: compatibility.supported && !unvalidated }" role="status"><strong>{{ unvalidated ? '内容已修改，请重新检查' : compatibility.supported ? '兼容检查通过' : '此预设暂不能用于请求' }}</strong><ul v-if="compatibility.issues.length"><li v-for="(issue, index) in compatibility.issues" :key="index" :class="issue.severity"><span>{{ issue.severity === 'error' ? '需要处理' : '提示' }}</span>{{ issue.message }}<code v-if="issue.path">{{ issue.path }}</code></li></ul><p v-else>保存后可以在下方或账号详情中选择使用。</p></div>
+          <div v-if="compatibility" class="preset-compatibility" :class="{ supported: compatibility.supported && !unvalidated }" role="status"><strong>{{ unvalidated ? '内容已修改，请重新检查' : compatibility.supported ? '兼容检查通过' : '此预设暂不能用于请求' }}</strong><ul v-if="compatibility.issues.length"><li v-for="(issue, index) in compatibility.issues" :key="index" :class="issue.severity"><span>{{ issue.severity === 'error' ? '需要处理' : '提示' }}</span>{{ issue.message }}<code v-if="issue.path">{{ issue.path }}</code></li></ul><p v-else>保存后可以在下方为 API key 选择使用。</p></div>
           <p v-if="validation" class="inline-error" role="alert">{{ validation }}</p><div class="nexus-editor-footer"><span class="muted small-text">{{ dirty ? '有未保存修改' : '当前预设已保存' }}</span><div class="inline-actions"><button class="button" :disabled="busy" @click="validate">检查兼容性</button><button class="button" :disabled="busy || !dirty" @click="loadPreset(selected)">还原修改</button><button class="button primary" :disabled="busy || !dirty || !name.trim()" @click="save"><UIcon v-if="busy" name="i-ph-circle-notch-bold" class="spinning" />保存预设</button></div></div>
         </section>
         <section v-else class="panel preset-empty-editor"><UIcon name="i-ph-sliders-horizontal-bold" /><h2>选择预设开始编辑</h2><p>从左侧打开已保存的预设，或导入 SillyTavern 导出的 JSON。预设只有被绑定到路由后才会影响请求。</p><button class="button primary" @click="importOpen = true">导入第一个预设</button></section>
       </div>
-      <section class="preset-defaults panel"><div class="panel-heading"><h2>模块默认路由</h2><span class="muted small-text">账号可以单独覆盖</span></div><p class="nexus-description">未单独设置的账号跟随模块默认路由。直连保留原始消息与参数，预设路由使用已检查的提示词和采样配置。</p><div class="preset-default-grid"><PresetRoutePicker module-id="commandcode" title="CommandCode 默认路由" /><PresetRoutePicker module-id="cpa" title="CPA 默认路由" /></div></section>
-      <section class="panel section-gap preset-cpa-accounts"><div class="panel-heading"><h2>CPA 渠道 API Key 账号</h2><button class="button small" :disabled="cpaRoutesPending || busy" @click="refreshCpaRoutes()">重新检测</button></div><p class="nexus-description">选择渠道中的一个 API Key 账号设置独立路由，页面只显示账号标签。OAuth 文件账号可以在“凭证与授权”的详情中设置。</p><AppState v-if="cpaRoutesError" :error="cpaRoutesError" compact @retry="refreshCpaRoutes()" /><AppState v-else-if="cpaRoutesPending && !cpaRoutes" compact loading /><AppState v-else-if="!cpaApiAccounts.length" compact title="还没有渠道 API Key 账号" description="在 CPA 渠道与模型中添加官方渠道后，可以为其中的账号设置独立预设。" /><template v-else><label class="field preset-cpa-select"><span>选择 CPA 渠道账号</span><select v-model="cpaSelectedId"><option v-for="account in cpaApiAccounts" :key="account.accountId" :value="account.accountId">{{ account.credentialName }}{{ account.supported ? '' : ' · 暂不支持' }}</option></select></label><CpaPresetRoutePicker v-if="cpaSelectedId" :key="cpaSelectedId" :account-id="cpaSelectedId" @saved="refreshCpaRoutes()" /></template></section>
-      <section class="table-panel section-gap"><div class="panel-heading padded"><h2>账号路由覆盖</h2><span class="muted small-text">{{ accountBindings.length }} 个账号</span></div><AppState v-if="routesError" :error="routesError" compact @retry="refreshRoutes()" /><AppState v-else-if="!accountBindings.length" compact title="账号当前跟随模块默认设置" description="在 CommandCode 账号详情或 CPA 凭证详情中，可以单独选择直连或预设。" /><div v-else class="table-scroll"><table class="data-table"><thead><tr><th>模块</th><th>账号</th><th>处理方式</th><th>最近保存</th><th>操作</th></tr></thead><tbody><tr v-for="binding in accountBindings" :key="binding.moduleId + ':' + binding.accountId"><td>{{ binding.moduleId === 'commandcode' ? 'CommandCode' : binding.moduleId === 'cpa' ? 'CPA' : binding.moduleId }}</td><td class="mono wrap-cell"><NuxtLink v-if="binding.moduleId === 'commandcode'" :to="'/accounts/' + binding.accountId" class="text-link">{{ binding.accountId }}</NuxtLink><span v-else>{{ bindingAccountName(binding) }}</span></td><td>{{ binding.mode === 'bypass' ? '直连' : presetName(binding.presetId) }}</td><td>{{ formatDate(binding.updatedAt) }}</td><td><button class="button small" :disabled="busy" @click="resetRoute(binding)">跟随模块默认</button></td></tr></tbody></table></div></section>
+      <section class="panel section-gap preset-key-routes"><div class="panel-heading"><h2>按 API key 使用预设</h2><div class="inline-actions"><NuxtLink to="/keys" class="text-link">管理 API key</NuxtLink><button class="button small" :disabled="keysPending || busy" @click="refreshKeys()">刷新</button></div></div><p class="nexus-description">选择平台创建的模型 API key。只有选用预设的 key 会处理提示词，其他 key 默认直连。例如 KA 保持直连，KB 使用酒馆预设；账号池中的账号由模型模块自动选择。</p><AppState v-if="keysError" :error="keysError" compact @retry="refreshKeys()" /><AppState v-else-if="keysPending && !keys" compact loading /><AppState v-else-if="!modelKeys.length" compact title="还没有模型 API key" description="先在 API key 页面创建模型调用 key，并绑定 CommandCode 或 CPA。" /><template v-else><label class="field preset-key-select"><span>选择 API key</span><select v-model="selectedKeyId"><option v-for="key in modelKeys" :key="key.id" :value="key.id">{{ key.name }} · {{ key.moduleId === 'cpa' ? 'CPA' : 'CommandCode' }}{{ key.enabled ? '' : ' · 已停用' }}</option></select><small v-if="selectedKey">{{ selectedKey.prefix }}… · 绑定 {{ selectedKey.moduleId === 'cpa' ? 'CPA' : 'CommandCode' }}</small></label><PresetRoutePicker v-if="selectedKeyId" :key="selectedKeyId" :key-id="selectedKeyId" @saved="refreshRoutes()" /></template></section>
+
+      <section class="table-panel section-gap"><div class="panel-heading padded"><h2>API key 预设绑定</h2><span class="muted small-text">{{ keyBindings.length }} 个 key</span></div><AppState v-if="routesError" :error="routesError" compact @retry="refreshRoutes()" /><AppState v-else-if="!keyBindings.length" compact title="所有模型 API key 默认直连" description="在上方选择一个 key，为它绑定酒馆预设。" /><div v-else class="table-scroll"><table class="data-table"><thead><tr><th>API key</th><th>绑定模块</th><th>处理方式</th><th>最近保存</th><th>操作</th></tr></thead><tbody><tr v-for="binding in keyBindings" :key="binding.keyId"><td>{{ bindingKeyName(binding) }}</td><td>{{ binding.moduleId === 'cpa' ? 'CPA' : 'CommandCode' }}</td><td>{{ binding.mode === 'bypass' ? '直连' : presetName(binding.presetId) }}</td><td>{{ formatDate(binding.updatedAt) }}</td><td><button class="button small" :disabled="busy" @click="resetRoute(binding)">恢复默认直连</button></td></tr></tbody></table></div></section>
     </template>
     <AppDialog v-model="importOpen" title="导入 SillyTavern 预设" description="选择 JSON 文件，或直接粘贴完整预设。" wide :close-disabled="busy || importingFile"><form id="preset-import-form" class="form-stack" @submit.prevent="importPreset"><label class="field"><span>预设名称</span><input v-model="importName" maxlength="120" required placeholder="例如：日常对话"></label><label class="button preset-file-input"><UIcon name="i-ph-file-arrow-up-bold" />{{ importingFile ? '正在读取文件' : '选择 JSON 文件' }}<input class="sr-only" type="file" accept=".json,application/json" :disabled="busy || importingFile" @change="upload"></label><label class="field"><span>预设 JSON</span><textarea v-model="importText" class="nexus-code-editor" rows="15" required spellcheck="false" placeholder="粘贴 SillyTavern 导出的 JSON 对象" /></label><p class="small-text muted">导入会保存原始内容并检查兼容性。尚不兼容的文件仍可保存、编辑和导出。</p><p v-if="importError" class="inline-error" role="alert">{{ importError }}</p></form><template #footer><button class="button" :disabled="busy || importingFile" @click="importOpen = false">取消</button><button form="preset-import-form" class="button primary" :disabled="busy || importingFile || !importName.trim() || !importText.trim()">导入并检查</button></template></AppDialog>
-    <AppDialog v-model="deleteOpen" title="删除预设" :description="`删除 ${deleteTarget?.name || ''}。`" :close-disabled="busy"><p class="nexus-description">使用此预设的路由会受到影响，请先调整对应的模块或账号设置。</p><template #footer><button class="button" :disabled="busy" @click="deleteTarget = null">取消</button><button class="button danger-solid" :disabled="busy" @click="remove">删除预设</button></template></AppDialog>
+    <AppDialog v-model="deleteOpen" title="删除预设" :description="`删除 ${deleteTarget?.name || ''}。`" :close-disabled="busy"><p class="nexus-description">已被 API key 使用的预设不能删除，请先解除对应的 key 绑定。</p><template #footer><button class="button" :disabled="busy" @click="deleteTarget = null">取消</button><button class="button danger-solid" :disabled="busy" @click="remove">删除预设</button></template></AppDialog>
     <AppDialog v-model="switchOpen" title="放弃未保存的修改" description="当前预设还有未保存的修改。"><p class="nexus-description">继续切换会放弃这些修改，并打开选中的预设。</p><template #footer><button class="button" @click="switchTarget = null">继续编辑</button><button class="button primary" @click="discardAndSwitch">放弃修改并切换</button></template></AppDialog>
   </div>
 </template>
@@ -213,10 +214,10 @@ async function download() {
 .preset-compatibility strong { font-size: 13px; }.preset-compatibility ul { margin: 8px 0 0; padding-left: 17px; }.preset-compatibility li { margin-top: 7px; overflow-wrap: anywhere; }.preset-compatibility li > span { color: var(--amber); margin-right: 8px; }.preset-compatibility li.error > span { color: var(--red); }.preset-compatibility code { display: block; font-size: 11px; color: var(--muted); }.preset-compatibility p { color: var(--muted); }
 .preset-empty-editor { min-height: 360px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 16px; padding: 36px; }
 .preset-empty-editor > .iconify { font-size: 34px; color: #7e9169; }.preset-empty-editor h2 { font-size: 22px; }.preset-empty-editor p { color: var(--muted); max-width: 50ch; font-size: 13px; line-height: 1.9; }
-.preset-defaults { margin-top: 22px; }.preset-default-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 25px; }.preset-default-grid > * + * { padding-left: 25px; border-left: 1px solid var(--border); }
+.preset-key-routes .preset-route-picker { margin-top: 22px; }
 .preset-file-input { align-self: flex-start; }
-.preset-cpa-select { max-width: 640px; }.preset-cpa-select select { width: 100%; font-size: 13px; }
+.preset-key-select { max-width: 640px; }.preset-key-select select { width: 100%; font-size: 13px; }
 @media (max-width: 1100px) { .preset-workspace { grid-template-columns: minmax(190px, .65fr) minmax(0, 2fr); }.preset-library { padding: 15px; } }
-@media (max-width: 780px) { .preset-workspace, .preset-default-grid { grid-template-columns: 1fr; }.preset-default-grid > * + * { padding: 22px 0 0; border-left: 0; border-top: 1px solid var(--border); }.preset-module-bar { align-items: flex-start; flex-wrap: wrap; }.preset-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.preset-library .state-box { padding: 22px 12px; }.preset-empty-editor { min-height: 270px; padding: 24px; } }
+@media (max-width: 780px) { .preset-workspace { grid-template-columns: 1fr; }.preset-module-bar { align-items: flex-start; flex-wrap: wrap; }.preset-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.preset-library .state-box { padding: 22px 12px; }.preset-empty-editor { min-height: 270px; padding: 24px; } }
 @media (max-width: 480px) { .preset-sampling-grid, .preset-list, .preset-editor .form-row { grid-template-columns: 1fr; }.preset-editor { padding: 18px; }.preset-prompt-toolbar { flex-wrap: wrap; }.preset-prompt-toolbar .inline-actions { margin-left: auto; }.preset-editor-heading h2 { font-size: 19px; } }
 </style>

@@ -4,9 +4,11 @@ import { z } from 'zod'
 import { getDb } from '../../lib/db'
 import { hashGatewayKey } from '../../lib/crypto'
 import { publishUpdate } from '../../lib/events'
+import { requireModule } from '../../lib/modules'
 export default defineEventHandler(async event => {
   const parsed = z.object({ name: z.string().trim().min(1).max(80) }).strict().safeParse(await readBody(event))
   if (!parsed.success) throw createError({ statusCode: 400, statusMessage: '请填写 1 至 80 字的密钥名称' })
+  await requireModule('commandcode')
   const key = 'ccm_service_' + randomBytes(32).toString('base64url')
   const id = randomUUID(), prefix = key.slice(0, 20)
   const rows = await getDb()`INSERT INTO service_keys(id,name,prefix,secret_hash,enabled) VALUES(${id},${parsed.data.name},${prefix},${hashGatewayKey(key)},true) RETURNING created_at`

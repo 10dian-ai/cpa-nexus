@@ -10,6 +10,7 @@ const groups = computed(() => [
   { label: '平台', links: [
     { to: '/', label: '平台概览', icon: 'i-ph-squares-four-bold' },
     { to: '/modules', label: '模块管理', icon: 'i-ph-stack-bold' },
+    { to: '/keys', label: 'API Key', icon: 'i-ph-key-bold' },
     { to: '/presets', label: '酒馆预设', icon: 'i-ph-sliders-horizontal-bold' },
   ] },
   { label: 'CPA 内核', links: [
@@ -18,7 +19,6 @@ const groups = computed(() => [
     { to: '/cpa/credentials', label: '凭证与授权', icon: 'i-ph-identification-card-bold' },
     { to: '/cpa/channels', label: '渠道与模型', icon: 'i-ph-git-branch-bold' },
     { to: '/cpa/requests', label: '上游请求检查', icon: 'i-ph-arrows-left-right-bold' },
-    { to: '/cpa/keys', label: '客户端密钥', icon: 'i-ph-key-bold' },
     { to: '/cpa/logs', label: '日志与用量', icon: 'i-ph-list-bullets-bold' },
     { to: '/cpa/plugins', label: '原生插件', icon: 'i-ph-plugs-connected-bold' },
   ] },
@@ -27,7 +27,6 @@ const groups = computed(() => [
     { to: '/accounts', label: '账号管理', icon: 'i-ph-users-three-bold' },
     { to: '/official', label: '官方模型与套餐', icon: 'i-ph-book-open-bold' },
     { to: '/models', label: '模型观察', icon: 'i-ph-cube-bold' },
-    { to: '/keys', label: '模块访问密钥', icon: 'i-ph-key-bold' },
     { to: '/logs', label: '请求日志', icon: 'i-ph-list-bullets-bold' },
     { to: '/settings', label: '模块设置', icon: 'i-ph-sliders-horizontal-bold' },
   ] }] : []),

@@ -8,8 +8,15 @@ const fixture = vi.hoisted(() => ({
   log: vi.fn(), refresh: vi.fn(), upstream: vi.fn(), candidates: vi.fn(), providerModel: vi.fn(),
   maxRequestBodyMb: 1,
   preset: vi.fn(),
+  originalKey: vi.fn(),
 }))
-vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
+vi.mock('../server/lib/auth', () => ({
+  authenticateGatewayKey: fixture.authenticate,
+  findEnabledModelKey: fixture.originalKey,
+  requireModelKeyModule: async (key: { moduleId?: string }, moduleId: string) => {
+    if ((key.moduleId || 'commandcode') !== moduleId) throw Object.assign(new Error('Key is bound to another module'), { statusCode: 403 })
+  },
+}))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ commandcodeApiUrl: 'http://fixture-provider/provider/v1', encryptionKey: Buffer.alloc(32, 9).toString('base64') }) }))
 vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: fixture.providerModel }))
 vi.mock('../server/lib/crypto', () => ({ decryptSecret: () => 'fixture-upstream-key' }))
@@ -20,7 +27,7 @@ vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({
 vi.mock('../server/lib/queues', () => ({ enqueueAccountRefresh: fixture.refresh }))
 vi.mock('../server/lib/logs', () => ({ insertRequestLog: fixture.log }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: async () => {} }))
-vi.mock('../server/lib/presets', () => ({ resolvePresetRoute: fixture.preset }))
+vi.mock('../server/lib/presets', () => ({ resolveKeyPresetRoute: fixture.preset }))
 vi.mock('../server/lib/gateway/accounts', () => ({
   listCandidates: fixture.candidates, listGatewayModels: async () => ({ object: 'list', data: [] }),
   touchAccount: async () => {}, recordFailure: fixture.recordFailure, recordModelAllowed: fixture.recordAllowed,
@@ -44,6 +51,7 @@ describe('gateway over real HTTP connections', () => {
     fixture.maxRequestBodyMb = 1
     fixture.preset.mockResolvedValue(null)
     fixture.authenticate.mockResolvedValue({ id: 'gateway-key' })
+    fixture.originalKey.mockImplementation(async id => ({ id, name: 'Original key', moduleId: 'commandcode' }))
     fixture.providerModel.mockResolvedValue({ id: 'fixture/model', supportedEndpoints: ['chat/completions', 'messages', 'responses'] })
     fixture.release.mockResolvedValue(undefined)
     fixture.refresh.mockResolvedValue(undefined)
@@ -134,10 +142,52 @@ describe('gateway over real HTTP connections', () => {
     const upstreamHeaders = fixture.upstream.mock.calls[0]![1].headers as Headers
     expect(upstreamHeaders.get(ORIGINAL_KEY_ID_HEADER)).toBeNull()
     expect(upstreamHeaders.get(ORIGINAL_KEY_SIGNATURE_HEADER)).toBeNull()
+    expect(fixture.preset).toHaveBeenLastCalledWith(originalId)
     await invoke('Bearer original-manager-client-key')
     await vi.waitFor(() => expect(fixture.log).toHaveBeenLastCalledWith(expect.objectContaining({ keyId: 'gateway-key' })))
+    expect(fixture.preset).toHaveBeenLastCalledWith('gateway-key')
+    fixture.preset.mockClear()
     await invoke('Bearer ccm_nexus_test-bridge-key', { ...signedHeaders, [ORIGINAL_KEY_SIGNATURE_HEADER]: 'A'.repeat(43) })
     await vi.waitFor(() => expect(fixture.log).toHaveBeenLastCalledWith(expect.objectContaining({ keyId: 'gateway-key' })))
+    expect(fixture.preset).not.toHaveBeenCalled()
+  })
+  it('uses the same selected account with KA direct and KB applying its own preset', async () => {
+    fixture.authenticate.mockImplementation(async secret => ({ id: secret === 'ccm_kb' ? 'KB' : 'KA', moduleId: 'commandcode' }))
+    fixture.preset.mockImplementation(async keyId => keyId === 'KB' ? {
+      id: 'KB-preset', variables: {}, sourceJson: { main_prompt: 'Only KB' },
+    } : null)
+    for (const secret of ['ccm_ka', 'ccm_kb']) {
+      const response = await actualFetch(url + '/v1/chat/completions', {
+        method: 'POST', headers: { authorization: 'Bearer ' + secret, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'fixture/model', messages: [{ role: 'user', content: 'hello' }] }),
+      })
+      expect(response.status).toBe(200)
+      expect(response.headers.get('x-nexus-preset-id')).toBe(secret === 'ccm_kb' ? 'KB-preset' : null)
+      await response.text()
+    }
+    const first = JSON.parse(fixture.upstream.mock.calls[0]![1].body)
+    const second = JSON.parse(fixture.upstream.mock.calls[1]![1].body)
+    expect(first.messages).toEqual([{ role: 'user', content: 'hello' }])
+    expect(second.messages).toEqual([{ role: 'system', content: 'Only KB' }, { role: 'user', content: 'hello' }])
+    expect(fixture.preset.mock.calls).toEqual([['KA'], ['KB']])
+  })
+  it('rejects a key bound to CPA and disabled or rebound signed original keys before model execution', async () => {
+    fixture.authenticate.mockResolvedValueOnce({ id: 'cpa-key', moduleId: 'cpa' })
+    const denied = await post(url)
+    expect(denied.status).toBe(403); await denied.text()
+    const originalId = 'original-client-key'
+    for (const original of [null, { id: originalId, moduleId: 'cpa' }]) {
+      fixture.originalKey.mockResolvedValueOnce(original)
+      const response = await actualFetch(url + '/v1/chat/completions', {
+        method: 'POST', headers: { authorization: 'Bearer ccm_nexus_test-bridge-key', 'content-type': 'application/json',
+          [ORIGINAL_KEY_ID_HEADER]: originalId, [ORIGINAL_KEY_SIGNATURE_HEADER]: signOriginalGatewayKey(originalId) },
+        body: JSON.stringify({ model: 'fixture/model', messages: [] }),
+      })
+      expect(response.status).toBe(403); await response.text()
+    }
+    expect(fixture.preset).not.toHaveBeenCalled()
+    expect(fixture.acquire).not.toHaveBeenCalled()
+    expect(fixture.upstream).not.toHaveBeenCalled()
   })
   it('rejects an unsupported protocol with exact official endpoint guidance before leasing an account', async () => {
     fixture.providerModel.mockResolvedValueOnce({ id: 'fixture/model', supportedEndpoints: ['messages'] })
@@ -200,10 +250,10 @@ describe('gateway over real HTTP connections', () => {
     expect(fixture.acquire).toHaveBeenCalledTimes(1)
     expect(fixture.upstream).toHaveBeenCalledTimes(1)
   })
-  it('retries an explicit nonstream model rejection on a different account and releases both leases', async () => {
-    fixture.preset.mockImplementation(async (_module, accountId) => ({
-      id: accountId, variables: {}, sourceJson: {
-        prompts: [{ identifier: 'main', role: 'system', content: 'Account ' + accountId }, { identifier: 'chatHistory', marker: true }],
+  it('retries a model rejection on another account while applying the same client key preset once', async () => {
+    fixture.preset.mockImplementation(async keyId => ({
+      id: keyId, variables: {}, sourceJson: {
+        prompts: [{ identifier: 'main', role: 'system', content: 'Key ' + keyId }, { identifier: 'chatHistory', marker: true }],
         prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] }],
       },
     }))
@@ -218,8 +268,9 @@ describe('gateway over real HTTP connections', () => {
     expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-b', status: 'success' }))
     const first = JSON.parse(fixture.upstream.mock.calls[0]![1].body)
     const second = JSON.parse(fixture.upstream.mock.calls[1]![1].body)
-    expect(first.messages).toEqual([{ role: 'system', content: 'Account account-a' }, { role: 'user', content: 'hello' }])
-    expect(second.messages).toEqual([{ role: 'system', content: 'Account account-b' }, { role: 'user', content: 'hello' }])
+    expect(first.messages).toEqual([{ role: 'system', content: 'Key gateway-key' }, { role: 'user', content: 'hello' }])
+    expect(second.messages).toEqual(first.messages)
+    expect(fixture.preset.mock.calls).toEqual([['gateway-key'], ['gateway-key']])
     expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ requestBody: second }))
   })
   it('never replays an ambiguous failure or a streaming request', async () => {

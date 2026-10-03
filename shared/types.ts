@@ -1,3 +1,5 @@
+import type { ModelModuleId } from './keys'
+
 export interface UsageWindow { used: number; cap: number; exceeded: boolean; resetAt: number }
 export interface AccountSnapshot {
   identity: { id: string; name: string; email: string | null }
@@ -26,7 +28,7 @@ export const DEFAULT_SETTINGS: SystemSettings = {
   refreshConcurrency: 2, refreshRatePerSecond: 2,
   logRetentionDays: 30, affinityTtlSeconds: 86400, maxRequestBodyMb: 16,
 }
-export interface GatewayKeyView { id: string; name: string; prefix: string; enabled: boolean; createdAt: string; lastUsedAt: string | null }
+export interface GatewayKeyView { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; createdAt: string; lastUsedAt: string | null }
 export interface RequestLogView {
   id: string; accountId: string | null; accountLabel: string | null; keyName: string | null
   model: string; protocol: string; status: string; httpStatus: number | null

@@ -20,20 +20,27 @@ describe('CPA management integration over real authenticated HTTP', () => {
   let upstream: Server | undefined
   let platform: Server | undefined
   let base: string
-  let calls: { path: string; headers: import('node:http').IncomingHttpHeaders; body: Buffer }[]
+  let calls: { path: string; method: string; headers: import('node:http').IncomingHttpHeaders; body: Buffer }[]
+  let accessKeys: string[]
   let stallApiCall: boolean
   let stalledResponse: ServerResponse | undefined
 
   beforeEach(async () => {
     calls = []
+    accessKeys = ['historical-key', 'private-core-client-key', 'another-historical-key']
     stallApiCall = false; stalledResponse = undefined
     upstream = createServer(async (req, res) => {
       const chunks: Buffer[] = []
       for await (const chunk of req) chunks.push(Buffer.from(chunk))
-      calls.push({ path: req.url || '', headers: req.headers, body: Buffer.concat(chunks) })
+      calls.push({ path: req.url || '', method: req.method || 'GET', headers: req.headers, body: Buffer.concat(chunks) })
       res.setHeader('X-CPA-VERSION', 'v8.0.11')
       res.setHeader('content-type', 'application/json')
-      if (req.url === '/v8/management/config') res.end('{"config-version":8}')
+      if (req.url === '/v8/management/config/access/api-keys') {
+        if (req.method === 'GET') res.end(JSON.stringify(accessKeys))
+        else if (req.method === 'PUT') { accessKeys = JSON.parse(Buffer.concat(chunks).toString()); res.end('{"status":"ok"}') }
+        else { res.statusCode = 405; res.end('{"error":"fixture expects normalized PUT"}') }
+      }
+      else if (req.url === '/v8/management/config') res.end('{"config-version":8}')
       else if (req.url === '/v8/management/plugins') res.end(JSON.stringify({ plugins: [{ id: 'example', effective_enabled: true, menus: [{ path: '/v0/resource/plugins/example/status' }] }] }))
       else if (req.url?.startsWith('/v8/management/credentials/download')) {
         res.setHeader('content-type', 'application/octet-stream')
@@ -56,6 +63,7 @@ describe('CPA management integration over real authenticated HTTP', () => {
     await new Promise<void>(resolve => upstream!.listen(0, '127.0.0.1', resolve))
     vi.stubEnv('CPA_URL', `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`)
     vi.stubEnv('CPA_MANAGEMENT_KEY', 'private-server-key')
+    vi.stubEnv('CPA_CLIENT_KEY', 'private-core-client-key')
     vi.stubEnv('CPA_PLUGIN_ROUTES', '[{"pluginId":"example","kind":"management","path":"/v0/management/example/refresh","methods":["POST"]}]')
     const app = createApp()
     app.use(adminMiddleware)
@@ -104,6 +112,41 @@ describe('CPA management integration over real authenticated HTTP', () => {
     expect(await response.json()).toEqual({ error: 'invalid_body' })
     expect(calls[0]!.body.toString()).toBe(body)
     expect(calls[0]!.headers.authorization).toBe('Bearer private-server-key')
+  })
+
+  it('identifies the reserved internal client key without changing the historical string array', async () => {
+    const response = await fetch(base + '/api/cpa/management/config/access/api-keys', { headers: ADMIN_HEADERS })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-nexus-reserved-key-index')).toBe('1')
+    expect(await response.json()).toEqual(accessKeys)
+  })
+
+  it.each(['PUT', 'PATCH'])('retains the private CPA credential while replacing historical keys with %s', async method => {
+    const response = await fetch(base + '/api/cpa/management/config/access/api-keys', {
+      method, headers: { ...ADMIN_HEADERS, 'content-type': 'application/json' }, body: '["replacement-key","replacement-key"]',
+    })
+    expect(response.status).toBe(200); await response.arrayBuffer()
+    expect(accessKeys).toEqual(['replacement-key', 'private-core-client-key'])
+    expect(calls.at(-1)).toMatchObject({ path: '/v8/management/config/access/api-keys', method: 'PUT' })
+    const listed = await fetch(base + '/api/cpa/management/config/access/api-keys', { headers: ADMIN_HEADERS })
+    expect(listed.headers.get('x-nexus-reserved-key-index')).toBe('1'); expect(await listed.json()).toEqual(accessKeys)
+  })
+
+  it('deletes historical keys but preserves the internal credential even through an encoded node path', async () => {
+    const response = await fetch(base + '/api/cpa/management/config/access/%61pi-keys', { method: 'DELETE', headers: ADMIN_HEADERS })
+    expect(response.status).toBe(200); await response.arrayBuffer()
+    expect(accessKeys).toEqual(['private-core-client-key'])
+    expect(calls.at(-1)?.method).toBe('PUT')
+    const listed = await fetch(base + '/api/cpa/management/config/access/api-keys', { headers: ADMIN_HEADERS })
+    expect(listed.headers.get('x-nexus-reserved-key-index')).toBe('0'); await listed.arrayBuffer()
+  })
+
+  it('rejects malformed client key arrays before changing the core configuration', async () => {
+    for (const body of ['{', '{}', '["valid",1]', '[""]', '["bad\\nkey"]']) {
+      const response = await fetch(base + '/api/cpa/management/config/access/api-keys', { method: 'PUT', headers: { ...ADMIN_HEADERS, 'content-type': 'application/json' }, body })
+      expect(response.status).toBe(400); await response.arrayBuffer()
+    }
+    expect(calls).toHaveLength(0); expect(accessKeys).toHaveLength(3)
   })
 
   it('preserves binary downloads and multipart upload bodies', async () => {

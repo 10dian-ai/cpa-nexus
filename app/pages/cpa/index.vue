@@ -10,7 +10,7 @@ async function checkVersion() {
 const features = [
   { to: '/cpa/credentials', title: '凭证与授权', description: '导入凭证、OAuth 登录、刷新和管理账号状态。', icon: 'i-ph-identification-card-bold' },
   { to: '/cpa/channels', title: '渠道与模型', description: '配置上游渠道、模型映射、路由与重试规则。', icon: 'i-ph-git-branch-bold' },
-  { to: '/cpa/keys', title: '客户端密钥', description: '管理通过 CPA 调用模型的客户端访问密钥。', icon: 'i-ph-key-bold' },
+  { to: '/keys', title: 'API Key', description: '统一创建模型 API Key，绑定 CPA 核心或扩展模块。', icon: 'i-ph-key-bold' },
   { to: '/cpa/plugins', title: '原生插件', description: '查看内核插件、配置和官方插件商店。', icon: 'i-ph-plugs-connected-bold' },
 ]
 </script>

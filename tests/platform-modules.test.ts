@@ -38,7 +38,7 @@ describe('persistent module state and real HTTP gating', () => {
     const app = createApp()
     app.use(modulesMiddleware)
     const router = createRouter()
-    for (const path of ['/v1/chat/completions', '/v1/models', '/api/accounts', '/api/accounts/actions', '/api/external/accounts', '/api/jobs/test', '/api/accounts-other']) {
+    for (const path of ['/v1/chat/completions', '/v1/models', '/nexus/cpa/v1/models', '/commandcode/v1/chat/completions', '/commandcode/v1/models', '/api/accounts', '/api/accounts/actions', '/api/external/accounts', '/api/jobs/test', '/api/accounts-other']) {
       router.use(path, defineEventHandler(() => ({ ok: true })))
     }
     router.patch('/api/modules/:id', updateModuleHandler)
@@ -60,7 +60,9 @@ describe('persistent module state and real HTTP gating', () => {
     expect(await update.json()).toEqual({ id: 'commandcode', enabled: false })
     expect(fixture.states.get('commandcode')).toBe(false)
     for (const [path, method, expected] of [
-      ['/v1/chat/completions', 'POST', 503], ['/v1/models', 'GET', 503],
+      // Unified model handlers validate the selected key's module themselves.
+      ['/v1/chat/completions', 'POST', 200], ['/v1/models', 'GET', 200], ['/nexus/cpa/v1/models', 'GET', 200],
+      ['/commandcode/v1/chat/completions', 'POST', 503], ['/commandcode/v1/models', 'GET', 503],
       ['/api/accounts', 'POST', 503], ['/api/accounts/actions', 'POST', 503], ['/api/external/accounts', 'POST', 503],
       ['/api/accounts', 'GET', 200], ['/api/external/accounts', 'GET', 200], ['/api/jobs/test', 'GET', 200], ['/api/accounts-other', 'POST', 200],
     ] as const) {

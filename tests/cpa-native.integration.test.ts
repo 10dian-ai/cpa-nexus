@@ -7,7 +7,14 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve, sep } from 'node:path'
 import { createApp, defineEventHandler, toNodeListener } from 'h3'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: async (secret: string) => secret.startsWith('ccm_') ? { id: 'original-native-client', name: 'native legacy client' } : null }))
+vi.mock('../server/lib/auth', () => ({
+  authenticateGatewayKey: async (secret: string) => !secret.startsWith('ccm_') || secret.startsWith('ccm_service_') ? null
+    : { id: secret.startsWith('ccm_nexus_') ? 'native-bridge' : 'original-native-client', name: 'native legacy client', moduleId: 'commandcode' },
+  findEnabledModelKey: async (id: string) => id === 'original-native-client' ? { id, name: 'native legacy client', moduleId: 'commandcode' } : null,
+  requireModelKeyModule: async (key: { moduleId?: string }, moduleId: string) => {
+    if ((key.moduleId || 'commandcode') !== moduleId) throw Object.assign(new Error('Key is bound to another module'), { statusCode: 403 })
+  },
+}))
 vi.mock('../server/lib/modules', () => ({ requireModule: async () => {} }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: 1 }) }))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: Buffer.alloc(32, 9).toString('base64') }) }))

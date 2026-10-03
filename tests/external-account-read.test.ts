@@ -10,6 +10,7 @@ const fixture = vi.hoisted(() => ({
   zcount: vi.fn(),
   exec: vi.fn(),
   serviceEnabled: true,
+  commandcodeEnabled: true,
   rows: [] as Record<string, unknown>[],
 }))
 vi.mock('../server/lib/db', () => ({ getDb: () => fixture.db }))
@@ -22,6 +23,7 @@ import adminMiddleware from '../server/middleware/admin'
 import listAccountsHandler from '../server/api/external/accounts.get'
 import getAccountHandler from '../server/api/external/accounts/[id].get'
 import { hashGatewayKey } from '../server/lib/crypto'
+import { resetModuleCache } from '../server/lib/modules'
 
 const accountId = '70927070-3573-4d4f-a687-9f82d04c1ca2'
 const serviceSecret = 'ccm_service_' + 'a'.repeat(43)
@@ -34,6 +36,7 @@ describe('external account reads over HTTP', () => {
   beforeEach(async () => {
     vi.resetAllMocks()
     fixture.serviceEnabled = true
+    fixture.commandcodeEnabled = true; resetModuleCache()
     fixture.rows = [{
       id: accountId, label: 'Payment account', email: 'billing@example.invalid', group_name: 'paid', note: '',
       enabled: true, quota_paused: false, quota_resume_at: null, status: 'ready', max_concurrency: 2,
@@ -43,6 +46,7 @@ describe('external account reads over HTTP', () => {
     }]
     fixture.db.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join('?')
+      if (query.includes('FROM platform_modules')) return [{ enabled: fixture.commandcodeEnabled }]
       if (query.includes('FROM service_keys')) return fixture.serviceEnabled && values[0] === hashGatewayKey(serviceSecret) ? [{ id: 'service-key-id', name: 'Account reader' }] : []
       if (query.includes('UPDATE service_keys')) return []
       if (query.startsWith('WHERE ')) return { query, values }
@@ -69,6 +73,7 @@ describe('external account reads over HTTP', () => {
   afterEach(async () => {
     if (server) await new Promise<void>(resolve => { server!.close(() => resolve()); server!.closeAllConnections() })
     vi.restoreAllMocks()
+    resetModuleCache()
   })
 
   const get = (path = '/api/external/accounts', headers: Record<string, string> = authorization) => fetch(baseUrl + path, { headers })
@@ -156,5 +161,14 @@ describe('external account reads over HTTP', () => {
     }
     expect(accountQueries()).toHaveLength(0)
     expect(fixture.pipeline).not.toHaveBeenCalled()
+  })
+
+  it('pauses both external account read routes while CommandCode is disabled', async () => {
+    fixture.commandcodeEnabled = false
+    for (const path of ['/api/external/accounts', '/api/external/accounts/' + accountId]) {
+      const response = await get(path)
+      expect(response.status).toBe(503); await response.arrayBuffer()
+    }
+    expect(accountQueries()).toHaveLength(0); expect(fixture.pipeline).not.toHaveBeenCalled()
   })
 })

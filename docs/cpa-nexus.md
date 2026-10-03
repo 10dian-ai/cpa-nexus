@@ -174,14 +174,20 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 | `COMMANDCODE_API_URL` | 默认 `https://api.commandcode.ai/provider/v1`，官方推理地址 |
 | `COMMANDCODE_MANAGEMENT_URL` | 默认 `https://api.commandcode.ai`，官方账号管理地址 |
 | `CPA_MANAGEMENT_KEY` | 仅后台调用 CPA 管理接口，不能给模型客户端 |
-| `CPA_CLIENT_KEY` | 初始 CPA 全渠道模型 Key |
-| CommandCode 桥接 Key | CPA 到模块的专用 `ccm_` Key，由模块接入操作建立 |
-| 原有 `ccm_` Key | 仅访问 CommandCode 模块 |
-| 原有服务 Key | `/api/external/*` 外调 API，与模型 Key 分开 |
+| `CPA_CLIENT_KEY` | 平台调用 CPA 的内部凭证；保留在 CPA 的 access/api-keys 配置中 |
+| 统一模型 API Key | `ccm_` 前缀，在统一 API Key 页面绑定 CPA 或 CommandCode，一个 Key 对应一个模块 |
+| CommandCode 桥接 Key | CPA 到模块的内部 `ccm_nexus_` Key，由模块接入建立，普通 Key 列表隐藏并禁止修改 |
+| 原有 `ccm_` Key | 升级后默认绑定 CommandCode，保持原客户端调用 |
+| 外调服务 API Key | `ccm_service_` 前缀，专用于 CommandCode 的 `/api/external/*`，与模型 Key 独立验证 |
+| 历史 CPA 客户端 Key | 保留原生兼容调用，在统一页面的历史密钥区管理，不参与按 Key 的预设路由 |
 | `CPA_URL` | 生产容器内 `http://cpa:8317` |
 | `CPA_COMMANDCODE_BASE_URL` | 生产容器内 `http://app:3000/v1` |
 
 面板接入模块后建立内部桥接 Key，并向 CPA 注册兼容上游；模型别名带 `commandcode/`。官方目录和账号权限刷新后，模块更新可用模型；模型只能使用官方声明支持的 endpoint。
+
+客户端统一进入 **API Key → 创建 API Key**，模型类型选择绑定模块。绑定 CPA 的 Key 读取 CPA 原生模型列表，不能调用 `commandcode/` 模型；绑定 CommandCode 的 Key 读取账号池模型列表并使用原模型 ID。切换绑定后权限按新模块检查。CommandCode 开启时创建窗口会增加 **外调服务 API Key** 类型；模块停用后模型调用与全部外调调用暂停，现有 Key 和数据保留。
+
+历史 CPA 客户端 Key 可逐个迁移为绑定 CPA 的模型 Key。迁移后仅撤销对应日常客户端旧 Key；`CPA_CLIENT_KEY` 仍用于内部转发。历史密钥节点的列表响应用 `x-nexus-reserved-key-index` 标记该内部凭证，保存或删除整个历史列表时平台会保留它。高级完整 JSON/YAML 配置编辑仍需保留这一凭证。
 
 官方 Provider 模型目录每 5 分钟刷新，官网套餐说明每 15 分钟刷新；记录来源、成功获取时间及刷新失败状态。面板可通过 `GET /api/official/catalog` 查询，通过 `POST /api/official/refresh` 手动更新，这两个接口要求管理员登录。具体套餐依据和刷新规则见 [官方目录说明](official-catalog.md)。
 
@@ -194,15 +200,15 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 | `POST /api/external/accounts` | app，原外调账号添加/批量导入入口 | 独立服务 Key |
 | `/api/external/accounts`、`/api/external/accounts/:id`、`/api/external/jobs/:id`、`/api/external/pool` | app，外调账号、任务与池信息 | 独立服务 Key |
 | `/api/cpa/*`、`/api/modules/*`、其余平台 `/api/*` | app，平台与 CPA 管理适配 | 管理员登录 |
-| `/v1/models`、`/v1/chat/completions`、`/v1/messages`、`/v1/responses` | app 分流及可选预设 → CPA → 原生账号或模块 | CPA 模型 Key 或原 `ccm_` Key |
-| 其余 `/v1/*`、`/v1beta/*`、`/openai/v1/*`、`/backend-api/codex/*`、`/api/provider/*` | CPA，原生模型协议；标准 Chat/Messages/Responses 使用相同预设适配入口 | CPA 模型 Key |
-| `/commandcode/v1/*` | app 旧客户端兼容入口，验证原 Key 后通过 CPA 转换格式 | 模块 `ccm_` Key |
-| `/v1/systemone`、`/cpa-api/v1/systemone` | app，官方 System One 专门入口；CPA 未实现该协议 | 模块 `ccm_` Key |
-| `/cpa-api/*` | CPA，移除前缀后访问原生模型路径；标准 Chat/Messages/Responses 使用相同适配入口，System One 除外 | CPA 模型 Key |
+| `/v1/models`、`/v1/chat/completions`、`/v1/messages`、`/v1/responses` | app 按 Key 模块绑定分流及可选预设 → CPA → 原生账号或模块 | 统一模型 `ccm_` Key；历史 CPA 客户端 Key 保留兼容 |
+| `/commandcode/v1/*` | app 模块兼容入口，验证模块绑定后通过 CPA 转换格式 | 绑定 CommandCode 的 `ccm_` Key |
+| `/v1/systemone`、`/cpa-api/v1/systemone` | app，官方 System One 专门入口；CPA 未实现该协议 | 绑定 CommandCode 的 `ccm_` Key |
+| 标准 HTTP `/openai/v1/`、`/cpa-api/v1/` 下的 models、chat/completions、messages、responses | app，使用相同的统一模型适配入口 | 统一模型 Key 或历史 CPA 客户端 Key |
+| 其余 `/v1/*`、`/v1beta/*`、`/openai/v1/*`、`/backend-api/codex/*`、`/api/provider/*`、`/cpa-api/*`，以及原生 WebSocket | CPA 原生模型协议；`/cpa-api/` 移除前缀 | 历史 CPA 客户端 Key；统一 `ccm_` Key 尚不适用于这些协议 |
 
-原 `ccm_` 客户端既可继续使用 `/v1`，也可使用独立 `/commandcode/v1`；密钥前缀自动选择 CommandCode 兼容链路。酒馆预设是默认关闭的可选处理模块，支持 JSON 导入编辑和模块/账号路由，部署不增加依赖；完整操作、协议边界及账号前缀说明见 [预设模块](presets.md)。
+所有统一模型 Key 使用同一个 `https://你的域名/v1` Base URL，由数据库中保存的模块绑定决定调用 CPA 还是 CommandCode。原 `ccm_` 客户端默认保留 CommandCode 绑定，也可继续使用独立 `/commandcode/v1`。CommandCode 停用不会阻断 CPA 原生模型调用。
 
-继续使用 `ccm_` Key 的旧客户端可把 Base URL 改为 `https://你的域名/commandcode/v1`。使用 CPA 其他渠道或 `commandcode/` 别名则用 `https://你的域名/v1`、CPA 模型 Key 和 CPA 模型列表。两种 Key 不能混用。
+酒馆预设是默认关闭的可选处理模块，在酒馆页面选择模型 API Key 后绑定预设。例如 KA 保持直连，KB 选择某个预设，使用 KB 的 Chat/Messages/Responses 请求才应用该预设。上游账号选择不影响这一规则；原有账号/模块预设记录保留，但统一 Key 不继承旧路由。完整操作和协议边界见 [预设模块](presets.md)。
 
 入口支持 SSE、WebSocket、长连接和断开取消，请求体上限为 256 MB，模块另有请求限制。CPA 管理 API、`management.html`、原生管理资源和 `/cpa-api/` 下的配置、凭证、插件及日志文件禁止公网直连；面板通过登录后的后台适配器访问管理接口。
 

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import type { TransactionSql } from 'postgres'
 import { getDb } from './db'
 import { isModuleEnabled } from './modules'
 import { findModule } from '../../shared/modules'
 import { ensureCpaPresetAccountRoute } from './cpa/preset-routing'
 import { platformError } from './platform-error'
 import { inspectPreset, parsePresetJson, validatePresetVariables } from './presets/engine'
-import type { PresetBinding, PresetRouteInput, PresetView } from '../../shared/presets'
+import type { KeyPresetBinding, KeyPresetRouteInput, PresetBinding, PresetRouteInput, PresetView } from '../../shared/presets'
 
 type PresetRow = Record<string, any>
 export interface PresetWriteInput { name: string; description?: string; sourceJson: unknown; variables?: unknown }
@@ -14,6 +15,7 @@ const missing = () => platformError({ statusCode: 404, message: '预设不存在
 const iso = (value: unknown) => new Date(value as string).toISOString()
 const view = (row: PresetRow): PresetView => ({ id: row.id, name: row.name, description: row.description, sourceJson: row.source_json, variables: row.variables, compatibility: inspectPreset(row.source_json, row.variables), createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) })
 const bindingView = (row: PresetRow): PresetBinding => ({ moduleId: row.module_id, accountId: row.account_id || null, mode: row.mode, presetId: row.preset_id || null, updatedAt: iso(row.updated_at) })
+const keyBindingView = (row: PresetRow): KeyPresetBinding => ({ keyId: row.key_id, moduleId: row.module_id, mode: row.mode, presetId: row.preset_id || null, updatedAt: iso(row.updated_at) })
 const routeCache = new Map<string, { value: PresetView | null; until: number }>()
 let routeCacheGeneration = 0
 export function resetPresetRouteCache() { routeCache.clear(); routeCacheGeneration++ }
@@ -26,6 +28,10 @@ function writeInput(input: PresetWriteInput) {
   return { name, description, sourceJson, variables, compatibility: inspectPreset(sourceJson, variables) }
 }
 export const validatePreset = writeInput
+async function presetIsBound(sql: TransactionSql, id: string) {
+  if ((await sql`SELECT 1 FROM nexus_preset_bindings WHERE preset_id=${id} LIMIT 1`).length) return true
+  return (await sql`SELECT 1 FROM nexus_key_preset_bindings WHERE preset_id=${id} LIMIT 1`).length > 0
+}
 export async function listPresets(): Promise<PresetView[]> {
   return (await getDb()`SELECT * FROM nexus_presets ORDER BY updated_at DESC,id LIMIT 1000`).map(view)
 }
@@ -54,7 +60,7 @@ export async function updatePreset(id: string, input: Partial<PresetWriteInput>)
     const current = (await tx`SELECT * FROM nexus_presets WHERE id=${id} FOR UPDATE`)[0]
     if (!current) throw missing()
     const value = writeInput({ name: input.name ?? current.name, description: input.description ?? current.description, sourceJson: input.sourceJson ?? current.source_json, variables: input.variables ?? current.variables })
-    if (!value.compatibility.supported && (await tx`SELECT 1 FROM nexus_preset_bindings WHERE preset_id=${id} LIMIT 1`).length) throw platformError({ statusCode: 409, message: '这个预设仍被路由使用，不能保存会导致调用失败的内容；请先解除绑定', data: { issues: value.compatibility.issues } })
+    if (!value.compatibility.supported && await presetIsBound(tx, id)) throw platformError({ statusCode: 409, message: '这个预设仍被路由使用，不能保存会导致调用失败的内容；请先解除绑定', data: { issues: value.compatibility.issues } })
     const rows = await tx`UPDATE nexus_presets SET name=${value.name},description=${value.description},source_json=${tx.json(value.sourceJson as any)},variables=${tx.json(value.variables)},updated_at=now() WHERE id=${id} RETURNING *`
     return view(rows[0]!)
   }) as unknown as PresetView
@@ -65,7 +71,7 @@ export async function deletePreset(id: string) {
   if (!idValid(id)) throw missing()
   const result = await getDb().begin(async tx => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended('nexus:presets:write',0))`
-    if ((await tx`SELECT 1 FROM nexus_preset_bindings WHERE preset_id=${id} LIMIT 1`).length) throw platformError({ statusCode: 409, message: '预设仍被模块或账号使用，请先解除绑定' })
+    if (await presetIsBound(tx, id)) throw platformError({ statusCode: 409, message: '预设仍被 API key 或旧路由使用，请先解除绑定' })
     if (!(await tx`DELETE FROM nexus_presets WHERE id=${id} RETURNING id`).length) throw missing()
     return { deleted: true }
   })
@@ -74,6 +80,50 @@ export async function deletePreset(id: string) {
 }
 export async function listPresetBindings(): Promise<PresetBinding[]> {
   return (await getDb()`SELECT * FROM nexus_preset_bindings ORDER BY module_id,account_id LIMIT 10000`).map(bindingView)
+}
+export async function listKeyPresetBindings(): Promise<KeyPresetBinding[]> {
+  return (await getDb()`SELECT b.*,k.module_id FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id WHERE left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa') ORDER BY b.updated_at DESC,b.key_id LIMIT 10000`).map(keyBindingView)
+}
+export async function setKeyPresetBinding(input: KeyPresetRouteInput): Promise<KeyPresetBinding | null> {
+  if (!idValid(input.keyId)) throw platformError({ statusCode: 400, message: '请选择有效的模型 API key' })
+  if (!['inherit', 'bypass', 'preset'].includes(input.mode)) throw platformError({ statusCode: 400, message: '路由模式无效' })
+  if (input.mode === 'preset' && (!input.presetId || !idValid(input.presetId))) throw platformError({ statusCode: 400, message: '请选择有效预设' })
+  if (input.mode !== 'preset' && input.presetId) throw platformError({ statusCode: 400, message: '默认或直连模式不能指定预设' })
+  const result = await getDb().begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended('nexus:presets:write',0))`
+    // Removing an obsolete binding also works after a key has been revoked.
+    if (input.mode === 'inherit') { await tx`DELETE FROM nexus_key_preset_bindings WHERE key_id=${input.keyId}`; return null }
+    const key = (await tx`SELECT id,module_id FROM gateway_keys WHERE id=${input.keyId} AND left(prefix,10)<>'ccm_nexus_' AND module_id IN ('commandcode','cpa') FOR KEY SHARE`)[0]
+    if (!key) throw platformError({ statusCode: 404, message: '模型 API key 不存在，内部桥接密钥和外调服务密钥不能绑定预设' })
+    if (input.mode === 'preset') {
+      const row = (await tx`SELECT * FROM nexus_presets WHERE id=${input.presetId!}`)[0]
+      if (!row) throw missing()
+      const compatibility = inspectPreset(row.source_json, row.variables)
+      if (!compatibility.supported) throw platformError({ statusCode: 422, message: '预设尚未兼容，请修复提示词或填写变量后再绑定', data: { issues: compatibility.issues } })
+    }
+    const rows = await tx`INSERT INTO nexus_key_preset_bindings(key_id,mode,preset_id) VALUES(${input.keyId},${input.mode},${input.mode === 'preset' ? input.presetId! : null}) ON CONFLICT(key_id) DO UPDATE SET mode=EXCLUDED.mode,preset_id=EXCLUDED.preset_id,updated_at=now() RETURNING *`
+    return keyBindingView({ ...rows[0], module_id: key.module_id })
+  }) as unknown as KeyPresetBinding | null
+  resetPresetRouteCache()
+  return result
+}
+
+/** A model key uses only its own explicit preset, never an account or module default. */
+export async function resolveKeyPresetRoute(keyId: string): Promise<PresetView | null> {
+  if (!await isModuleEnabled('presets')) return null
+  const cacheKey = `key\0${keyId}`, cached = routeCache.get(cacheKey)
+  if (cached && cached.until > Date.now()) return cached.value
+  const generation = routeCacheGeneration
+  const rows = await getDb()`SELECT b.mode,p.* FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id LEFT JOIN nexus_presets p ON p.id=b.preset_id WHERE b.key_id=${keyId} AND left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa') LIMIT 1`
+  const row = rows[0]
+  if (row && row.mode !== 'bypass' && !row.id) throw platformError({ statusCode: 503, message: 'API key 绑定的预设不可用' })
+  const value = !row || row.mode === 'bypass' ? null : view(row)
+  if (generation === routeCacheGeneration) {
+    routeCache.delete(cacheKey)
+    if (routeCache.size >= 128) routeCache.delete(routeCache.keys().next().value!)
+    routeCache.set(cacheKey, { value, until: Date.now() + 2000 })
+  }
+  return value
 }
 async function validateAccount(moduleId: string, accountId: string) {
   if (moduleId === 'commandcode') {

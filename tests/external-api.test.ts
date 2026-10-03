@@ -11,6 +11,7 @@ const fixture = vi.hoisted(() => ({
   zcount: vi.fn(),
   kernel: vi.fn(),
   serviceEnabled: true,
+  commandcodeEnabled: true,
   accounts: { total: 19, enabled: 14, ready: 8, attention: 3, pending: 6, last_sync_at: '2026-09-12T01:02:03Z' } as Record<string, any>,
   requests: { total: 39, success: 20, failed: 7 },
 }))
@@ -31,6 +32,7 @@ import adminImportHandler from '../server/api/accounts/import.post'
 import adminDashboardHandler from '../server/api/dashboard.get'
 import { hashGatewayKey } from '../server/lib/crypto'
 import { SESSION_COOKIE } from '../server/lib/account-import'
+import { resetModuleCache } from '../server/lib/modules'
 
 const serviceSecret = 'ccm_service_' + 'a'.repeat(43)
 const jobId = '70927070-3573-4d4f-a687-9f82d04c1ca2'
@@ -46,11 +48,13 @@ describe('external account and pool API over HTTP', () => {
   beforeEach(async () => {
     vi.resetAllMocks()
     fixture.serviceEnabled = true
+    fixture.commandcodeEnabled = true; resetModuleCache()
     fixture.accounts = { total: 19, enabled: 14, ready: 8, attention: 3, pending: 6, last_sync_at: '2026-09-12T01:02:03Z' }
     fixture.queueImport.mockResolvedValue(receipt)
     fixture.getJob.mockResolvedValue(undefined)
     fixture.db.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join('?')
+      if (query.includes('FROM platform_modules')) return [{ enabled: fixture.commandcodeEnabled }]
       if (query.includes('FROM service_keys')) return fixture.serviceEnabled && values[0] === hashGatewayKey(serviceSecret) ? [{ id: 'service-key-id', name: 'External importer' }] : []
       if (query.includes('UPDATE service_keys')) return []
       if (query.includes('AS has_api_key')) return Array.from({length:8},()=>({enabled:true,status:'ready',has_api_key:true,snapshot:null}))
@@ -80,6 +84,7 @@ describe('external account and pool API over HTTP', () => {
   afterEach(async () => {
     if (server) await new Promise<void>(resolve => { server!.close(() => resolve()); server!.closeAllConnections() })
     vi.restoreAllMocks()
+    resetModuleCache()
   })
 
   const post = (body: unknown, path = '/api/external/accounts', headers: Record<string, string> = authorization) => fetch(baseUrl + path, {
@@ -134,6 +139,17 @@ describe('external account and pool API over HTTP', () => {
     fixture.serviceEnabled = false
     expect((await fetch(baseUrl + '/api/external/pool', { headers: authorization })).status).toBe(401)
     expect(fixture.kernel).not.toHaveBeenCalled()
+  })
+
+  it('pauses external imports, job reads and pool reads when CommandCode is disabled', async () => {
+    fixture.commandcodeEnabled = false
+    const imported = await post({ token })
+    expect(imported.status).toBe(503); await imported.arrayBuffer()
+    for (const path of ['/api/external/jobs/' + jobId, '/api/external/pool']) {
+      const response = await fetch(baseUrl + path, { headers: authorization })
+      expect(response.status).toBe(503); await response.arrayBuffer()
+    }
+    expect(fixture.queueImport).not.toHaveBeenCalled(); expect(fixture.getJob).not.toHaveBeenCalled(); expect(fixture.kernel).not.toHaveBeenCalled()
   })
 
   it.each(['waiting', 'active', 'completed', 'failed'])('reports the %s import state without credentials or internal failure details', async state => {

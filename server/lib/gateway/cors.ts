@@ -29,7 +29,7 @@ export function gatewayCors(pathname: string, method: string, requestedHeaders?:
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'access-control-allow-headers': [...allowed].join(', '),
-    'access-control-expose-headers': 'x-request-id, retry-after',
+    'access-control-expose-headers': 'x-request-id, retry-after, x-nexus-preset-id',
     vary: 'Access-Control-Request-Headers',
   }
   if (preflight) headers['access-control-max-age'] = '600'

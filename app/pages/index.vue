@@ -28,6 +28,6 @@ async function reload() { await Promise.all([refresh(), refreshCpa()]) }
         <div class="nexus-module-row-actions"><StatusBadge :status="module.status === 'ready' ? 'ready' : module.status === 'disabled' ? 'disabled' : 'sync_error'" :label="labels[module.status]" /><NuxtLink :to="module.navigation[0]?.to || '/modules'" class="button">打开模块<UIcon name="i-ph-arrow-right-bold" /></NuxtLink></div>
       </article>
     </section>
-    <section class="panel"><div class="panel-heading"><h2>开始使用</h2></div><ol class="nexus-start-list"><li><NuxtLink to="/cpa">确认 CPA 核心连接</NuxtLink><span>初始化独立配置，检查当前运行版本与服务状态。</span></li><li><NuxtLink to="/cpa/credentials">接入原生渠道</NuxtLink><span>导入凭证或完成 OAuth 登录，配置实际可用的上游。</span></li><li><NuxtLink to="/modules">连接 CommandCode 模块</NuxtLink><span>在模块管理中注册渠道，客户端使用 commandcode/ 开头的模型名称。</span></li><li><NuxtLink to="/cpa/keys">管理 CPA 客户端密钥</NuxtLink><span>统一模型入口使用 CPA 密钥；现有模块密钥继续保留。</span></li></ol></section>
+    <section class="panel"><div class="panel-heading"><h2>开始使用</h2></div><ol class="nexus-start-list"><li><NuxtLink to="/cpa">确认 CPA 核心连接</NuxtLink><span>初始化独立配置，检查当前运行版本与服务状态。</span></li><li><NuxtLink to="/cpa/credentials">接入原生渠道</NuxtLink><span>导入凭证或完成 OAuth 登录，配置实际可用的上游。</span></li><li><NuxtLink to="/modules">连接 CommandCode 模块</NuxtLink><span>在模块管理中注册渠道，客户端使用 commandcode/ 开头的模型名称。</span></li><li><NuxtLink to="/keys">创建 API Key</NuxtLink><span>为模型密钥选择绑定模块，客户端统一使用 /v1 入口。</span></li></ol></section>
   </template>
 </template>

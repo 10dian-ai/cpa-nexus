@@ -41,6 +41,8 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
   const secret = typeof auth === 'string' && /^Bearer\s+/i.test(auth) ? auth.replace(/^Bearer\s+/i, '').trim() : typeof xKey === 'string' ? xKey.trim() : ''
   const key = secret ? await authenticateGatewayKey(secret) : null
   if (!key) { error(event, path, 401, 'authentication_error', 'A valid manager API key is required'); return }
+  if ((key.moduleId || 'commandcode') !== 'commandcode') { error(event, path, 403, 'module_binding_error', 'This API key is not bound to Command Code'); return }
+  if (secret.startsWith('ccm_nexus_')) { error(event, path, 401, 'authentication_error', 'Use a client model key instead of the internal bridge key'); return }
   if (path === 'models') return listGatewayModels()
   let body: Record<string, unknown>
   try { body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024) }
@@ -78,7 +80,7 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
     event.node.res.setHeader('content-type', upstream.headers.get('content-type') || 'application/json; charset=utf-8')
     event.node.res.setHeader('cache-control', 'no-store')
     event.node.res.setHeader('x-accel-buffering', 'no')
-    for (const name of ['retry-after', 'x-request-id']) { const value = upstream.headers.get(name); if (value) event.node.res.setHeader(name, value) }
+    for (const name of ['retry-after', 'x-request-id', 'x-nexus-preset-id']) { const value = upstream.headers.get(name); if (value) event.node.res.setHeader(name, value) }
     while (true) {
       resetIdle()
       const next = await reader.read()

@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createApp, createRouter, defineEventHandler, getHeader, toNodeListener } from 'h3'
+import { createApp, createError, createRouter, defineEventHandler, getHeader, toNodeListener } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface StoredKey {
@@ -13,7 +13,11 @@ const fixture = vi.hoisted(() => ({
   sessions: new Map<string, string>(),
   queries: [] as { sql: string; values: unknown[] }[],
   publish: vi.fn(async () => 1),
+  commandcodeEnabled: true,
 }))
+vi.mock('../server/lib/modules', () => ({ requireModule: async (id: string) => {
+  if (id === 'commandcode' && !fixture.commandcodeEnabled) throw createError({ statusCode: 503, message: 'CommandCode 模块已停用' })
+} }))
 vi.mock('../server/lib/db', () => ({
   getDb: () => async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?').replace(/\s+/g, ' ').trim()
@@ -93,6 +97,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
 
   beforeEach(async () => {
     fixture.serviceKeys.clear(); fixture.gatewayKeys.clear(); fixture.sessions.clear(); fixture.queries.length = 0
+    fixture.commandcodeEnabled = true
     fixture.publish.mockClear()
     seedKey(fixture.serviceKeys, SERVICE_ID, SERVICE_KEY, 'External worker')
     seedKey(fixture.gatewayKeys, GATEWAY_ID, GATEWAY_KEY, 'Model client')
@@ -194,7 +199,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
     const rejected = await request('/v1/models-probe', { headers: bearer() })
     expect(await rejected.json()).toEqual({ key: null })
     const accepted = await request('/v1/models-probe', { headers: bearer(GATEWAY_KEY) })
-    expect(await accepted.json()).toEqual({ key: { id: GATEWAY_ID, name: 'Model client' } })
+    expect(await accepted.json()).toEqual({ key: { id: GATEWAY_ID, name: 'Model client', moduleId: 'commandcode' } })
     const serviceQueries = fixture.queries.filter(query => query.sql.startsWith('SELECT') && query.sql.includes('service_keys'))
     expect(serviceQueries).toHaveLength(0)
   })
@@ -335,5 +340,19 @@ describe('independent service keys over real H3 HTTP connections', () => {
     expect(fixture.serviceKeys.size).toBe(1)
     expect(fixture.serviceKeys.get(SERVICE_ID)?.enabled).toBe(true)
     expect(fixture.publish).not.toHaveBeenCalled()
+  })
+
+  it('gates creation and external calls on CommandCode while retaining management of existing service keys', async () => {
+    fixture.commandcodeEnabled = false
+    const call = await request('/api/external/probe', { headers: bearer() })
+    expect(call.status).toBe(503); await call.arrayBuffer()
+    const create = await adminRequest('/api/service-keys', 'POST', { name: 'Unavailable importer' })
+    expect(create.status).toBe(503); await create.arrayBuffer()
+    expect(fixture.serviceKeys.size).toBe(1)
+    const listed = await adminRequest('/api/service-keys')
+    expect(listed.status).toBe(200); expect((await listed.json()).items).toHaveLength(1)
+    const revoke = await adminRequest(`/api/service-keys/${SERVICE_ID}`, 'DELETE')
+    expect(revoke.status).toBe(200); await revoke.arrayBuffer()
+    expect(fixture.serviceKeys.has(SERVICE_ID)).toBe(false)
   })
 })

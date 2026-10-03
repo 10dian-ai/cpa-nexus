@@ -28,6 +28,18 @@ export interface PresetRouteInput {
   mode: 'inherit' | 'preset' | 'bypass'
   presetId?: string | null
 }
+export interface KeyPresetBinding {
+  keyId: string
+  moduleId: 'commandcode' | 'cpa'
+  mode: 'preset' | 'bypass'
+  presetId: string | null
+  updatedAt: string
+}
+export interface KeyPresetRouteInput {
+  keyId: string
+  mode: 'inherit' | 'preset' | 'bypass'
+  presetId?: string | null
+}
 export type PresetProtocol = 'chat' | 'messages' | 'responses'
 export interface PresetApplyOptions {
   protocol: PresetProtocol

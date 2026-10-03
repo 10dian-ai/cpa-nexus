@@ -32,21 +32,23 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
       { to: '/accounts', label: '账号管理', icon: 'i-ph-users-three-bold' },
       { to: '/official', label: '官方模型与套餐', icon: 'i-ph-globe-bold' },
       { to: '/models', label: '模型权限', icon: 'i-ph-cube-bold' },
-      { to: '/keys', label: '模块密钥', icon: 'i-ph-key-bold' },
       { to: '/logs', label: '模块日志', icon: 'i-ph-list-bullets-bold' },
     ],
   },
   {
     id: 'presets', name: '酒馆预设', kind: 'extension', required: false, defaultEnabled: false, version: '0.1.0',
-    description: '导入、编辑酒馆 JSON 预设，为模块和账号选择请求处理路由。',
-    capabilities: ['JSON 导入与导出', '提示词编排', '采样参数', '模块与账号路由'],
+    description: '导入、编辑酒馆 JSON 预设，为模块和 API Key 选择请求处理路由。',
+    capabilities: ['JSON 导入与导出', '提示词编排', '采样参数', '模块与 API Key 路由'],
     navigation: [{ to: '/presets', label: '酒馆预设', icon: 'i-ph-sliders-horizontal-bold' }],
   },
   {
     id: 'platform', name: '平台管理', kind: 'platform', required: true, version: '0.2.0',
     description: '统一管理员登录、模块管理和部署配置。',
-    capabilities: ['管理员会话', '模块状态', '持久化设置', '部署与版本适配'],
-    navigation: [{ to: '/modules', label: '模块管理', icon: 'i-ph-stack-bold' }],
+    capabilities: ['管理员会话', '模块状态', 'API Key 管理', '持久化设置', '部署与版本适配'],
+    navigation: [
+      { to: '/modules', label: '模块管理', icon: 'i-ph-stack-bold' },
+      { to: '/keys', label: 'API Key', icon: 'i-ph-key-bold' },
+    ],
   },
 ]
 
@@ -55,7 +57,7 @@ export function findModule(id: string): ModuleManifest | undefined {
 }
 
 export function gatedModuleForRequest(path: string, method: string): string | null {
-  if (/^(?:\/commandcode)?\/v1(?:\/|$)/.test(path)) return 'commandcode'
+  if (/^\/commandcode\/v1(?:\/|$)/.test(path)) return 'commandcode'
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) &&
       /^\/api\/(?:accounts|external\/accounts)(?:\/|$)/.test(path)) return 'commandcode'
   return null

@@ -4,11 +4,12 @@
 
 ## 功能
 
-- CPA 配置、凭证与 OAuth、渠道与模型、客户端密钥、日志与用量、原生插件。
+- CPA 配置、凭证与 OAuth、渠道与模型、日志与用量、原生插件。
+- 统一 API Key 页面：模型 Key 绑定 CPA 或 CommandCode，按 Key 启停、撤销和选择预设；CommandCode 开启后可创建外调服务 Key。
 - GOAT 账号池：批量导入、保活、真实额度、自动恢复、并发租约、会话亲和和调用日志。
 - 官方模型与套餐目录：准确模型 ID、原生协议、包含范围、来源和检查时间；未知资料保留未知。
 - 原加账号、外调、任务、账号、密钥、日志与设置接口保留。
-- 可选酒馆 JSON 预设：提示词/参数编辑、模块默认路由和单账号路由。
+- 可选酒馆 JSON 预设：提示词/参数编辑，为不同模型 API Key 选择直连或预设处理。
 - PostgreSQL 持久数据与官网快照，Redis 队列、并发、会话和缓存。
 
 ## Ubuntu / 1Panel 部署
@@ -21,9 +22,9 @@ bash scripts/deploy.sh up
 
 脚本使用一次性 Node 容器初始化配置并构建启动，无需宿主机安装 Node。已有 `.env`、加密密钥、配置及数据不会覆盖。部署固定 CPA 版本，不自动替换内核。
 
-管理员用户名与密码位于 `.env`；CPA 客户端初始 Key 位于 `.env.cpa`。默认只绑定主机 `127.0.0.1:3000`。正式域名部署前配置 HTTPS `APP_URL`。
+管理员用户名与密码位于 `.env`；`.env.cpa` 的 `CPA_CLIENT_KEY` 用于平台内部调用 CPA，应保留在内核访问密钥配置中。日常客户端 Key 在面板 **API Key** 页面创建。默认只绑定主机 `127.0.0.1:3000`。正式域名部署前配置 HTTPS `APP_URL`。
 
-首次登录：导入 GOAT Cookie → 查看账号同步 → 在官方目录确认更新 → 在模块管理接入 CommandCode → 使用 CPA Key 和 `commandcode/<原模型ID>`。
+首次登录：导入 GOAT Cookie → 查看账号同步 → 在官方目录确认更新 → 在模块管理接入 CommandCode → 在 **API Key** 创建绑定 CommandCode 的模型 Key → 客户端使用 `/v1` 和原模型 ID。调用 CPA 原生渠道时，在同一页面创建绑定 CPA 的模型 Key。
 
 [详细部署、1Panel 网络、备份恢复与升级说明](docs/cpa-nexus.md)。
 
@@ -41,12 +42,14 @@ bash scripts/deploy.sh stop
 
 | 地址 | 密钥 | 用途 |
 |---|---|---|
-| `/v1` | CPA 客户端 Key 或原 `ccm_` Key | 自动分流；CPA Key 使用原生模型或 `commandcode/` 别名，旧 Key 使用原始模型名 |
-| `/commandcode/v1` | 原 `ccm_` Key | 原始模型名和旧客户端格式，保留日志与会话归属 |
-| `/v1/systemone` 或 `/commandcode/v1/systemone` | `ccm_` Key | 官方决策模型专用接口 |
+| `/v1` | 统一模型 API Key，`ccm_` 前缀 | 按 Key 的模块绑定转发；CPA Key 使用原生模型名，CommandCode Key 使用原模型 ID |
+| `/commandcode/v1` | 绑定 CommandCode 的 `ccm_` Key | 保留独立模块入口和旧客户端格式、日志与会话归属 |
+| `/v1/systemone` 或 `/commandcode/v1/systemone` | 绑定 CommandCode 的 `ccm_` Key | 官方决策模型专用接口 |
 | `/api/external/accounts` 等 | `ccm_service_` Key | 加账号、账号查询、任务与池状态 |
 
 Anthropic 模型使用官方 Messages，其他模型按官方 `supported_endpoints` 调用。Cookie 仅用于管理，推理只发送选定账号的正常 API Key。旧 `commandcode-proxy` 不再是默认部署或构建依赖，原始快照保留为历史材料。
+
+一个模型 Key 绑定一个模块，切换绑定后权限立即按新模块检查；绑定 CPA 的 Key 不能调用 `commandcode/` 模型。旧 `ccm_` Key 升级后默认绑定 CommandCode。历史 CPA 客户端 Key 继续兼容原生入口，在统一页面的 **CPA 历史客户端密钥** 中管理；它们不参与按 Key 的预设路由。迁移日常客户端后可以撤销对应旧 Key，但应保留 `CPA_CLIENT_KEY` 作为平台内部调用凭证。原生 WebSocket 和非 Chat/Messages/Responses 协议仍使用历史 CPA 客户端 Key。
 
 ## 官方目录与缓存
 
@@ -56,9 +59,9 @@ Worker 自动检查：API 目录每 5 分钟、官网每 15 分钟。面板每�
 
 官网快照保存在 PostgreSQL，Redis 缓存 60 秒，进程缓存 5 秒；同一同步使用分布式锁、条件请求与有界超时，不为每个账号重复抓取。
 
-[目录与数据语义](docs/official-catalog.md) · [外调 API](docs/external-api.md) · [模块契约](docs/platform-requirements.md) · [酒馆预设与账号路由](docs/presets.md)。
+[目录与数据语义](docs/official-catalog.md) · [外调 API](docs/external-api.md) · [模块契约](docs/platform-requirements.md) · [酒馆预设与 API Key 路由](docs/presets.md)。
 
-酒馆预设模块默认关闭，支持导入/编辑/导出 JSON、提示词编排、采样默认值，以及模块和账号的预设路由。启用后仅选中路由的请求经过预设。CPA 独立账号使用面板显示的模型前缀，CommandCode 在账号池选定账号后执行预设。
+酒馆预设模块默认关闭，支持导入/编辑/导出 JSON、提示词编排和采样默认值。启用后在酒馆页面选择模型 API Key：例如 KA 保持直连，KB 绑定预设，客户端使用 KB 时才执行该预设。路由按客户端 Key 决定，与账号池最终选择的上游账号无关；System One 保持原通路。
 
 ## 本机开发与验证
 

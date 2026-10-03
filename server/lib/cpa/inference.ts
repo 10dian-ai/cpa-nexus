@@ -1,20 +1,20 @@
-import { createHash } from 'node:crypto'
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { getRequestURL, type H3Event } from 'h3'
 import { CPA_DEFAULT_URL, validateCpaBaseUrl } from './client'
 import { handleCommandcodeCompatibility } from '../commandcode-compat'
-import { resolvePresetRoute } from '../presets'
+import { resolveKeyPresetRoute } from '../presets'
+import { authenticateGatewayKey } from '../auth'
 import { applyPreset } from '../presets/engine'
 import { getSettings } from '../settings'
 import { readJsonBodyLimited } from '../gateway/transport'
-import { isModuleEnabled } from '../modules'
-import { findCpaPresetAccountForModel } from './preset-routing'
+import { requireModule } from '../modules'
+import { gatewayCors } from '../gateway/cors'
 
 const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
-const verifiedKeys = new Map<string, number>()
-export function resetCpaInferenceAuthCache() { verifiedKeys.clear() }
+// Kept for callers upgrading from the former native-key authentication cache.
+export function resetCpaInferenceAuthCache() {}
 
 function copyHeaders(source: IncomingHttpHeaders): IncomingHttpHeaders {
   const connectionTokens = String(source.connection || '').toLowerCase().split(',').map(token => token.trim())
@@ -32,30 +32,21 @@ function fail(event: H3Event, protocol: string, status: number, message: string)
     : { error: { type: 'invalid_request_error', code: 'preset_route_error', message } }))
 }
 
-/** CPA remains responsible for native authentication, using its actual model endpoint. */
-async function verifyBeforePreset(event: H3Event): Promise<boolean> {
+function requestHeaders(event: H3Event, clientKey?: string): IncomingHttpHeaders {
   const headers = copyHeaders(event.node.req.headers)
-  const fingerprint = createHash('sha256').update(JSON.stringify([
-    process.env.CPA_URL, headers.authorization, headers['x-api-key'], headers['x-goog-api-key'],
-  ])).digest('hex')
-  if ((verifiedKeys.get(fingerprint) || 0) > Date.now()) return true
-  const probe = await fetch(destination('/v1/models'), { headers: headers as HeadersInit, redirect: 'manual', signal: AbortSignal.timeout(15_000) })
-  if (!probe.ok) {
-    event.node.res.statusCode = probe.status
-    event.node.res.setHeader('content-type', probe.headers.get('content-type') || 'application/json')
-    event.node.res.end(await probe.text())
-    return false
+  if (clientKey) {
+    for (const name of Object.keys(headers)) {
+      if (name === 'cookie' || name === 'x-api-key' || name === 'x-goog-api-key' || name.startsWith('x-nexus-')) delete headers[name]
+    }
+    headers.authorization = 'Bearer ' + clientKey
   }
-  await probe.body?.cancel()
-  if (verifiedKeys.size >= 128) verifiedKeys.delete(verifiedKeys.keys().next().value!)
-  verifiedKeys.set(fingerprint, Date.now() + 2_000)
-  return true
+  return headers
 }
 
 /** Stream native requests and replies without changing their protocol or credentials. */
-export async function forwardNativeCpa(event: H3Event, path: string, body?: Record<string, unknown>) {
+export async function forwardNativeCpa(event: H3Event, path: string, body?: Record<string, unknown>, clientKey?: string) {
   const url = destination(path)
-  const headers = copyHeaders(event.node.req.headers)
+  const headers = requestHeaders(event, clientKey)
   let transformed: Buffer | undefined
   if (body) {
     transformed = Buffer.from(JSON.stringify(body))
@@ -91,31 +82,58 @@ export async function forwardNativeCpa(event: H3Event, path: string, body?: Reco
   })
 }
 
-/** Public native entry also accepts the original CCM keys, while the internal /v1 callback stays separate. */
+async function listCpaModels(event: H3Event, path: string, clientKey: string) {
+  const headers = requestHeaders(event, clientKey)
+  delete headers['content-length']
+  const upstream = await fetch(destination(path), { headers: headers as HeadersInit, redirect: 'error', signal: AbortSignal.timeout(15_000) })
+  event.node.res.statusCode = upstream.status
+  event.node.res.setHeader('content-type', upstream.headers.get('content-type') || 'application/json; charset=utf-8')
+  if (!upstream.ok) { event.node.res.end(await upstream.text()); return }
+  const result = await upstream.json() as { data?: { id?: string }[]; [key: string]: unknown }
+  if (!Array.isArray(result.data)) throw new Error('CPA returned an invalid model catalog')
+  result.data = result.data.filter(model => typeof model.id === 'string' && !model.id.startsWith('commandcode/'))
+  event.node.res.end(JSON.stringify(result))
+}
+
+/** A platform model key selects its provider; the internal CommandCode /v1 callback stays separate. */
 export async function handleNexusInference(event: H3Event) {
   const requested = getRequestURL(event)
-  const path = requested.pathname.replace(/^\/nexus\/cpa\/v1\//, '')
+  const path = requested.pathname.replace(/^(?:\/nexus\/cpa)?\/v1\//, '').replace(/\/$/, '')
   const protocol = PROTOCOLS.get(path as 'chat/completions' | 'messages' | 'responses')
-  if (path !== 'models' && !protocol) { fail(event, path, 404, 'Unsupported model endpoint'); return }
+  const cors = gatewayCors('/v1/' + path, event.method, event.node.req.headers['access-control-request-headers'])
+  if (cors) {
+    for (const [name, value] of Object.entries(cors.headers)) event.node.res.setHeader(name, value)
+    if (cors.preflight) { event.node.res.statusCode = 204; event.node.res.end(); return }
+  }
+  if (!((path === 'models' && event.method === 'GET') || ((protocol || path === 'systemone') && event.method === 'POST'))) { fail(event, path, 404, 'Unsupported model endpoint'); return }
   const authorization = event.node.req.headers.authorization
   const apiKey = event.node.req.headers['x-api-key']
   const secret = typeof authorization === 'string' && /^Bearer\s+/i.test(authorization)
     ? authorization.replace(/^Bearer\s+/i, '').trim() : typeof apiKey === 'string' ? apiKey.trim() : ''
-  if (secret.startsWith('ccm_')) return handleCommandcodeCompatibility(event, { protocolPath: path })
   try {
-    let body: Record<string, unknown> | undefined
-    if (protocol && event.method === 'POST' && await isModuleEnabled('presets')) {
-        if (!await verifyBeforePreset(event)) return
-        if (event.node.req.headers['content-encoding']) { fail(event, path, 415, 'Preset routes require an uncompressed JSON request'); return }
-        body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024)
-        // This model belongs to the CommandCode module; its selected account applies its own preset once.
-        if (!(typeof body.model === 'string' && body.model.startsWith('commandcode/'))) {
-          const accountId = typeof body.model === 'string' ? await findCpaPresetAccountForModel(body.model) : null
-          const preset = await resolvePresetRoute('cpa', accountId)
-          if (preset) { body = applyPreset(preset, body, { protocol }); event.node.res.setHeader('x-nexus-preset-id', preset.id) }
-        }
+    // Existing native core keys retain their original protocol and authentication.
+    if (!secret.startsWith('ccm_')) return await forwardNativeCpa(event, '/v1/' + path + requested.search)
+    const key = await authenticateGatewayKey(secret)
+    if (!key || secret.startsWith('ccm_nexus_')) { fail(event, path, 401, 'A valid model API key is required'); return }
+    const moduleId = key.moduleId || 'commandcode'
+    if (moduleId === 'commandcode') return await handleCommandcodeCompatibility(event, { protocolPath: path })
+    await requireModule('cpa')
+    if (path === 'systemone') { fail(event, path, 403, 'System One requires a key bound to Command Code'); return }
+    const clientKey = process.env.CPA_CLIENT_KEY?.trim()
+    if (!clientKey) { fail(event, path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
+    if (path === 'models') return await listCpaModels(event, '/v1/models' + requested.search, clientKey)
+    if (event.node.req.headers['content-encoding']) { fail(event, path, 415, 'Model API keys require an uncompressed JSON request'); return }
+    let body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024)
+    const model = typeof body.model === 'string' ? body.model.trim() : ''
+    if (!model || model.length > 256) { fail(event, path, 400, 'model must be a non-empty string of at most 256 characters'); return }
+    if (model.startsWith('commandcode/')) { fail(event, path, 403, 'This key is bound to CPA; choose a key bound to Command Code for this model'); return }
+    body.model = model
+    const preset = await resolveKeyPresetRoute(key.id)
+    if (preset) {
+      body = applyPreset(preset, body, { protocol: protocol! })
+      event.node.res.setHeader('x-nexus-preset-id', preset.id)
     }
-    return await forwardNativeCpa(event, '/v1/' + path + requested.search, body)
+    return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey)
   } catch (error) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }
     const status = Number((error as { statusCode?: number }).statusCode) || (/timeout/i.test(String(error)) ? 504 : 502)

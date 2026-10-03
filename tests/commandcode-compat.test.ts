@@ -66,6 +66,22 @@ describe('legacy manager ingress via local CPA', () => {
     expect(await response.json()).toEqual({ object: 'list', data: [{ id: 'claude-test', supported_endpoints: ['/v1/messages'] }] })
     expect(fixture.upstream).not.toHaveBeenCalled()
   })
+  it('rejects a CPA-bound client key on every Command Code compatibility route', async () => {
+    fixture.authenticate.mockResolvedValue({ id: 'cpa-key', name: 'CPA client', moduleId: 'cpa' })
+    for (const path of ['models', 'chat/completions', 'messages', 'responses']) {
+      const response = await actualFetch(url + '/' + path, {
+        method: path === 'models' ? 'GET' : 'POST', headers: { authorization: 'Bearer ccm_cpa-client-key' },
+        ...(path === 'models' ? {} : { body: '{"model":"claude-test"}' }),
+      })
+      expect(response.status).toBe(403); await response.text()
+    }
+    expect(fixture.upstream).not.toHaveBeenCalled()
+  })
+  it('preserves the applied preset header returned by the Command Code bridge', async () => {
+    fixture.upstream.mockResolvedValueOnce(new Response('{}', { headers: { 'x-nexus-preset-id': 'KB-rule' } }))
+    const response = await post(url)
+    expect(response.headers.get('x-nexus-preset-id')).toBe('KB-rule'); await response.text()
+  })
   it('rejects unauthenticated cookies and missing or malformed trusted CPA configuration before forwarding', async () => {
     const unauthorized = await actualFetch(url + '/chat/completions', {
       method: 'POST', headers: { cookie: 'ccm_session=browser-admin', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-test' }),

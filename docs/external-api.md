@@ -1,12 +1,12 @@
 # 外调服务 API
 
-外部服务可以通过这组端点添加账号、查询账号邮箱及详情、查询导入任务和获取池状态。先登录后台，进入 **API 密钥 → 外调服务 Key → 创建外调服务 Key**，保存创建时显示的完整密钥。
+外部服务可以通过这组端点添加账号、查询账号邮箱及详情、查询导入任务和获取池状态。先在模块管理启用 CommandCode，再进入统一 **API Key → 创建 API Key**，选择 **外调服务 API Key** 类型，保存创建时显示的完整密钥。
 
-外调服务 Key 使用 `ccm_service_` 前缀，和模型调用的 `ccm_` Key 分开管理、验证。外调 Key 不能调用 `/v1/*`，模型 Key 不能调用 `/api/external/*`。后台登录 Cookie 也不能替代外调 Key。
+外调服务 Key 使用 `ccm_service_` 前缀，与模型调用的 `ccm_` Key 在同一页面管理，并独立验证。外调 Key 专用于 CommandCode 的账号与池信息接口，不能调用 `/v1/*`；模型 Key 不能调用 `/api/external/*`。后台登录 Cookie 也不能替代外调 Key。CommandCode 停用后，所有外调接口暂停；已有服务 Key 保留，可继续在后台修改名称、停用或撤销。
 
 ## 更新已有部署
 
-CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，应用和 Worker 启动入口会自动应用缺失迁移；本地开发在启动应用前执行 `npm run db:migrate`。已有账号和模型 Key 保留；GOAT 直接调用官方 Provider API。旧模型 Key 同时支持 `/v1` 和 `/commandcode/v1`，统一入口根据密钥自动分流，CPA 客户端 Key 使用 CPA 原生模型或 `commandcode/` 模型别名。
+CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；`009_unified_model_keys.sql` 为旧模型 Key 绑定 CommandCode，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 在统一页面选择 CPA 或 CommandCode。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
 
 ## 认证
 
@@ -228,6 +228,7 @@ curl --fail-with-body "$CCM_URL/api/external/pool" \
 - **400**：JSON 结构、字段、分页筛选参数、账号或任务 ID 格式无效；批量文本超限也会被拒绝。逐行凭证格式错误通常记录到 `rejected`，随后可在任务结果中查看。
 - **401**：外调 Key 缺失、无效、停用或已撤销，或使用了模型 Key。
 - **404**：账号不存在，或导入任务不存在、已过期。
+- **503**：CommandCode 模块已停用，或者数据库、队列等依赖暂时不可用。
 - **5xx**：服务或依赖暂时不可用，应保留错误信息并重试。
 
-外调 Key 的创建、停用、启用、撤销都在后台 **API 密钥 → 外调服务 Key** 操作。每个启用的外调 Key 都具有这组五个端点的访问权限；这组端点不提供 Key 管理接口，不能代替管理员登录后台。
+外调 Key 的创建、修改名称、停用、启用、撤销都在后台统一 **API Key** 页面操作；创建类型只在 CommandCode 开启时出现。每个启用的外调 Key 在模块开启时都具有这组五个端点的访问权限；这组端点不提供 Key 管理接口，不能代替管理员登录后台。

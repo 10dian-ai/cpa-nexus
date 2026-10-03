@@ -7,7 +7,7 @@ const fixture = vi.hoisted(() => ({ sql: undefined as Sql | undefined }))
 vi.mock('../server/lib/db', () => ({ getDb: () => fixture.sql }))
 vi.mock('../server/lib/modules', () => ({ isModuleEnabled: async (id: string) => (await fixture.sql!`SELECT enabled FROM platform_modules WHERE id=${id}`)[0]?.enabled === true }))
 vi.mock('../server/lib/cpa/preset-routing', () => ({ ensureCpaPresetAccountRoute: async () => { throw new Error('Native CPA account mutations are outside this database test') } }))
-import { createPreset, deletePreset, getPreset, listPresetBindings, listPresets, resetPresetRouteCache, resolvePresetRoute, setPresetBinding, updatePreset } from '../server/lib/presets'
+import { createPreset, deletePreset, getPreset, listKeyPresetBindings, listPresetBindings, listPresets, resetPresetRouteCache, resolveKeyPresetRoute, resolvePresetRoute, setKeyPresetBinding, setPresetBinding, updatePreset } from '../server/lib/presets'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const schema = 'nexus_presets_test_' + randomUUID().replaceAll('-', '')
@@ -83,5 +83,36 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
     const bindings = await listPresetBindings(), current = await getPreset(preset.id)
     if (bindings.some(binding => binding.presetId === preset.id)) expect(current.compatibility.supported).toBe(true)
     else expect(current.compatibility.supported).toBe(false)
+  })
+
+  it('persists key-specific routing, follows a changed module and cascades revoked keys', async () => {
+    const keyA = randomUUID(), keyB = randomUUID()
+    for (const [id, name] of [[keyA, 'KA'], [keyB, 'KB']]) {
+      await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${id!},${name!},'ccm_test',${randomUUID()},'commandcode')`
+    }
+    const preset = await createPreset({ name: 'Only KB', sourceJson: document, variables: { char: 'KB' } })
+    await setKeyPresetBinding({ keyId: keyB, mode: 'preset', presetId: preset.id })
+    expect(await resolveKeyPresetRoute(keyA)).toBeNull()
+    expect((await resolveKeyPresetRoute(keyB))?.id).toBe(preset.id)
+    await sql`UPDATE gateway_keys SET module_id='cpa' WHERE id=${keyB}`
+    expect((await listKeyPresetBindings()).find(binding => binding.keyId === keyB)).toMatchObject({ moduleId: 'cpa', presetId: preset.id })
+    await expect(deletePreset(preset.id)).rejects.toMatchObject({ statusCode: 409 })
+    await expect(sql`DELETE FROM nexus_presets WHERE id=${preset.id}`).rejects.toMatchObject({ code: '23503' })
+    await sql`DELETE FROM gateway_keys WHERE id=${keyB}`
+    expect((await listKeyPresetBindings()).some(binding => binding.keyId === keyB)).toBe(false)
+    resetPresetRouteCache()
+    expect(await resolveKeyPresetRoute(keyB)).toBeNull()
+    await deletePreset(preset.id)
+  })
+
+  it('archives previous account choices without leaving an uneditable preset deletion constraint', async () => {
+    const preset = await createPreset({ name: 'Legacy archived', sourceJson: document, variables: { char: 'Legacy' } })
+    await setPresetBinding({ moduleId: 'commandcode', mode: 'preset', presetId: preset.id })
+    await sql`DELETE FROM schema_migrations WHERE name='010_key_preset_bindings.sql'`
+    await migrate(sql)
+    expect(await listPresetBindings()).toEqual([])
+    expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='commandcode' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
+    await deletePreset(preset.id)
+    expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='commandcode' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
   })
 })

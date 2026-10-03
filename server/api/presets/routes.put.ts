@@ -1,4 +1,4 @@
 import { defineEventHandler } from 'h3'
-import { setPresetBinding } from '../../lib/presets'
+import { setKeyPresetBinding } from '../../lib/presets'
 import { readPresetBody, routeSchema } from '../../lib/presets/api'
-export default defineEventHandler(async event => ({ binding: await setPresetBinding(await readPresetBody(event, routeSchema)) }))
+export default defineEventHandler(async event => ({ binding: await setKeyPresetBinding(await readPresetBody(event, routeSchema)) }))

@@ -1,6 +1,6 @@
 # Command Code Manager
 
-> 这是 CPA Nexus 改造前的使用记录。当前启动、统一公网入口与密钥迁移以项目根目录 README 和 cpa-nexus.md 为准；本页中的 ccm_ 模型密钥适用于 CommandCode 模块内部网关。
+> 这是 CPA Nexus 改造前的使用记录。当前启动、统一公网入口与密钥迁移以项目根目录 README 和 cpa-nexus.md 为准；本页中的旧 ccm_ 模型密钥升级后默认绑定 CommandCode，新密钥统一在 API Key 页面选择模块。
 
 单管理员的 Command Code 账号管理后台与统一调用网关。支持批量 Cookie 导入、真实额度查询、会话亲和、并发分配、调用日志及固定版本内核。
 
@@ -70,13 +70,13 @@ npm run dev
 1. 登录后台，打开账号页面，按一行一个 Cookie Token 批量粘贴。
 2. Worker 验证身份，查询额度和订阅，并在需要时创建专用上游 Key。Cookie 和上游 Key 使用 AES-256-GCM 加密；导入队列中也不存明文 Cookie。
 3. 观察最后同步时间和错误状态。模型目录不等于账号权限，模型页面区分真实观察到的允许、拒绝和未验证状态。
-4. 创建本系统访问 Key（ccm_ 前缀，只显示一次），填入客户端。不要把上游账号 Cookie 填入客户端。
+4. 在统一 **API Key** 页面创建模型 API Key，选择绑定 CommandCode（ccm_ 前缀，只显示一次），填入客户端。不要把上游账号 Cookie 填入客户端。
 5. 客户端 base URL 为你的域名加 /v1。网关支持 /v1/chat/completions、/v1/messages、/v1/responses 和 /v1/models。
 6. 根据需要调整全局并发、默认账号并发、刷新周期、日志保留期限和亲和时长。
 
 ## 外调服务 API
 
-在后台 **API 密钥 → 外调服务 Key** 创建独立的 `ccm_service_` 密钥，即可通过 API 添加账号、查询邮箱及账号详情、查询导入任务和读取池状态。外调 Key 与客户端使用的模型 API Key 分开验证。
+启用 CommandCode 后，在后台 **API Key → 创建 API Key** 选择 **外调服务 API Key**，创建独立的 `ccm_service_` 密钥，即可通过 API 添加账号、查询邮箱及账号详情、查询导入任务和读取池状态。外调 Key 与客户端使用的模型 API Key 独立验证，模块停用时外调调用暂停。
 
 - `POST /api/external/accounts`：提交单个或批量账号，返回导入任务 ID。
 - `GET /api/external/accounts`：分页查询池内账号及邮箱，支持名称、邮箱、状态和分组筛选。
