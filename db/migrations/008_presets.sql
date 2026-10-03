@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS nexus_presets (
  id UUID PRIMARY KEY,
- name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
- description TEXT NOT NULL DEFAULT '' CHECK(length(description)<=2000),
+ name TEXT NOT NULL CHECK(length(name)>=1),
+ description TEXT NOT NULL DEFAULT '',
  source_json JSONB NOT NULL CHECK(jsonb_typeof(source_json)='object'),
  variables JSONB NOT NULL DEFAULT '{}' CHECK(jsonb_typeof(variables)='object'),
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

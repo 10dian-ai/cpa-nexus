@@ -1,4 +1,4 @@
-import { createError, defineEventHandler, getHeader, readRawBody, setHeader } from 'h3'
+import { createError, defineEventHandler, readRawBody, setHeader } from 'h3'
 import { z } from 'zod'
 import { requireAdmin } from '../../../lib/auth'
 import { CpaClientError } from '../../../lib/cpa/client'
@@ -9,9 +9,8 @@ export default defineEventHandler(async event => {
   // Explicitly protect credential reads and supplier queries, in addition to the global /api admin middleware.
   await requireAdmin(event)
   setHeader(event, 'Cache-Control', 'no-store')
-  if (Number(getHeader(event, 'content-length')) > 4096) throw createError({ statusCode: 413, message: '配额查询参数过大' })
   const raw = await readRawBody(event)
-  if (!raw || Buffer.byteLength(raw) > 4096) throw createError({ statusCode: raw ? 413 : 400, message: '请输入有效的配额查询参数' })
+  if (!raw) throw createError({ statusCode: 400, message: '请输入有效的配额查询参数' })
   let body: unknown
   try { body = JSON.parse(raw) } catch { throw createError({ statusCode: 400, message: '配额查询参数不是有效 JSON' }) }
   const parsed = inputSchema.safeParse(body)

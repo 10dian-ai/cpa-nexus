@@ -3,7 +3,6 @@ import { CpaClientError, cpaPathSegments, createCpaClient } from '../../../lib/c
 import { cpaDownstreamAbort } from '../../../lib/cpa/http'
 
 const PREFIX = '/api/cpa/management/'
-const MAX_BODY_BYTES = 32 * 1024 * 1024
 const ACCESS_KEYS_PATH = 'config/access/api-keys'
 
 function parseAccessKeys(body: Uint8Array): string[] {
@@ -22,12 +21,9 @@ export default defineEventHandler(async event => {
   const question = target.indexOf('?')
   const pathname = question < 0 ? target : target.slice(0, question)
   if (!pathname.startsWith(PREFIX)) throw createError({ statusCode: 400, message: 'CPA 管理路径无效', data: { code: 'invalid_path', message: 'CPA 管理路径无效' } })
-  const declared = Number(getHeader(event, 'content-length'))
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw createError({ statusCode: 413, message: 'CPA 管理请求体过大', data: { code: 'request_too_large', message: 'CPA 管理请求体过大' } })
   const downstream = cpaDownstreamAbort(event)
   try {
     const rawBody = ['GET', 'HEAD'].includes(event.method) ? undefined : await readRawBody(event, false)
-    if (rawBody && rawBody.byteLength > MAX_BODY_BYTES) throw createError({ statusCode: 413, message: 'CPA 管理请求体过大', data: { code: 'request_too_large', message: 'CPA 管理请求体过大' } })
     const path = cpaPathSegments(pathname.slice(PREFIX.length)).join('/')
     const reservedKey = process.env.CPA_CLIENT_KEY?.trim()
     const protectAccessKeys = path === ACCESS_KEYS_PATH && !!reservedKey

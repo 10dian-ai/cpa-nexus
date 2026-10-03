@@ -123,14 +123,14 @@ describe('SillyTavern preset import and precise API transformations', () => {
     expect(applyPreset(preset(document), { messages: [] }, { protocol: 'chat', generationType: 'continue' }).messages).toEqual([{ role: 'system', content: 'Continue' }])
   })
 
-  it('enforces import resource limits, safe JSON structure and recognized variables', () => {
+  it('accepts large and deeply nested JSON while validating structure and recognized variables', () => {
     expect(() => parsePresetJson('[')).toThrow('不是有效')
     expect(() => parsePresetJson([])).toThrow('JSON 对象')
     expect(() => parsePresetJson('{"__proto__":{"polluted":true}}')).toThrow('无效对象字段')
-    expect(() => parsePresetJson({ text: 'x'.repeat(1024 * 1024) })).toThrow('1 MiB')
+    expect(parsePresetJson({ text: 'x'.repeat(2 * 1024 * 1024) }).text).toHaveLength(2 * 1024 * 1024)
     let deep: any = {}; const root = deep
     for (let i = 0; i < 50; i++) { deep.child = {}; deep = deep.child }
-    expect(() => parsePresetJson(root)).toThrow('层级')
+    expect(parsePresetJson(root)).toEqual(root)
     expect(() => validatePresetVariables({ unknown: 'x' })).toThrow('无效')
     expect(() => validatePresetVariables({ char: 1 })).toThrow('无效')
   })
@@ -142,12 +142,12 @@ describe('SillyTavern preset import and precise API transformations', () => {
     expect(inspectPreset(invalid).issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'invalid_position' }), expect.objectContaining({ code: 'invalid_trigger' })]))
   })
 
-  it('limits repeated macro and marker-template expansion before allocating excessive prompt strings', () => {
+  it('preserves large repeated macros and marker templates without artificial expansion caps', () => {
     const repeated = source([prompt('main', '{{char}}'.repeat(100)), history])
-    expect(() => applyPreset(preset(repeated, { char: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' })).toThrow('展开过大')
+    expect((applyPreset(preset(repeated, { char: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' }).messages as any[])[0].content).toHaveLength(10_000_000)
     const wrapper = { ...source([{ identifier: 'scenario', marker: true }, history]), scenario_format: '{{scenario}}'.repeat(100) }
-    expect(() => applyPreset(preset(wrapper, { scenario: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' })).toThrow('展开过大')
+    expect((applyPreset(preset(wrapper, { scenario: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' }).messages as any[])[0].content).toHaveLength(10_000_000)
     const collective = source([history, ...Array.from({ length: 80 }, (_, index) => prompt('p' + index, '{{char}}'))])
-    expect(() => applyPreset(preset(collective, { char: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' })).toThrow('总计最多 4 MiB')
+    expect((applyPreset(preset(collective, { char: 'x'.repeat(100_000) }), { messages: [] }, { protocol: 'chat' }).messages as any[])).toHaveLength(80)
   })
 })

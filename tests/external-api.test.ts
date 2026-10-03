@@ -106,12 +106,20 @@ describe('external account and pool API over HTTP', () => {
   it.each([
     {}, { token, cookie: token }, { token, text: token }, { token, unsupported: true },
     { token: token + '\n' + token }, { cookie: token + '\r' + token },
-    { token: '' }, { token: 'x'.repeat(8193) }, { text: 'x'.repeat(2_000_001) },
-    { token, groupName: 'g'.repeat(101) }, { text: Array(2001).fill(token).join('\n') },
+    { token: '' }, { token, groupName: 'g'.repeat(101) },
   ])('rejects an invalid import request before enqueueing %#', async body => {
     const response = await post(body)
     expect(response.status).toBe(400)
     expect(fixture.queueImport).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { token: 'x'.repeat(8193) }, { text: 'x'.repeat(2_000_001) },
+    { text: Array(2001).fill(token).join('\n') },
+  ])('accepts imports beyond former size and line caps %#', async body => {
+    const response = await post(body)
+    expect(response.status).toBe(202)
+    expect(fixture.queueImport).toHaveBeenCalledExactlyOnceWith(body.text ?? body.token, undefined)
   })
 
   it('preserves the admin import text contract and HTTP 200 response', async () => {

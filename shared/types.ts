@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS: SystemSettings = {
   globalConcurrency: 20, defaultAccountConcurrency: 2,
   activeRefreshSeconds: 60, idleRefreshSeconds: 300, activeWindowSeconds: 300,
   refreshConcurrency: 2, refreshRatePerSecond: 2,
-  logRetentionDays: 30, affinityTtlSeconds: 86400, maxRequestBodyMb: 16,
+  logRetentionDays: 30, affinityTtlSeconds: 86400, maxRequestBodyMb: 0,
 }
 export interface GatewayKeyView { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; createdAt: string; lastUsedAt: string | null }
 export interface RequestLogView {

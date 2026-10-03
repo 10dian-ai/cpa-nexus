@@ -4,7 +4,6 @@ import { cpaDownstreamAbort } from './http'
 import { requireAdmin } from '../auth'
 
 const PREFIX = '/api/cpa/console/'
-const MAX_BODY_BYTES = 32 * 1024 * 1024
 /** The official UI keeps its own preferences and never receives the actual management key. */
 export const CONSOLE_BOOTSTRAP = `<script id="nexus-cpa-console-bootstrap">(()=>{
  const prefix='nexus:cpa-console:';
@@ -26,6 +25,8 @@ export function adaptNativeConsoleHtml(bytes: Uint8Array, allowFragment = false)
   catch { throw new CpaClientError('invalid_response', '原版控制台不是有效 HTML', 502) }
   if (allowFragment && !/<head[\s>]/i.test(html)) return new TextEncoder().encode(CONSOLE_BOOTSTRAP + html)
   if (!/<html[\s>]/i.test(html) || !/<head[\s>]/i.test(html)) throw new CpaClientError('invalid_response', 'CPA 未返回原版控制台 HTML', 502)
+  // The official panel's credential importer also had a 10 MiB browser cap.
+  html = html.replace(/(\b[A-Za-z_$][\w$]*\.size\s*)>\s*10485760\b/g, '$1 > Infinity')
   return new TextEncoder().encode(html.replace(/(<head\b[^>]*>)/i, '$1' + CONSOLE_BOOTSTRAP))
 }
 
@@ -48,11 +49,9 @@ export async function proxyCpaConsole(event: H3Event) {
   // resource paths. Canonicalize that duplicated base within this fixed scope.
   for (let depth = 0; depth < 3 && relativePath.startsWith('api/cpa/console/'); depth++) relativePath = relativePath.slice('api/cpa/console/'.length)
   const path = cpaPathSegments(relativePath).join('/')
-  if (Number(getHeader(event, 'content-length')) > MAX_BODY_BYTES) throw createError({ statusCode: 413, message: 'CPA 请求体过大' })
   const downstream = cpaDownstreamAbort(event)
   try {
     const raw = ['GET', 'HEAD'].includes(event.method) ? undefined : await readRawBody(event, false)
-    if (raw && raw.byteLength > MAX_BODY_BYTES) throw createError({ statusCode: 413, message: 'CPA 请求体过大' })
     let method = event.method, body = raw ? new Uint8Array(raw).buffer : undefined
     const reserved = process.env.CPA_CLIENT_KEY?.trim()
     if (path === 'v0/management/api-keys' && reserved && ['PUT', 'PATCH', 'DELETE'].includes(method)) {

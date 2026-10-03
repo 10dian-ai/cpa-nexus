@@ -1,7 +1,6 @@
 import { createError, getHeader, readRawBody, send, setHeader, setResponseStatus, type H3Event } from 'h3'
 import { CpaClientError, createCpaClient } from './client'
 
-const MAX_BODY_BYTES = 32 * 1024 * 1024
 
 export function cpaDownstreamAbort(event: H3Event) {
   const controller = new AbortController()
@@ -34,12 +33,9 @@ export async function proxyCpaPlugin(event: H3Event, kind: 'resource' | 'managem
   const question = target.indexOf('?')
   const pathname = question < 0 ? target : target.slice(0, question)
   if (!pathname.startsWith(prefix)) throw createError({ statusCode: 400, message: 'CPA 插件路径无效', data: { code: 'invalid_path', message: 'CPA 插件路径无效' } })
-  const declared = Number(getHeader(event, 'content-length'))
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw createError({ statusCode: 413, message: 'CPA 插件请求体过大', data: { code: 'request_too_large', message: 'CPA 插件请求体过大' } })
   const downstream = cpaDownstreamAbort(event)
   try {
     const body = ['GET', 'HEAD'].includes(event.method) ? undefined : await readRawBody(event, false)
-    if (body && body.byteLength > MAX_BODY_BYTES) throw createError({ statusCode: 413, message: 'CPA 插件请求体过大', data: { code: 'request_too_large', message: 'CPA 插件请求体过大' } })
     const response = await createCpaClient().pluginRequest({
       kind, path: pathname.slice(prefix.length), method: event.method,
       query: new URLSearchParams(question < 0 ? '' : target.slice(question + 1)), body: body ? new Uint8Array(body).buffer : undefined,

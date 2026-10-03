@@ -12,7 +12,8 @@ export const settingsSchema = z.object({
   refreshRatePerSecond: z.number().int().min(1).max(20),
   logRetentionDays: z.number().int().min(1).max(365),
   affinityTtlSeconds: z.number().int().min(60).max(604800),
-  maxRequestBodyMb: z.number().int().min(1).max(64),
+  // Retain the field for older clients; zero means no imposed body-size cap.
+  maxRequestBodyMb: z.number().int().nonnegative().transform(() => 0),
 }).strict()
 let cached: { value: SystemSettings; until: number } | undefined
 export async function getSettings(): Promise<SystemSettings> {

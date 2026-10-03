@@ -210,7 +210,7 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 
 酒馆预设是默认关闭的可选处理模块，在酒馆页面选择模型 API Key 后绑定预设。例如 KA 保持直连，KB 选择某个预设，使用 KB 的 Chat/Messages/Responses 请求才应用该预设。上游账号选择不影响这一规则；原有账号/模块预设记录保留，但统一 Key 不继承旧路由。完整操作和协议边界见 [预设模块](presets.md)。
 
-入口支持 SSE、WebSocket、长连接和断开取消，请求体上限为 256 MB，模块另有请求限制。CPA 管理 API、`management.html`、原生管理资源和 `/cpa-api/` 下的配置、凭证、插件及日志文件禁止公网直连；面板通过登录后的后台适配器访问管理接口。
+入口支持 SSE、WebSocket、长连接和断开取消，上传、预设及模型请求体不设人为大小上限。CPA 管理 API、`management.html`、原生管理资源和 `/cpa-api/` 下的配置、凭证、插件及日志文件禁止公网直连；面板通过登录后的后台适配器访问管理接口。
 
 固定版本的 OAuth 回调 `/anthropic/callback`、`/codex/callback`、`/antigravity/callback`、`/devin/callback`、`/callback` 转发至 CPA。部分供应商需要本机回调或 SSH 转发；WebRTC 中继、mDNS 和额外监听端口也需要单独网络部署及真实客户端验收，默认不发布这些额外端口。
 

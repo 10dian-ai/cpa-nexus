@@ -16,7 +16,8 @@ export function makeProviderHeaders(headers: Record<string, string | string[] | 
 }
 /** Compatibility export for callers that used the old transport helper. */
 export const makeKernelHeaders = makeProviderHeaders
-export async function readJsonBodyLimited(event: H3Event, maximum: number): Promise<Record<string, unknown>> {
+export async function readJsonBodyLimited(event: H3Event, maximum = 0): Promise<Record<string, unknown>> {
+  if (maximum <= 0) maximum = Number.POSITIVE_INFINITY
   const length = Number(event.node.req.headers['content-length'])
   if (Number.isFinite(length) && length > maximum) throw createError({ statusCode: 413, statusMessage: 'Request body is too large' })
   let size = 0

@@ -1,5 +1,5 @@
 import { platformError } from '../platform-error'
-import { PRESET_CONTEXT_KEYS, PRESET_MAX_BYTES, type PresetApplyOptions, type PresetCompatibility, type PresetIssue, type PresetView } from '../../../shared/presets'
+import { PRESET_CONTEXT_KEYS, type PresetApplyOptions, type PresetCompatibility, type PresetIssue, type PresetView } from '../../../shared/presets'
 
 type JsonObject = Record<string, unknown>
 interface Prompt { id: string; role: string; content: string; marker: boolean; position: number; depth: number; order: number; triggers: string[] }
@@ -10,49 +10,40 @@ const markers: Record<string, string> = { worldInfoBefore: 'wiBefore', worldInfo
 const dynamicMacros = new Set(['lastMessage', 'lastUserMessage', 'lastCharMessage', 'newline'])
 const allowedMacros = new Set<string>([...PRESET_CONTEXT_KEYS, ...dynamicMacros])
 const generationTypes = new Set(['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'])
-const MAX_PROMPT_CHARS = 2 * PRESET_MAX_BYTES
-const MAX_EXPANDED_BYTES = 4 * PRESET_MAX_BYTES
 function replaceTemplate(template: string, token: string, value: string): string {
-  const pieces = template.split(token)
-  const size = template.length + (pieces.length - 1) * (value.length - token.length)
-  if (size > MAX_PROMPT_CHARS) throw error('单个预设提示词展开过大，请减少重复宏或格式包装')
-  return pieces.join(value)
+  return template.split(token).join(value)
 }
 
 /** Import/export retain the entire document; only the compiled allowlist reaches model APIs. */
 export function parsePresetJson(input: unknown): JsonObject {
   let value = input
   if (typeof input === 'string') {
-    if (Buffer.byteLength(input) > PRESET_MAX_BYTES) throw platformError({ statusCode: 413, message: '预设 JSON 不能超过 1 MiB' })
     try { value = JSON.parse(input) } catch { throw platformError({ statusCode: 400, message: '预设不是有效的 JSON' }) }
   }
   if (!isObject(value)) throw platformError({ statusCode: 400, message: '预设必须是 JSON 对象' })
-  let count = 0
-  const visit = (node: unknown, depth: number) => {
-    if (++count > 50_000 || depth > 40) throw platformError({ statusCode: 413, message: '预设 JSON 层级或元素数量过多' })
-    if (Array.isArray(node)) { for (const child of node) visit(child, depth + 1); return }
+  const pending: unknown[] = [value]
+  while (pending.length) {
+    const node = pending.pop()
+    if (Array.isArray(node)) { for (const child of node) pending.push(child); continue }
     if (isObject(node)) {
       for (const [key, child] of Object.entries(node)) {
         if (['__proto__', 'constructor', 'prototype'].includes(key)) throw platformError({ statusCode: 400, message: '预设包含无效对象字段' })
-        visit(child, depth + 1)
+        pending.push(child)
       }
     } else if (node !== null && !['string', 'boolean', 'number'].includes(typeof node)) throw platformError({ statusCode: 400, message: '预设只能包含 JSON 值' })
     else if (typeof node === 'number' && !Number.isFinite(node)) throw platformError({ statusCode: 400, message: '预设包含无效数值' })
   }
-  visit(value, 0)
   const json = JSON.stringify(value)
-  if (Buffer.byteLength(json) > PRESET_MAX_BYTES) throw platformError({ statusCode: 413, message: '预设 JSON 不能超过 1 MiB' })
   return JSON.parse(json)
 }
 
 export function validatePresetVariables(input: unknown = {}): Record<string, string> {
-  if (!isObject(input) || Object.keys(input).length > 32) throw platformError({ statusCode: 400, message: '预设变量必须是字符串键值对象，最多 32 项' })
+  if (!isObject(input)) throw platformError({ statusCode: 400, message: '预设变量必须是字符串键值对象' })
   const result: Record<string, string> = {}
   for (const [key, value] of Object.entries(input)) {
-    if (!PRESET_CONTEXT_KEYS.includes(key as typeof PRESET_CONTEXT_KEYS[number]) || typeof value !== 'string' || value.length > 100_000) throw platformError({ statusCode: 400, message: `预设变量 ${key} 无效或过长` })
+    if (!PRESET_CONTEXT_KEYS.includes(key as typeof PRESET_CONTEXT_KEYS[number]) || typeof value !== 'string') throw platformError({ statusCode: 400, message: `预设变量 ${key} 无效` })
     result[key] = value
   }
-  if (Buffer.byteLength(JSON.stringify(result)) > PRESET_MAX_BYTES) throw platformError({ statusCode: 413, message: '预设变量不能超过 1 MiB' })
   return result
 }
 
@@ -61,10 +52,10 @@ function compile(source: JsonObject): Compiled {
   const issues: PresetIssue[] = []
   const add = (code: string, message: string, path?: string, severity: 'warning' | 'error' = 'error') => issues.push({ code, message, severity, ...(path ? { path } : {}) })
   const definitions = new Map<string, JsonObject>()
-  if (settings.prompts !== undefined && (!Array.isArray(settings.prompts) || settings.prompts.length > 256)) add('invalid_prompts', 'prompts 必须是最多 256 项的数组', 'prompts')
-  if (Array.isArray(settings.prompts)) for (let index = 0; index < settings.prompts.length && index < 256; index++) {
+  if (settings.prompts !== undefined && !Array.isArray(settings.prompts)) add('invalid_prompts', 'prompts 必须是数组', 'prompts')
+  if (Array.isArray(settings.prompts)) for (let index = 0; index < settings.prompts.length; index++) {
     const item = settings.prompts[index]
-    if (!isObject(item) || typeof item.identifier !== 'string' || !item.identifier || item.identifier.length > 200) { add('invalid_prompt', '提示词必须具有有效 identifier', `prompts.${index}`); continue }
+    if (!isObject(item) || typeof item.identifier !== 'string' || !item.identifier) { add('invalid_prompt', '提示词必须具有有效 identifier', `prompts.${index}`); continue }
     if (definitions.has(item.identifier)) add('duplicate_prompt', '提示词 identifier 重复', `prompts.${index}.identifier`)
     definitions.set(item.identifier, item)
   }
@@ -74,7 +65,7 @@ function compile(source: JsonObject): Compiled {
   }
   let ordered: unknown[] | undefined
   if (settings.prompt_order !== undefined) {
-    if (!Array.isArray(settings.prompt_order) || settings.prompt_order.length > 256) add('invalid_order', 'prompt_order 必须是最多 256 项的数组', 'prompt_order')
+    if (!Array.isArray(settings.prompt_order)) add('invalid_order', 'prompt_order 必须是数组', 'prompt_order')
     else if (settings.prompt_order.every(isObject) && settings.prompt_order.every(item => typeof item.identifier === 'string')) ordered = settings.prompt_order
     else {
       const groups = settings.prompt_order.filter(isObject)
@@ -91,7 +82,6 @@ function compile(source: JsonObject): Compiled {
       ordered.splice(tail < 0 ? ordered.length : tail, 0, { identifier: 'chatHistory', enabled: true })
     }
   }
-  if (ordered && ordered.length > 256) { add('invalid_order', '选用的提示词顺序不能超过 256 项', 'prompt_order'); ordered = [] }
   const prompts: Prompt[] = [], seen = new Set<string>()
   for (const [index, entry] of (ordered || []).entries()) {
     const path = `prompt_order.${index}`
@@ -107,8 +97,8 @@ function compile(source: JsonObject): Compiled {
     if (item.content !== undefined && typeof item.content !== 'string') add('invalid_content', '提示词 content 必须是字符串', path)
     const position = item.injection_position ?? 0, depth = item.injection_depth ?? 4, order = item.injection_order ?? 100
     if (position !== 0 && position !== 1) add('invalid_position', 'injection_position 只支持 Relative=0 和 In-Chat=1', path)
-    if (!Number.isInteger(depth) || Number(depth) < 0 || Number(depth) > 10_000) add('invalid_depth', 'injection_depth 必须是 0 至 10000 的整数', path)
-    if (!Number.isInteger(order) || Math.abs(Number(order)) > 10_000) add('invalid_injection_order', 'injection_order 必须是 -10000 至 10000 的整数', path)
+    if (!Number.isInteger(depth) || Number(depth) < 0) add('invalid_depth', 'injection_depth 必须是非负整数', path)
+    if (!Number.isInteger(order)) add('invalid_injection_order', 'injection_order 必须是整数', path)
     let triggers: string[] = []
     if (item.injection_trigger !== undefined) {
       if (!Array.isArray(item.injection_trigger) || item.injection_trigger.some(value => typeof value !== 'string' || !generationTypes.has(value))) add('invalid_trigger', '提示词包含不支持的生成触发类型', path)
@@ -129,8 +119,8 @@ function compile(source: JsonObject): Compiled {
   const numeric: Array<[string[], string, number, number, boolean?]> = [
     [['temperature', 'temp_openai'], 'temperature', 0, 5], [['top_p', 'top_p_openai'], 'top_p', 0, 1],
     [['frequency_penalty', 'freq_pen_openai'], 'frequency_penalty', -2, 2], [['presence_penalty', 'pres_pen_openai'], 'presence_penalty', -2, 2],
-    [['openai_max_tokens', 'max_tokens'], 'max_tokens', 1, 2_000_000, true], [['top_k'], 'top_k', 0, 100_000, true],
-    [['seed'], 'seed', -2_147_483_648, 2_147_483_647, true],
+    [['openai_max_tokens', 'max_tokens'], 'max_tokens', 1, Number.POSITIVE_INFINITY, true], [['top_k'], 'top_k', 0, Number.POSITIVE_INFINITY, true],
+    [['seed'], 'seed', Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, true],
   ]
   for (const [fields, target, min, max, integer] of numeric) {
     const field = fields.find(key => settings[key] !== undefined)
@@ -142,7 +132,7 @@ function compile(source: JsonObject): Compiled {
   const stop = settings.stop ?? settings.stop_openai
   if (stop !== undefined && stop !== '') {
     const values = typeof stop === 'string' ? [stop] : stop
-    if (!Array.isArray(values) || values.length > 16 || values.some(value => typeof value !== 'string' || value.length > 512)) add('invalid_stop', 'stop 必须是最多 16 项、每项最多 512 字的字符串数组', 'stop')
+    if (!Array.isArray(values) || values.some(value => typeof value !== 'string')) add('invalid_stop', 'stop 必须是字符串数组', 'stop')
     else if (values.length) parameters.stop = values
   }
   // These are browser-side behaviors, not transferable API transformations.
@@ -204,25 +194,19 @@ export function applyPreset(preset: Pick<PresetView, 'sourceJson' | 'variables'>
     if (!Array.isArray(body.messages) || !body.messages.every(isObject)) throw error('预设需要对象数组 messages')
     history = body.messages as JsonObject[]
   }
-  if (history.length > 20_000) throw error('客户端历史消息过多')
   const last = (role?: string) => messageText([...history].reverse().find(item => !role || item.role === role) || {})
   const macros: Record<string, string> = { ...context, lastMessage: last(), lastUserMessage: last('user'), lastCharMessage: last('assistant'), newline: '\n' }
   const substitute = (text: string): string => {
-    let size = text.length
-    if (size > MAX_PROMPT_CHARS) throw error('单个预设提示词展开过大，请减少重复宏或格式包装')
     return text.replace(/\{\{([\s\S]*?)\}\}/g, (match: string, expression: string) => {
       const key = expression.trim()
       if (!allowedMacros.has(key) || !Object.hasOwn(macros, key)) throw error(`无法展开宏 {{${key}}}`)
       const value = macros[key]!
-      size += value.length - match.length
-      if (size > MAX_PROMPT_CHARS) throw error('单个预设提示词展开过大，请减少重复宏或格式包装')
       return value
     })
   }
   const active = compiled.prompts.filter(prompt => !prompt.triggers.length || prompt.triggers.includes(options.generationType || 'normal'))
   if (!active.some(prompt => prompt.id === 'chatHistory')) throw error('当前生成触发类型未保留 chatHistory')
   const expanded = new Map<Prompt, string>()
-  let expandedBytes = 0
   for (const prompt of active) {
     if (prompt.id === 'chatHistory') continue
     let text = prompt.marker ? context[markers[prompt.id]!] || '' : prompt.content
@@ -231,9 +215,7 @@ export function applyPreset(preset: Pick<PresetView, 'sourceJson' | 'variables'>
     if (prompt.marker && prompt.id === 'charPersonality' && typeof compiled.settings.personality_format === 'string' && compiled.settings.personality_format) text = replaceTemplate(compiled.settings.personality_format, '{{personality}}', text)
     if (prompt.marker && ['worldInfoBefore', 'worldInfoAfter'].includes(prompt.id) && typeof compiled.settings.wi_format === 'string' && compiled.settings.wi_format) text = replaceTemplate(compiled.settings.wi_format, '{0}', text)
     if (text) {
-      const content = substitute(text), size = Buffer.byteLength(content)
-      expandedBytes += size
-      if (size > MAX_PROMPT_CHARS || expandedBytes > MAX_EXPANDED_BYTES) throw error('预设展开后的提示词过大，单项最多 2 MiB，总计最多 4 MiB')
+      const content = substitute(text)
       expanded.set(prompt, content)
     }
   }

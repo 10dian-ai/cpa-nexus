@@ -51,11 +51,11 @@ describe('CPA native model catalog proxy', () => {
     expect(await response.text()).toBe('invalid native key')
   })
 
-  it('rejects oversized and broken upstream bodies with controlled errors', async () => {
+  it('does not cap upstream body sizes and handles broken streams with controlled errors', async () => {
     upstream(async () => new Response('x', { headers: { 'content-length': String(33 * 1024 * 1024) } }))
     let response = await fetch(base + '/api/cpa/models')
-    expect(response.status).toBe(502)
-    expect(JSON.stringify(await response.json())).toContain('CPA 响应超过允许大小')
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('x')
     upstream(async () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('private upstream socket detail')) } })))
     response = await fetch(base + '/api/cpa/models')
     expect(response.status).toBe(502)

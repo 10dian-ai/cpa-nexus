@@ -5,7 +5,7 @@ export const CPA_DEFAULT_URL = 'http://cpa:8317'
 export const CPA_MANAGEMENT_PREFIX = '/v8/management/'
 const DEFAULT_TIMEOUT_MS = 15_000
 const LONG_OPERATION_TIMEOUT_MS = 120_000
-const MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+const MAX_RESPONSE_BYTES = Number.POSITIVE_INFINITY
 
 export class CpaClientError extends Error {
   constructor(public readonly code: string, message: string, public readonly statusCode: number) {

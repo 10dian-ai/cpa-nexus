@@ -21,9 +21,9 @@ let routeCacheGeneration = 0
 export function resetPresetRouteCache() { routeCache.clear(); routeCacheGeneration++ }
 function writeInput(input: PresetWriteInput) {
   const name = input.name?.trim()
-  if (!name || name.length > 120) throw platformError({ statusCode: 400, message: '预设名称需要 1 至 120 个字符' })
+  if (!name) throw platformError({ statusCode: 400, message: '请填写预设名称' })
   const description = input.description ?? ''
-  if (typeof description !== 'string' || description.length > 2000) throw platformError({ statusCode: 400, message: '预设说明不能超过 2000 个字符' })
+  if (typeof description !== 'string') throw platformError({ statusCode: 400, message: '预设说明必须是文本' })
   const sourceJson = parsePresetJson(input.sourceJson), variables = validatePresetVariables(input.variables)
   return { name, description, sourceJson, variables, compatibility: inspectPreset(sourceJson, variables) }
 }
@@ -33,7 +33,7 @@ async function presetIsBound(sql: TransactionSql, id: string) {
   return (await sql`SELECT 1 FROM nexus_key_preset_bindings WHERE preset_id=${id} LIMIT 1`).length > 0
 }
 export async function listPresets(): Promise<PresetView[]> {
-  return (await getDb()`SELECT * FROM nexus_presets ORDER BY updated_at DESC,id LIMIT 1000`).map(view)
+  return (await getDb()`SELECT * FROM nexus_presets ORDER BY updated_at DESC,id`).map(view)
 }
 export async function getPreset(id: string): Promise<PresetView> {
   if (!idValid(id)) throw missing()
@@ -45,8 +45,6 @@ export async function createPreset(input: PresetWriteInput): Promise<PresetView>
   const value = writeInput(input), sql = getDb()
   const result = await sql.begin(async tx => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended('nexus:presets:write',0))`
-    const count = await tx`SELECT count(*)::int AS count FROM nexus_presets`
-    if (count[0]!.count >= 1000) throw platformError({ statusCode: 409, message: '最多保存 1000 个预设，请先删除不需要的预设' })
     const rows = await tx`INSERT INTO nexus_presets(id,name,description,source_json,variables) VALUES(${randomUUID()},${value.name},${value.description},${tx.json(value.sourceJson as any)},${tx.json(value.variables)}) RETURNING *`
     return view(rows[0]!)
   }) as unknown as PresetView

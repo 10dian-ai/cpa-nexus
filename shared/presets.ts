@@ -46,7 +46,8 @@ export interface PresetApplyOptions {
   context?: Record<string, string>
   generationType?: 'normal' | 'continue' | 'impersonate' | 'swipe' | 'regenerate' | 'quiet'
 }
-export const PRESET_MAX_BYTES = 1024 * 1024
+/** Preset documents have no application-imposed size limit. */
+export const PRESET_MAX_BYTES = Number.POSITIVE_INFINITY
 export const PRESET_CONTEXT_KEYS = [
   'user', 'char', 'charIfNotGroup', 'description', 'personality', 'scenario', 'persona',
   'mesExamples', 'wiBefore', 'wiAfter', 'original', 'group', 'model',

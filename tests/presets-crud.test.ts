@@ -154,9 +154,12 @@ describe('persistent preset CRUD, model key routing and request validation', () 
     expect((await request(`/api/presets/${created.id}`, 'DELETE')).status).toBe(200)
   })
 
-  it('validates malformed/oversized API payloads and allows orphan binding removal', async () => {
+  it('accepts large API payloads, validates JSON and allows orphan binding removal', async () => {
     for (const body of [{ name: '', sourceJson: {} }, { name: 'Demo', sourceJson: [] }, { name: 'Demo', sourceJson: {}, extra: true }]) expect((await request('/api/presets', 'POST', body)).status).toBe(400)
-    expect((await request('/api/presets', 'POST', { name: 'Huge', sourceJson: { text: 'x'.repeat(1024 * 1024) } })).status).toBe(413)
+    const large = 'x'.repeat(4 * 1024 * 1024)
+    const uploaded = await request('/api/presets', 'POST', { name: 'Huge', sourceJson: { text: large } })
+    expect(uploaded.status).toBe(201)
+    expect((await uploaded.json()).sourceJson.text).toBe(large)
     expect((await request('/api/presets/routes', 'PUT', { keyId: 'unknown', mode: 'bypass' })).status).toBe(400)
     expect((await request('/api/presets/routes', 'PUT', { keyId: accountId, mode: 'bypass' })).status).toBe(404)
     expect((await request('/api/presets/routes', 'PUT', { keyId: keyA, mode: 'bypass', presetId: accountId })).status).toBe(400)

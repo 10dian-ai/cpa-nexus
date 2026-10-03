@@ -4,7 +4,7 @@
 
 ## 导入和编辑
 
-1. 打开「酒馆预设」，上传 SillyTavern Chat Completion 预设 JSON，或粘贴 JSON 文本。单个文档上限 1 MiB。
+1. 打开「酒馆预设」，上传 SillyTavern Chat Completion 预设 JSON，或粘贴 JSON 文本。预设、上下文变量和提示词展开不设置人为大小上限。
 2. 编辑名称、提示词内容、顺序、启停、深度插入、采样参数和上下文变量。也可以编辑完整原始 JSON。
 3. 查看兼容检查，保存后选择路由。导出保留原始文档中的未知字段，运行时只向模型发送支持的参数。
 
@@ -47,7 +47,7 @@ CPA 模型 key 由平台认证，再使用配置好的 CPA 客户端密钥调用
 | GET / PUT | `/api/presets/routes` | 读取/设置 API key 绑定；PUT 使用 keyId，mode 为 inherit、bypass 或 preset |
 | PATCH | `/api/modules` | `{ "id": "presets", "enabled": true }` |
 
-启用的预设请求使用平台的 `maxRequestBodyMb` JSON 限制，不接受压缩请求体。CPA 原生旧密钥请求继续流式透传；平台模型 key 经过认证与请求校验，响应仍流式传递。CPA 保留协议转换和执行，原生非聊天能力继续走完整内核入口。`x-nexus-preset-id` 响应头标记实际使用的预设，流式响应不缓冲，客户端断开会取消上游。
+预设、上传和请求体不设置人为大小上限；旧 `maxRequestBodyMb` 字段保留兼容并固定为 0（不限制）。预设转换使用 JSON，不接受压缩请求体。CPA 原生旧密钥请求继续流式透传；平台模型 key 经过认证与请求校验，响应仍流式传递。CPA 保留协议转换和执行，原生非聊天能力继续走完整内核入口。`x-nexus-preset-id` 响应头标记实际使用的预设，流式响应不缓冲，客户端断开会取消上游。
 
 预设和绑定持久化在 PostgreSQL（迁移 008、010），进程短缓存减少重复解析，修改立即使当前进程缓存失效；多应用实例最迟在短缓存过期后更新，不增加服务或部署依赖。
 

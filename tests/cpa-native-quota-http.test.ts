@@ -38,7 +38,7 @@ describe('administrator-only native capability and quota HTTP endpoints', () => 
     expect(arbitrary.status).toBe(400); await arbitrary.arrayBuffer()
     expect(fixture.quota).toHaveBeenCalledTimes(1)
     const oversized = await fetch(base + '/api/cpa/quota/native', { method: 'POST', headers, body: JSON.stringify({ provider: 'codex', auth_index: 'x'.repeat(5000) }) })
-    expect(oversized.status).toBe(413); await oversized.arrayBuffer()
+    expect(oversized.status).toBe(400); await oversized.arrayBuffer()
     expect(fixture.quota).toHaveBeenCalledTimes(1)
   })
 })

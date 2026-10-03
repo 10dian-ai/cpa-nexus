@@ -11,13 +11,13 @@ export interface PresetPromptRow {
 export const presetSamplingFields = [
   { key: 'temperature', aliases: ['temp_openai'], name: '温度', min: 0, max: 5, step: 0.05 },
   { key: 'top_p', aliases: ['top_p_openai'], name: 'Top P', min: 0, max: 1, step: 0.01 },
-  { key: 'top_k', aliases: [], name: 'Top K', min: 0, max: 100000, step: 1 },
+  { key: 'top_k', aliases: [], name: 'Top K', min: 0, max: undefined, step: 1 },
   { key: 'min_p', aliases: [], name: 'Min P', min: 0, max: 1, step: 0.01 },
   { key: 'frequency_penalty', aliases: ['freq_pen_openai'], name: '频率惩罚', min: -2, max: 2, step: 0.05 },
   { key: 'presence_penalty', aliases: ['pres_pen_openai'], name: '存在惩罚', min: -2, max: 2, step: 0.05 },
   { key: 'repetition_penalty', aliases: [], name: '重复惩罚', min: 0, max: 10, step: 0.05 },
-  { key: 'openai_max_tokens', aliases: ['max_tokens'], name: '最大回复 Token', min: 1, max: 2000000, step: 1 },
-  { key: 'seed', aliases: [], name: '随机种子', min: -2147483648, max: 2147483647, step: 1 },
+  { key: 'openai_max_tokens', aliases: ['max_tokens'], name: '最大回复 Token', min: 1, max: undefined, step: 1 },
+  { key: 'seed', aliases: [], name: '随机种子', min: undefined, max: undefined, step: 1 },
 ] as const
 
 function record(value: unknown): Record<string, unknown> | null {
