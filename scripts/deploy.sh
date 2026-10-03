@@ -47,6 +47,9 @@ case "$ACTION" in
     # CPA_IMAGE remains the explicit version/digest in .env.cpa. No latest tag,
     # automatic source pull, account import, or real upstream request is used.
     compose up -d --build --wait --wait-timeout 180
+    # Git can replace the mounted Nginx config inode. Recreate the edge so the
+    # current file and routing rules are loaded after every source update.
+    compose up -d --force-recreate --no-deps --wait --wait-timeout 180 edge
     compose ps
     echo 'Ready. Open APP_URL. Login uses ADMIN_USERNAME / ADMIN_PASSWORD in .env.'
     ;;

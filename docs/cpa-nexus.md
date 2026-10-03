@@ -2,6 +2,8 @@
 
 CPA Nexus 使用完整的官方 CLIProxyAPI 作为模型流量内核，CommandCode 是第一个业务模块。当前使用支持官方 API 的 GOAT 订阅：Cookie 用于官方账号查询和专用 API Key 管理；模型请求携带这个 Key，直接访问官方 Provider API。默认部署不再启动原来的网页协议适配器，也不需要服务器安装 Go 或 Node.js。
 
+更新脚本构建本地应用并等待健康检查，随后重建边缘代理，使 Git 更新后的路由配置及文件挂载立即生效。数据库、Redis 卷、CPA 配置与既有管理员密码保留。
+
 本文所有终端命令在 **Ubuntu 服务器的 SSH 终端** 中运行。1Panel 页面操作会单独注明。
 
 ## 服务与数据
