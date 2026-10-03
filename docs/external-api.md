@@ -6,7 +6,7 @@
 
 ## 更新已有部署
 
-CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，应用和 Worker 启动入口会自动应用缺失迁移；本地开发在启动应用前执行 `npm run db:migrate`。已有账号和模型 Key 保留；GOAT 直接调用官方 Provider API，旧模型 Key 使用 `/commandcode/v1`，统一 CPA 入口使用 CPA 客户端 Key。
+CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，应用和 Worker 启动入口会自动应用缺失迁移；本地开发在启动应用前执行 `npm run db:migrate`。已有账号和模型 Key 保留；GOAT 直接调用官方 Provider API。旧模型 Key 同时支持 `/v1` 和 `/commandcode/v1`，统一入口根据密钥自动分流，CPA 客户端 Key 使用 CPA 原生模型或 `commandcode/` 模型别名。
 
 ## 认证
 

@@ -19,6 +19,8 @@ import { acquireLease, releaseLease, renewLease, RENEW_INTERVAL_MS, type Lease }
 import { classifyFailure, type UpstreamFailure } from './errors'
 import { ResponseCapture, ResponseInspection, MAX_RESPONSE_LOG_BYTES } from './response'
 import { readJsonBodyLimited, writeWithBackpressure } from './transport'
+import { resolvePresetRoute } from '../presets'
+import { applyPreset } from '../presets/engine'
 
 type Protocol = ProviderProtocol
 const PROTOCOLS: readonly Protocol[] = PROVIDER_PROTOCOLS
@@ -174,6 +176,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
   let status: 'success' | 'error' | 'cancelled' | 'incomplete' = 'error'
   let errorMessage: string | null = null
   let upstreamFailure: UpstreamFailure | null = null
+  let effectiveBody = body
 
   try {
     const allCandidates = await listCandidates(model)
@@ -210,12 +213,20 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
         upstreamFailure = null
         await touchAccount(accountId)
         const upstreamKey = decryptSecret(account.apiKeyCiphertext)
+        effectiveBody = body
+        if (protocol !== 'systemone') {
+          const preset = await resolvePresetRoute('commandcode', accountId)
+          if (preset) {
+            effectiveBody = applyPreset(preset, body, { protocol: protocol === 'chat/completions' ? 'chat' : protocol })
+            event.node.res.setHeader('x-nexus-preset-id', preset.id)
+          } else event.node.res.removeHeader('x-nexus-preset-id')
+        }
         resetIdle()
         // The owner requested GOAT's normal Provider API integration. Only
         // client-initiated inference reaches this endpoint, using the dedicated
         // account API key; browser cookies and client gateway keys are omitted.
         const upstream = await requestCommandCodeProvider({
-          protocol, body, apiKey: upstreamKey, headers: event.node.req.headers, signal: controller.signal,
+          protocol, body: effectiveBody, apiKey: upstreamKey, headers: event.node.req.headers, signal: controller.signal,
         }, { baseUrl: getConfig().commandcodeApiUrl })
         if (idleTimer) clearTimeout(idleTimer)
         httpStatus = upstream.status
@@ -308,8 +319,9 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
     if (leaseLost) errorMessage = 'Concurrency lease renewal failed; upstream request was cancelled'
     if (!controller.signal.aborted) controller.abort(error)
     if (!event.node.res.headersSent && !disconnected) {
-      httpStatus = /timeout/i.test(errorMessage) ? 504 : 502
-      gatewayError(event, protocol, httpStatus, 'gateway_upstream_error', errorMessage)
+      const validationStatus = Number((error as { statusCode?: number }).statusCode)
+      httpStatus = validationStatus >= 400 && validationStatus < 500 ? validationStatus : /timeout/i.test(errorMessage) ? 504 : 502
+      gatewayError(event, protocol, httpStatus, httpStatus < 500 ? 'preset_route_error' : 'gateway_upstream_error', errorMessage)
     } else if (!event.node.res.writableEnded && !event.node.res.destroyed) {
       event.node.res.destroy()
     }
@@ -319,7 +331,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
       await insertRequestLog({
         id: requestId, keyId: logKeyId, accountId, model, protocol, sessionId: affinity.sessionId,
         status, httpStatus, durationMs: Date.now() - startedAt, streaming,
-        usage: inspection.usage, errorMessage, requestBody: body,
+        usage: inspection.usage, errorMessage, requestBody: effectiveBody,
         responseBody: capture.value(streaming), responseTruncated: capture.truncated,
       })
       await publishUpdate({ type: 'request', ...(accountId ? { accountId } : {}) })

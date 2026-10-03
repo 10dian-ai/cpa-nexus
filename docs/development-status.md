@@ -81,3 +81,10 @@ Docker-only部署脚本新增init/up/update/status/logs/stop/backup，在临时N
 GOAT界面验收：桌面1440与手机390的21项检查全部通过，JS/console错误0、浏览器直接抓官网0；套餐筛选、精确ID分页、矩阵局部滚动、Go不支持API与Enterprise未知、Jev文档端点等核对完成。最终构建又通过8个source标签及来源时间提示断言。截图为 artifacts/gota-verification/ui/1440-official-viewport.png 与390-official-viewport.png。
 
 收尾：本轮app/worker/CPA/模拟官方服务和独立PostgreSQL/Redis已停止，测试端口释放。未改真实.env或真实账号数据，报告保留在ignored artifacts目录。
+# 2026-10-03 · CPA Nexus 0.3.0 酒馆预设与旧入口兼容
+
+增加默认关闭的 `presets` 模块。Chat Completion JSON 导入、编辑、兼容诊断、导出及上下文变量存入 PostgreSQL（迁移 008）；模块默认和账号覆盖支持 preset、bypass、inherit。未知 JSON 字段保留，未支持的有效宏明确拒绝绑定，图片与工具保持结构。Claude 历史中的 system 按酒馆规则转换，Responses 不可见历史引用返回 422；System One、图片/视频和原生 WebSocket 不处理聊天预设。
+
+公开 `/v1/models`、Chat、Messages、Responses 根据密钥识别原 `ccm_` 客户端，恢复旧地址与原始模型 ID；独立 `/commandcode/v1` 继续保留。CCM 选号后只执行一次账号预设，明确拒绝换号时从原请求重新处理，日志保存实际请求及原调用者身份。CPA 原生账号通过实际独占 prefix/model 使用账号预设，原生 provider 支持每 Key 前缀；多 Key 兼容渠道保留其他配置并拆独立渠道，绑定使用稳定 auth_index。CPA 核心镜像与所有其他原生协议继续独立运行。
+
+最终检查：55 个测试文件、527 项全部通过，无跳过项，含真实 PostgreSQL、Redis、官方 CPA v8.0.11 和实际 Nginx；类型检查与生产构建通过。随后导航修正的类型检查、生产构建及 CCM 换号预设不叠加的 12 项请求回归通过。实际浏览器 14 项通过，1440/390 无溢出，无 JS/控制台/失败请求。实际应用、Nginx、CPA 与本机模拟上游的 9 项完整联调通过，验证三种公开路径的账号预设、旧 `/v1` CCM 模型列表和调用、独立模块调用、日志真实归属、账号 bypass 和模块停用。推理验收全部使用本机合成服务，没有调用真实供应商模型。

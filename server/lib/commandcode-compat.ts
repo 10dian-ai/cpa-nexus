@@ -21,10 +21,10 @@ function error(event: H3Event, protocol: string, status: number, code: string, m
 }
 
 /** Legacy manager keys enter CPA for protocol conversion; CPA returns to /v1 for native account execution. */
-export async function handleCommandcodeCompatibility(event: H3Event) {
+export async function handleCommandcodeCompatibility(event: H3Event, options?: { protocolPath?: string }) {
   await requireModule('commandcode')
   const pathname = getRequestURL(event).pathname
-  const path = pathname.replace(/^\/commandcode\/v1\//, '').replace(/\/$/, '')
+  const path = options?.protocolPath || pathname.replace(/^\/commandcode\/v1\//, '').replace(/\/$/, '')
   const method = event.node.req.method || 'GET'
   const cors = gatewayCors('/v1/' + path, method, event.node.req.headers['access-control-request-headers'])
   if (cors) {

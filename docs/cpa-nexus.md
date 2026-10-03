@@ -192,10 +192,13 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 | `POST /api/external/accounts` | app，原外调账号添加/批量导入入口 | 独立服务 Key |
 | `/api/external/accounts`、`/api/external/accounts/:id`、`/api/external/jobs/:id`、`/api/external/pool` | app，外调账号、任务与池信息 | 独立服务 Key |
 | `/api/cpa/*`、`/api/modules/*`、其余平台 `/api/*` | app，平台与 CPA 管理适配 | 管理员登录 |
-| `/v1/*`、`/v1beta/*`、`/openai/v1/*`、`/backend-api/codex/*`、`/api/provider/*` | CPA，原生模型协议 | CPA 模型 Key |
+| `/v1/models`、`/v1/chat/completions`、`/v1/messages`、`/v1/responses` | app 分流及可选预设 → CPA → 原生账号或模块 | CPA 模型 Key 或原 `ccm_` Key |
+| 其余 `/v1/*`、`/v1beta/*`、`/openai/v1/*`、`/backend-api/codex/*`、`/api/provider/*` | CPA，原生模型协议；标准 Chat/Messages/Responses 使用相同预设适配入口 | CPA 模型 Key |
 | `/commandcode/v1/*` | app 旧客户端兼容入口，验证原 Key 后通过 CPA 转换格式 | 模块 `ccm_` Key |
 | `/v1/systemone`、`/cpa-api/v1/systemone` | app，官方 System One 专门入口；CPA 未实现该协议 | 模块 `ccm_` Key |
-| `/cpa-api/*` | CPA，移除前缀后访问原生模型路径；System One 除外 | CPA 模型 Key |
+| `/cpa-api/*` | CPA，移除前缀后访问原生模型路径；标准 Chat/Messages/Responses 使用相同适配入口，System One 除外 | CPA 模型 Key |
+
+原 `ccm_` 客户端既可继续使用 `/v1`，也可使用独立 `/commandcode/v1`；密钥前缀自动选择 CommandCode 兼容链路。酒馆预设是默认关闭的可选处理模块，支持 JSON 导入编辑和模块/账号路由，部署不增加依赖；完整操作、协议边界及账号前缀说明见 [预设模块](presets.md)。
 
 继续使用 `ccm_` Key 的旧客户端可把 Base URL 改为 `https://你的域名/commandcode/v1`。使用 CPA 其他渠道或 `commandcode/` 别名则用 `https://你的域名/v1`、CPA 模型 Key 和 CPA 模型列表。两种 Key 不能混用。
 

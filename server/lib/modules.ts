@@ -13,7 +13,7 @@ export async function isModuleEnabled(id: string): Promise<boolean> {
   const cached = stateCache.get(id)
   if (cached && cached.until > Date.now()) return cached.enabled
   const rows = await getDb()`SELECT enabled FROM platform_modules WHERE id=${id}`
-  const enabled = rows[0]?.enabled !== false
+  const enabled = rows[0] ? rows[0].enabled === true : manifest.defaultEnabled !== false
   stateCache.set(id, { enabled, until: Date.now() + 2000 })
   return enabled
 }
@@ -36,7 +36,8 @@ export async function listModules(): Promise<ModuleView[]> {
     commandcodeProviderHealthy(),
   ])
   return MODULE_MANIFESTS.map(manifest => {
-    const enabled = manifest.required || states.find(state => state.id === manifest.id)?.enabled !== false
+    const state = states.find(state => state.id === manifest.id)
+    const enabled = manifest.required || (state ? state.enabled === true : manifest.defaultEnabled !== false)
     if (!enabled) return { ...manifest, enabled, status: 'disabled', message: '新调用和新同步任务已暂停；进行中的任务会正常结束。' }
     if (manifest.id === 'cpa') return {
       ...manifest, enabled, status: cpa.connected ? 'ready' : cpa.configured ? 'unavailable' : 'unconfigured',
@@ -48,6 +49,7 @@ export async function listModules(): Promise<ModuleView[]> {
       message: commandcodeHealthy ? '官方 Provider 模型目录已同步，账号池使用官方 API。' : '官方 Provider 目录尚未同步或更新失败，请刷新官方目录。',
     }
     if (manifest.id === 'platform') return { ...manifest, enabled, status: 'ready', message: '平台管理服务可访问。' }
+    if (manifest.id === 'presets') return { ...manifest, enabled, status: 'ready', message: '已启用预设路由；未选择预设的请求直接调用原模块。' }
     return { ...manifest, enabled, status: 'unconfigured', message: '此扩展尚未提供运行状态检查，请完成模块接入。' }
   })
 }

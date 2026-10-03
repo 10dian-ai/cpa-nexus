@@ -7,6 +7,7 @@ const fixture = vi.hoisted(() => ({
   authenticate: vi.fn(), acquire: vi.fn(), release: vi.fn(), recordFailure: vi.fn(), recordAllowed: vi.fn(),
   log: vi.fn(), refresh: vi.fn(), upstream: vi.fn(), candidates: vi.fn(), providerModel: vi.fn(),
   maxRequestBodyMb: 1,
+  preset: vi.fn(),
 }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ commandcodeApiUrl: 'http://fixture-provider/provider/v1', encryptionKey: Buffer.alloc(32, 9).toString('base64') }) }))
@@ -19,6 +20,7 @@ vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({
 vi.mock('../server/lib/queues', () => ({ enqueueAccountRefresh: fixture.refresh }))
 vi.mock('../server/lib/logs', () => ({ insertRequestLog: fixture.log }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: async () => {} }))
+vi.mock('../server/lib/presets', () => ({ resolvePresetRoute: fixture.preset }))
 vi.mock('../server/lib/gateway/accounts', () => ({
   listCandidates: fixture.candidates, listGatewayModels: async () => ({ object: 'list', data: [] }),
   touchAccount: async () => {}, recordFailure: fixture.recordFailure, recordModelAllowed: fixture.recordAllowed,
@@ -40,6 +42,7 @@ describe('gateway over real HTTP connections', () => {
   beforeEach(async () => {
     vi.resetAllMocks()
     fixture.maxRequestBodyMb = 1
+    fixture.preset.mockResolvedValue(null)
     fixture.authenticate.mockResolvedValue({ id: 'gateway-key' })
     fixture.providerModel.mockResolvedValue({ id: 'fixture/model', supportedEndpoints: ['chat/completions', 'messages', 'responses'] })
     fixture.release.mockResolvedValue(undefined)
@@ -198,6 +201,12 @@ describe('gateway over real HTTP connections', () => {
     expect(fixture.upstream).toHaveBeenCalledTimes(1)
   })
   it('retries an explicit nonstream model rejection on a different account and releases both leases', async () => {
+    fixture.preset.mockImplementation(async (_module, accountId) => ({
+      id: accountId, variables: {}, sourceJson: {
+        prompts: [{ identifier: 'main', role: 'system', content: 'Account ' + accountId }, { identifier: 'chatHistory', marker: true }],
+        prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] }],
+      },
+    }))
     fixture.upstream.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'MODEL_NOT_IN_PLAN' } }), { status: 401 }))
     const response = await post(url)
     expect(response.status).toBe(200)
@@ -207,6 +216,11 @@ describe('gateway over real HTTP connections', () => {
     expect(fixture.release).toHaveBeenCalledTimes(2)
     expect(fixture.recordFailure).toHaveBeenCalledWith('account-a', 'fixture/model', expect.objectContaining({ category: 'model_denied' }))
     expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-b', status: 'success' }))
+    const first = JSON.parse(fixture.upstream.mock.calls[0]![1].body)
+    const second = JSON.parse(fixture.upstream.mock.calls[1]![1].body)
+    expect(first.messages).toEqual([{ role: 'system', content: 'Account account-a' }, { role: 'user', content: 'hello' }])
+    expect(second.messages).toEqual([{ role: 'system', content: 'Account account-b' }, { role: 'user', content: 'hello' }])
+    expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ requestBody: second }))
   })
   it('never replays an ambiguous failure or a streaming request', async () => {
     for (const stream of [false, true]) {

@@ -8,6 +8,7 @@
 - GOAT 账号池：批量导入、保活、真实额度、自动恢复、并发租约、会话亲和和调用日志。
 - 官方模型与套餐目录：准确模型 ID、原生协议、包含范围、来源和检查时间；未知资料保留未知。
 - 原加账号、外调、任务、账号、密钥、日志与设置接口保留。
+- 可选酒馆 JSON 预设：提示词/参数编辑、模块默认路由和单账号路由。
 - PostgreSQL 持久数据与官网快照，Redis 队列、并发、会话和缓存。
 
 ## Ubuntu / 1Panel 部署
@@ -40,7 +41,7 @@ bash scripts/deploy.sh stop
 
 | 地址 | 密钥 | 用途 |
 |---|---|---|
-| `/v1` | CPA 客户端 Key | 统一原生渠道与 CommandCode 模型，CPA 转换协议 |
+| `/v1` | CPA 客户端 Key 或原 `ccm_` Key | 自动分流；CPA Key 使用原生模型或 `commandcode/` 别名，旧 Key 使用原始模型名 |
 | `/commandcode/v1` | 原 `ccm_` Key | 原始模型名和旧客户端格式，保留日志与会话归属 |
 | `/v1/systemone` 或 `/commandcode/v1/systemone` | `ccm_` Key | 官方决策模型专用接口 |
 | `/api/external/accounts` 等 | `ccm_service_` Key | 加账号、账号查询、任务与池状态 |
@@ -55,7 +56,9 @@ Worker 自动检查：API 目录每 5 分钟、官网每 15 分钟。面板每�
 
 官网快照保存在 PostgreSQL，Redis 缓存 60 秒，进程缓存 5 秒；同一同步使用分布式锁、条件请求与有界超时，不为每个账号重复抓取。
 
-[目录与数据语义](docs/official-catalog.md) · [外调 API](docs/external-api.md) · [模块契约](docs/platform-requirements.md)。
+[目录与数据语义](docs/official-catalog.md) · [外调 API](docs/external-api.md) · [模块契约](docs/platform-requirements.md) · [酒馆预设与账号路由](docs/presets.md)。
+
+酒馆预设模块默认关闭，支持导入/编辑/导出 JSON、提示词编排、采样默认值，以及模块和账号的预设路由。启用后仅选中路由的请求经过预设。CPA 独立账号使用面板显示的模型前缀，CommandCode 在账号池选定账号后执行预设。
 
 ## 本机开发与验证
 

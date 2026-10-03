@@ -180,6 +180,12 @@ describe.skipIf(!nginxBinary)('CPA Nexus native edge transport', () => {
     await mkdir(join(directory, 'logs'))
     await mkdir(join(directory, 'temp'))
     app = createServer(async (request, response) => {
+      if (request.url?.startsWith('/nexus/cpa/v1/')) {
+        const upstream = await fetch(cpaUrl + request.url.replace('/nexus/cpa', ''), { headers: { authorization: request.headers.authorization || '' } })
+        response.writeHead(upstream.status, { 'content-type': 'application/json' })
+        response.end(await upstream.text())
+        return
+      }
       if (request.url === '/cpa' || request.url === '/cpa/providers') {
         response.writeHead(200, { 'content-type': 'text/html' })
         response.end('<html>CPA Nexus panel from app</html>')
@@ -234,7 +240,7 @@ describe.skipIf(!nginxBinary)('CPA Nexus native edge transport', () => {
       throw Error('Production listener contract changed; refusing to start an unadapted test proxy')
     }
     const config = production.replace('listen 3000;', 'listen 127.0.0.1:' + edgePort + ';')
-      .replace('http://app:3000', 'http://127.0.0.1:' + appPort).replace('http://cpa:8317', cpaUrl)
+      .replaceAll('http://app:3000', 'http://127.0.0.1:' + appPort).replaceAll('http://cpa:8317', cpaUrl)
     await writeFile(join(directory, 'nexus-nginx.conf'), config)
     await writeFile(join(directory, 'nginx.conf'), 'worker_processes 1;\npid logs/nginx.pid;\nerror_log logs/error.log;\nevents { worker_connections 128; }\nhttp { client_body_temp_path "' + prefix + 'temp/client"; proxy_temp_path "' + prefix + 'temp/proxy"; include "' + prefix + 'nexus-nginx.conf"; }\n')
     execFileSync(nginxBinary!, ['-t', '-p', prefix, '-c', 'nginx.conf'], { windowsHide: true, stdio: 'pipe' })

@@ -86,6 +86,19 @@ describe('persistent module state and real HTTP gating', () => {
     expect(fixture.states.size).toBe(0)
   })
 
+  it('keeps the optional preset module off until explicitly enabled and preserves its state', async () => {
+    expect(await isModuleEnabled('presets')).toBe(false)
+    expect((await listModules()).find(module => module.id === 'presets')).toMatchObject({ enabled: false, status: 'disabled' })
+    await setModuleEnabled('presets', true)
+    expect(await isModuleEnabled('presets')).toBe(true)
+    expect((await listModules()).find(module => module.id === 'presets')).toMatchObject({ enabled: true, status: 'ready' })
+    resetModuleCache()
+    expect(await isModuleEnabled('presets')).toBe(true)
+    await setModuleEnabled('presets', false)
+    expect(await isModuleEnabled('presets')).toBe(false)
+    expect(await isModuleEnabled('commandcode')).toBe(true)
+  })
+
   it('caches routine state checks but refreshes worker-visible changes after cache expiry', async () => {
     let now = 10_000
     vi.spyOn(Date, 'now').mockImplementation(() => now)

@@ -10,6 +10,7 @@ const groups = computed(() => [
   { label: '平台', links: [
     { to: '/', label: '平台概览', icon: 'i-ph-squares-four-bold' },
     { to: '/modules', label: '模块管理', icon: 'i-ph-stack-bold' },
+    { to: '/presets', label: '酒馆预设', icon: 'i-ph-sliders-horizontal-bold' },
   ] },
   { label: 'CPA 内核', links: [
     { to: '/cpa', label: '内核运行', icon: 'i-ph-cpu-bold' },
@@ -30,7 +31,7 @@ const groups = computed(() => [
     { to: '/logs', label: '请求日志', icon: 'i-ph-list-bullets-bold' },
     { to: '/settings', label: '模块设置', icon: 'i-ph-sliders-horizontal-bold' },
   ] }] : []),
-  ...(moduleData.value?.modules.filter(module => module.enabled && !['cpa', 'commandcode', 'platform'].includes(module.id) && module.navigation.length).map(module => ({ label: module.name, links: module.navigation })) || []),
+  ...(moduleData.value?.modules.filter(module => module.enabled && !['cpa', 'commandcode', 'platform', 'presets'].includes(module.id) && module.navigation.length).map(module => ({ label: module.name, links: module.navigation })) || []),
 ])
 const current = computed(() => groups.value.flatMap(group => group.links).find(link => link.to === '/' || link.to === '/cpa' ? route.path === link.to : route.path.startsWith(link.to)) || groups.value[0]!.links[0]!)
 watch(() => route.fullPath, () => { mobileOpen.value = false })

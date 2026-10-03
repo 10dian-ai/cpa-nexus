@@ -5,6 +5,7 @@ export interface ModuleManifest {
   description: string
   kind: 'kernel' | 'extension' | 'platform'
   required: boolean
+  defaultEnabled?: boolean
   version: string
   capabilities: string[]
   navigation: ModuleNavigation[]
@@ -34,6 +35,12 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
       { to: '/keys', label: '模块密钥', icon: 'i-ph-key-bold' },
       { to: '/logs', label: '模块日志', icon: 'i-ph-list-bullets-bold' },
     ],
+  },
+  {
+    id: 'presets', name: '酒馆预设', kind: 'extension', required: false, defaultEnabled: false, version: '0.1.0',
+    description: '导入、编辑酒馆 JSON 预设，为模块和账号选择请求处理路由。',
+    capabilities: ['JSON 导入与导出', '提示词编排', '采样参数', '模块与账号路由'],
+    navigation: [{ to: '/presets', label: '酒馆预设', icon: 'i-ph-sliders-horizontal-bold' }],
   },
   {
     id: 'platform', name: '平台管理', kind: 'platform', required: true, version: '0.2.0',
