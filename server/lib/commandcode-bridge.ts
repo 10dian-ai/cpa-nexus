@@ -91,8 +91,8 @@ async function ensureBridgeCredential(): Promise<string> {
     }
     const secret = BRIDGE_KEY_PREFIX + randomBytes(32).toString('base64url')
     const id = randomUUID()
-    await tx`INSERT INTO gateway_keys(id,name,prefix,secret_hash,enabled)
-      VALUES(${id},'CPA Nexus · CommandCode 内部桥接',${secret.slice(0, 12)},${hashGatewayKey(secret)},true)`
+    await tx`INSERT INTO gateway_keys(id,name,prefix,secret_hash,enabled,module_id)
+      VALUES(${id},'CPA Nexus · CommandCode 内部桥接',${secret.slice(0, 12)},${hashGatewayKey(secret)},true,'commandcode')`
     await tx`INSERT INTO module_integrations(module_id,key_id,credential_ciphertext)
       VALUES('commandcode',${id},${encryptSecret(secret)}) ON CONFLICT(module_id)
       DO UPDATE SET key_id=EXCLUDED.key_id,credential_ciphertext=EXCLUDED.credential_ciphertext,updated_at=now()`

@@ -6,7 +6,7 @@ export interface CpaConfigCredential { id?: string; name?: string; auth_index?: 
 export interface CpaConfigAccountRoute { accountId: string; prefix: string; supported: boolean; reason?: string; name?: string; provider?: string }
 export interface CpaConfigRoutingClient { request(input: CpaRequest): Promise<CpaResponse> }
 interface Entry {
-  family: string; groupIndex: number; keyIndex: number; id: string; authIndex: string; prefix: string; managed: boolean; name: string
+  family: string; groupIndex: number; keyIndex: number; id: string; authIndex: string; prefix: string; managed: boolean; name: string; enabled: boolean
 }
 const FAMILIES = ['gemini', 'interactions', 'claude', 'codex', 'xai', 'meta', 'openai-compatibility', 'vertex']
 const MANAGED_CHANNELS = new Set(['nexus-commandcode', 'nexus-commandcode-messages'])
@@ -72,11 +72,31 @@ function entries(config: JsonObject): Entry[] {
           ? (family === 'openai-compatibility' ? family : indexFamily + '-api-key') + ':' + base + '+' + apiKey
           : 'id:' + id
         result.push({ family, groupIndex, keyIndex: keys.length ? keyIndex : -1, id, authIndex: hash(seed, 16), prefix,
-          managed: MANAGED_CHANNELS.has(string(group.name)), name: (string(group.name) || family) + (expanded.length > 1 ? ' · Key ' + (keyIndex + 1) : '') })
+          managed: MANAGED_CHANNELS.has(string(group.name)), name: (string(group.name) || family) + (expanded.length > 1 ? ' · Key ' + (keyIndex + 1) : ''),
+          enabled: group.disabled !== true && key.disabled !== true && !(Array.isArray(effective['excluded-models']) && effective['excluded-models'].includes('*')) })
       })
     })
   }
   return result
+}
+
+export interface CpaConfigGroupSource {
+  accountId: string; name: string; provider: string; prefix: string; authIds: string[]; enabled: boolean; supported: boolean; reason?: string
+}
+
+/** Safe source metadata for group routing; runtime IDs identify registry owners, never upstream secrets. */
+export async function readCpaConfigGroupSources(client: CpaConfigRoutingClient): Promise<CpaConfigGroupSource[]> {
+  const all = entries(await readConfig(client)).filter(entry => !entry.managed)
+  const sources = new Map<string, CpaConfigGroupSource>()
+  for (const entry of all) {
+    const accountId = 'config:' + entry.authIndex
+    const duplicate = all.filter(other => other.authIndex === entry.authIndex).length > 1
+    const current = sources.get(accountId)
+    if (current) { current.authIds.push(entry.id); current.enabled ||= entry.enabled; continue }
+    sources.set(accountId, { accountId, name: entry.name, provider: entry.family, prefix: entry.prefix, authIds: [entry.id], enabled: entry.enabled,
+      supported: !duplicate, ...(duplicate ? { reason: '重复的上游地址和密钥无法唯一分流，请先合并重复配置' } : {}) })
+  }
+  return [...sources.values()]
 }
 async function readConfig(client: CpaConfigRoutingClient): Promise<JsonObject> {
   const response = await client.request({ path: 'config/api-keys' })

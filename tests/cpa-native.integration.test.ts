@@ -104,6 +104,7 @@ describe.skipIf(!binary)('real CPA binary integration with an isolated local ups
     base = `http://127.0.0.1:${port}`
     vi.stubEnv('CPA_URL', base)
     vi.stubEnv('CPA_CLIENT_KEY', clientKey)
+    vi.stubEnv('CPA_MANAGEMENT_KEY', managementKey)
     const config = {
       'config-version': 8,
       server: { host: '127.0.0.1', port, discovery: { enabled: false } },

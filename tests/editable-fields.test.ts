@@ -57,4 +57,25 @@ describe('edit forms receiving refreshed data', () => {
     expect(form.value!.label).toBe('Local edit')
     expect(dirty.value).toBe(false)
   })
+  it('tracks multi-group selections by value and preserves local choices during live refresh', async () => {
+    const data = ref({ id: 'first', label: 'Original', groupIds: ['group-a'] })
+    scope = effectScope()
+    const { form, dirty, reset } = scope.run(() => useEditableFields(() => ({ label: data.value.label, groupIds: [...data.value.groupIds] }), () => data.value.id))!
+    form.value!.groupIds = ['group-a', 'group-b']
+    expect(dirty.value).toBe(true)
+    form.value!.groupIds = ['group-a']
+    expect(dirty.value).toBe(false)
+    data.value = { ...data.value, groupIds: ['group-b'] }
+    await nextTick()
+    expect(form.value!.groupIds).toEqual(['group-b'])
+    expect(dirty.value).toBe(false)
+    form.value!.groupIds = ['group-a', 'group-b']
+    data.value = { ...data.value, label: 'Remote label', groupIds: ['group-c'] }
+    await nextTick()
+    expect(form.value).toEqual({ label: 'Remote label', groupIds: ['group-a', 'group-b'] })
+    expect(dirty.value).toBe(true)
+    reset()
+    expect(form.value!.groupIds).toEqual(['group-c'])
+    expect(dirty.value).toBe(false)
+  })
 })

@@ -15,6 +15,9 @@ const fixture = vi.hoisted(() => ({
   accounts: { total: 19, enabled: 14, ready: 8, attention: 3, pending: 6, last_sync_at: '2026-09-12T01:02:03Z' } as Record<string, any>,
   requests: { total: 39, success: 20, failed: 7 },
 }))
+vi.mock('../server/lib/groups', async () => { const { z } = await import('zod'); return {
+  groupIdsSchema: z.array(z.string().uuid()).min(1), assertGroupIds: async (ids: string[]) => ids,
+} })
 vi.mock('../server/lib/queues', () => ({
   queueImport: fixture.queueImport,
   getImportQueue: () => ({ getJob: fixture.getJob }),
@@ -106,11 +109,19 @@ describe('external account and pool API over HTTP', () => {
   it.each([
     {}, { token, cookie: token }, { token, text: token }, { token, unsupported: true },
     { token: token + '\n' + token }, { cookie: token + '\r' + token },
-    { token: '' }, { token, groupName: 'g'.repeat(101) },
+    { token: '' }, { token, groupName: 'g'.repeat(101) }, { token, groupIds: [] }, { token, groupIds: ['invalid'] },
   ])('rejects an invalid import request before enqueueing %#', async body => {
     const response = await post(body)
     expect(response.status).toBe(400)
     expect(fixture.queueImport).not.toHaveBeenCalled()
+  })
+  it('passes routing groups through both admin and external asynchronous import contracts', async () => {
+    const groupIds = ['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222']
+    const external = await post({ token, groupIds }); expect(external.status).toBe(202); await external.arrayBuffer()
+    expect(fixture.queueImport).toHaveBeenLastCalledWith(token, undefined, groupIds)
+    const admin = await post({ text: token, groupIds }, '/api/accounts/import', { cookie: 'ccm_session=test-admin-session' })
+    expect(admin.status).toBe(200); await admin.arrayBuffer()
+    expect(fixture.queueImport).toHaveBeenLastCalledWith(token, undefined, groupIds)
   })
 
   it.each([

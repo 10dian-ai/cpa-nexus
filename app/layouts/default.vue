@@ -11,6 +11,7 @@ const groups = computed(() => [
     { to: '/', label: '平台概览', icon: 'i-ph-squares-four-bold' },
     { to: '/modules', label: '模块管理', icon: 'i-ph-stack-bold' },
     { to: '/keys', label: 'API Key', icon: 'i-ph-key-bold' },
+    { to: '/groups', label: '调用分组', icon: 'i-ph-users-four-bold' },
     { to: '/presets', label: '酒馆预设', icon: 'i-ph-sliders-horizontal-bold' },
   ] },
   { label: 'CPA 内核', links: [

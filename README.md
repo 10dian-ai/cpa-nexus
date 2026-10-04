@@ -43,14 +43,14 @@ bash scripts/deploy.sh stop
 
 | 地址 | 密钥 | 用途 |
 |---|---|---|
-| `/v1` | 统一模型 API Key，`ccm_` 前缀 | 按 Key 的模块绑定转发；CPA Key 使用原生模型名，CommandCode Key 使用原模型 ID |
-| `/commandcode/v1` | 绑定 CommandCode 的 `ccm_` Key | 保留独立模块入口和旧客户端格式、日志与会话归属 |
-| `/v1/systemone` 或 `/commandcode/v1/systemone` | 绑定 CommandCode 的 `ccm_` Key | 官方决策模型专用接口 |
+| `/v1` | 统一模型 API Key，`ccm_` 前缀 | 按 Key 与来源账号的共同分组转发，可跨 CPA 和 CommandCode 来源调用 |
+| `/commandcode/v1` | 拥有 CommandCode 账号所属分组的 `ccm_` Key | 保留独立模块入口和旧客户端格式、日志与会话归属 |
+| `/v1/systemone` 或 `/commandcode/v1/systemone` | 拥有 CommandCode 账号所属分组的 `ccm_` Key | 官方决策模型专用接口 |
 | `/api/external/accounts` 等 | `ccm_service_` Key | 加账号、账号查询、任务与池状态 |
 
 Anthropic 模型使用官方 Messages，其他模型按官方 `supported_endpoints` 调用。Cookie 仅用于管理，推理只发送选定账号的正常 API Key。旧 `commandcode-proxy` 不再是默认部署或构建依赖，原始快照保留为历史材料。
 
-一个模型 Key 绑定一个模块，切换绑定后权限立即按新模块检查；绑定 CPA 的 Key 不能调用 `commandcode/` 模型。旧 `ccm_` Key 升级后默认绑定 CommandCode。历史 CPA 客户端 Key 继续兼容原生入口，在统一页面的 **CPA 历史客户端密钥** 中管理；它们不参与按 Key 的预设路由。迁移日常客户端后可以撤销对应旧 Key，但应保留 `CPA_CLIENT_KEY` 作为平台内部调用凭证。原生 WebSocket 和非 Chat/Messages/Responses 协议仍使用历史 CPA 客户端 Key。
+模型 Key 选择一个或多个分组，不再选择单一模块。账号来源也可以属于多个分组，只有 Key 与来源存在共同的已启用分组才可调用，模型列表与重试遵守相同权限。升级时存量账号和 Key 进入默认组；将账号与 Key 改为各自独立的分组即可分流。历史 CPA 客户端 Key 继续原生兼容，不参与平台分组和酒馆处理；可迁移日常调用到统一分组 Key，同时保留内部 `CPA_CLIENT_KEY`。原生 WebSocket 和非 Chat/Messages/Responses 协议继续使用历史 CPA 客户端 Key。
 
 ## 官方目录与缓存
 
@@ -60,11 +60,11 @@ Worker 自动检查：API 目录每 5 分钟、官网每 15 分钟。面板每�
 
 官网快照保存在 PostgreSQL，Redis 缓存 60 秒，进程缓存 5 秒；同一同步使用分布式锁、条件请求与有界超时，不为每个账号重复抓取。
 
-[目录与数据语义](docs/official-catalog.md) · [外调 API](docs/external-api.md) · [模块契约](docs/platform-requirements.md) · [酒馆预设与 API Key 路由](docs/presets.md)。
+[目录与数据语义](docs/official-catalog.md) · [外调 API](docs/external-api.md) · [模块契约](docs/platform-requirements.md) · [账号与 Key 分组](docs/groups.md) · [酒馆预设与 API Key 路由](docs/presets.md)。
 
 [CPA 原生功能与完整控制台](docs/cpa-native.md) 列出原版 OAuth、配额、插件、原生密钥及高级管理入口。
 
-酒馆预设模块默认关闭，支持导入/编辑/导出 JSON、提示词编排和采样默认值。启用后在酒馆页面选择模型 API Key：例如 KA 保持直连，KB 绑定预设，客户端使用 KB 时才执行该预设。路由按客户端 Key 决定，与账号池最终选择的上游账号无关；System One 保持原通路。
+酒馆预设模块默认关闭，支持导入/编辑/导出 JSON。模型 Key 可选择是否经过酒馆模块：启用后按顺序叠加全部已开启预设；分组继续约束可用账号。System One 保持原通路。
 
 ## 本机开发与验证
 

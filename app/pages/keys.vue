@@ -7,13 +7,13 @@ function loadLegacyKeys(event: Event) {
 </script>
 
 <template>
-  <AppPageHeader title="API Key" description="统一管理调用密钥。模型 API Key 绑定一个模块，客户端使用同一个模型入口。" />
+  <AppPageHeader title="API Key" description="模型 Key 按所选分组调用各来源的模型，统一使用 /v1 入口。外调管理 Key 用于 CommandCode 的账号管理接口。" />
   <div class="form-stack">
     <KeyManager />
     <details class="raw-details" @toggle="loadLegacyKeys">
       <summary><UIcon name="i-ph-clock-counter-clockwise-bold" />CPA 历史客户端密钥</summary>
       <div v-if="legacyLoaded" class="legacy-keys">
-        <p class="nexus-description">这里保留 CPA 内核原有的客户端密钥。建议在上方创建绑定 CPA 的模型 API Key，再更新客户端配置；确认调用正常后可移除历史客户端密钥。平台内部凭证由平台保留。</p>
+        <p class="nexus-description">这里保留 CPA 内核原有的客户端密钥。建议在上方创建模型 API Key 并选择调用分组，再更新客户端配置；确认调用正常后可移除历史客户端密钥。平台内部凭证由平台保留。</p>
         <CpaGate><CpaClientKeys /></CpaGate>
       </div>
     </details>

@@ -9,6 +9,7 @@ import { listGatewayModels } from './gateway/accounts'
 import { gatewayCors } from './gateway/cors'
 import { makeProviderHeaders, readJsonBodyLimited, writeWithBackpressure } from './gateway/transport'
 import { ORIGINAL_KEY_ID_HEADER, ORIGINAL_KEY_SIGNATURE_HEADER, signOriginalGatewayKey } from './commandcode-identity'
+import { assertCpaGroupRoutingSafe } from './cpa/group-routing'
 
 const PROTOCOLS = ['chat/completions', 'messages', 'responses']
 const IDLE_MS = 120_000
@@ -21,7 +22,7 @@ function error(event: H3Event, protocol: string, status: number, code: string, m
 }
 
 /** Legacy manager keys enter CPA for protocol conversion; CPA returns to /v1 for native account execution. */
-export async function handleCommandcodeCompatibility(event: H3Event, options?: { protocolPath?: string }) {
+export async function handleCommandcodeCompatibility(event: H3Event, options?: { protocolPath?: string; body?: Record<string, unknown> }) {
   await requireModule('commandcode')
   const pathname = getRequestURL(event).pathname
   const path = options?.protocolPath || pathname.replace(/^\/commandcode\/v1\//, '').replace(/\/$/, '')
@@ -41,11 +42,11 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
   const secret = typeof auth === 'string' && /^Bearer\s+/i.test(auth) ? auth.replace(/^Bearer\s+/i, '').trim() : typeof xKey === 'string' ? xKey.trim() : ''
   const key = secret ? await authenticateGatewayKey(secret) : null
   if (!key) { error(event, path, 401, 'authentication_error', 'A valid manager API key is required'); return }
-  if ((key.moduleId || 'commandcode') !== 'commandcode') { error(event, path, 403, 'module_binding_error', 'This API key is not bound to Command Code'); return }
+  if (key.moduleId !== 'auto' && (key.moduleId || 'commandcode') !== 'commandcode') { error(event, path, 403, 'module_binding_error', 'This API key is not bound to Command Code'); return }
   if (secret.startsWith('ccm_nexus_')) { error(event, path, 401, 'authentication_error', 'Use a client model key instead of the internal bridge key'); return }
-  if (path === 'models') return listGatewayModels()
+  if (path === 'models') return listGatewayModels(key.id)
   let body: Record<string, unknown>
-  try { body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024) }
+  try { body = options?.body ?? await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024) }
   catch (failure) {
     const status = Number((failure as { statusCode?: number }).statusCode) || 400
     error(event, path, status, 'invalid_request_error', status === 413 ? 'Request body exceeds the configured limit' : 'Request body must be a JSON object')
@@ -54,6 +55,7 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
   const model = typeof body.model === 'string' ? body.model.trim() : ''
   if (!model || model.length > 256) { error(event, path, 400, 'invalid_request_error', 'model must be a non-empty string of at most 256 characters'); return }
   body.model = model.startsWith('commandcode/') ? model : 'commandcode/' + model
+  await assertCpaGroupRoutingSafe()
   let destination: string
   const clientKey = process.env.CPA_CLIENT_KEY?.trim()
   try {

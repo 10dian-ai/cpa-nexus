@@ -14,7 +14,7 @@ vi.mock('../server/lib/auth', () => ({
   authenticateGatewayKey: fixture.authenticate,
   findEnabledModelKey: fixture.originalKey,
   requireModelKeyModule: async (key: { moduleId?: string }, moduleId: string) => {
-    if ((key.moduleId || 'commandcode') !== moduleId) throw Object.assign(new Error('Key is bound to another module'), { statusCode: 403 })
+    if (key.moduleId !== 'auto' && (key.moduleId || 'commandcode') !== moduleId) throw Object.assign(new Error('Key is bound to another module'), { statusCode: 403 })
   },
 }))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ commandcodeApiUrl: 'http://fixture-provider/provider/v1', encryptionKey: Buffer.alloc(32, 9).toString('base64') }) }))
@@ -137,6 +137,7 @@ describe('gateway over real HTTP connections', () => {
       await response.text()
     }
     await invoke('Bearer ccm_nexus_test-bridge-key')
+    expect(fixture.candidates).toHaveBeenLastCalledWith('fixture/model', originalId)
     await vi.waitFor(() => expect(fixture.log).toHaveBeenLastCalledWith(expect.objectContaining({ keyId: originalId })))
     expect(fixture.acquire.mock.calls[0]![1].affinityHash).toBe(extractAffinity({ keyId: originalId, body: {}, headers: { 'x-session-id': session } }).affinityHash)
     const upstreamHeaders = fixture.upstream.mock.calls[0]![1].headers as Headers
@@ -144,12 +145,25 @@ describe('gateway over real HTTP connections', () => {
     expect(upstreamHeaders.get(ORIGINAL_KEY_SIGNATURE_HEADER)).toBeNull()
     expect(fixture.preset).toHaveBeenLastCalledWith(originalId)
     await invoke('Bearer original-manager-client-key')
+    expect(fixture.candidates).toHaveBeenLastCalledWith('fixture/model', 'gateway-key')
     await vi.waitFor(() => expect(fixture.log).toHaveBeenLastCalledWith(expect.objectContaining({ keyId: 'gateway-key' })))
     expect(fixture.preset).toHaveBeenLastCalledWith('gateway-key')
     fixture.preset.mockClear()
     await invoke('Bearer ccm_nexus_test-bridge-key', { ...signedHeaders, [ORIGINAL_KEY_SIGNATURE_HEADER]: 'A'.repeat(43) })
+    expect(fixture.candidates).toHaveBeenLastCalledWith('fixture/model', 'gateway-key')
     await vi.waitFor(() => expect(fixture.log).toHaveBeenLastCalledWith(expect.objectContaining({ keyId: 'gateway-key' })))
     expect(fixture.preset).not.toHaveBeenCalled()
+  })
+  it('returns no available accounts without forwarding when the key group has no eligible account', async () => {
+    fixture.authenticate.mockResolvedValue({ id: 'isolated-group-key', moduleId: 'auto' })
+    fixture.candidates.mockResolvedValue([])
+    fixture.acquire.mockResolvedValue({ ok: false, reason: 'no_accounts' })
+    const response = await post(url)
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ error: { code: 'no_available_accounts' } })
+    expect(fixture.candidates).toHaveBeenCalledWith('fixture/model', 'isolated-group-key')
+    expect(fixture.upstream).not.toHaveBeenCalled()
+    expect(fixture.acquire.mock.calls[0]![1].candidates).toEqual([])
   })
   it('uses the same selected account with KA direct and KB applying its own preset', async () => {
     fixture.authenticate.mockImplementation(async secret => ({ id: secret === 'ccm_kb' ? 'KB' : 'KA', moduleId: 'commandcode' }))
@@ -273,6 +287,16 @@ describe('gateway over real HTTP connections', () => {
     expect(fixture.preset.mock.calls).toEqual([['gateway-key'], ['gateway-key']])
     expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ requestBody: second }))
   })
+  it('never widens group candidates after a model rejection when only one eligible account exists', async () => {
+    fixture.authenticate.mockResolvedValue({ id: 'one-account-group-key', moduleId: 'auto' })
+    fixture.candidates.mockResolvedValue([{ id: 'account-a', limit: 1, apiKeyCiphertext: 'cipher-a' }])
+    fixture.upstream.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'MODEL_NOT_IN_PLAN' } }), { status: 401 }))
+    const response = await post(url)
+    expect(response.status).toBe(401); await response.text()
+    expect(fixture.candidates).toHaveBeenCalledExactlyOnceWith('fixture/model', 'one-account-group-key')
+    expect(fixture.upstream).toHaveBeenCalledTimes(1)
+    expect(fixture.acquire).toHaveBeenCalledTimes(1)
+  })
   it('never replays an ambiguous failure or a streaming request', async () => {
     for (const stream of [false, true]) {
       fixture.upstream.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: stream ? 'MODEL_NOT_IN_PLAN' : 'upstream_error' } }), { status: 502 }))
@@ -318,6 +342,31 @@ describe('gateway over real HTTP connections', () => {
       expect(upstreamSignal?.aborted).toBe(true)
       expect(fixture.release).toHaveBeenCalledTimes(1)
       expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }))
+    })
+  })
+  it('logs a completed Messages stream as successful when CPA closes after the terminal frame before HTTP EOF', async () => {
+    let upstreamSignal: AbortSignal | undefined
+    const wire = 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"complete answer"}}\n\n'
+      + 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n\n'
+      + 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    fixture.upstream.mockImplementationOnce(async (_url, init: RequestInit) => {
+      upstreamSignal = init.signal as AbortSignal
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode(wire))
+        upstreamSignal!.addEventListener('abort', () => controller.error(upstreamSignal!.reason), { once: true })
+      } }), { headers: { 'content-type': 'text/event-stream' } })
+    })
+    const controller = new AbortController()
+    const response = await actualFetch(url + '/v1/messages', { method: 'POST', headers: { authorization: 'Bearer fixture-gateway-key', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'fixture/model', stream: true, max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }), signal: controller.signal })
+    const reader = response.body!.getReader()
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('message_stop')
+    controller.abort()
+    await vi.waitFor(() => {
+      expect(upstreamSignal?.aborted).toBe(true)
+      expect(fixture.release).toHaveBeenCalledTimes(1)
+      expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ status: 'success', httpStatus: 200, errorMessage: null, usage: { output_tokens: 4 } }))
+      expect(fixture.recordAllowed).toHaveBeenCalledWith('account-a', 'fixture/model')
     })
   })
   it('pauses the upstream idle timer while waiting for downstream backpressure', async () => {

@@ -9,11 +9,11 @@ import { getDb } from './db'
 export const IMPORT_QUEUE = 'ccm-import'
 export const REFRESH_QUEUE = 'ccm-refresh'
 export const REFRESH_PRIORITY = { manual: 1, request: 2, scheduled: 20 } as const
-export interface ImportJobData { entries: { line: number; ciphertext: string; fingerprint: string }[]; groupName?: string; rejected: { line: number; message: string }[]; duplicates: number }
+export interface ImportJobData { entries: { line: number; ciphertext: string; fingerprint: string }[]; groupName?: string; groupIds?: string[]; rejected: { line: number; message: string }[]; duplicates: number }
 let imports: Queue<ImportJobData> | undefined, refreshes: Queue | undefined
 export function getImportQueue() { return imports ??= new Queue<ImportJobData>(IMPORT_QUEUE, { connection: createRedisConnection(), defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: { age: 86400, count: 200 }, removeOnFail: { age: 604800, count: 200 } } }) }
 export function getRefreshQueue() { return refreshes ??= new Queue(REFRESH_QUEUE, { connection: createRedisConnection(), defaultJobOptions: { priority: REFRESH_PRIORITY.scheduled, attempts: 3, backoff: { type: 'exponential', delay: 10000 }, removeOnComplete: true, removeOnFail: { age: 3600, count: 1000 } } }) }
-export async function queueImport(text: string, groupName?: string) {
+export async function queueImport(text: string, groupName?: string, groupIds?: string[]) {
   const parsed = parseCookieText(text)
   const unique = parsed.entries.map(entry => ({ ...entry, fingerprint: fingerprint(entry.cookie) }))
   const existing = unique.length ? await getDb()`SELECT credential_fingerprint FROM managed_accounts WHERE credential_fingerprint IN ${getDb()(unique.map(e=>e.fingerprint))}` : []
@@ -23,7 +23,7 @@ export async function queueImport(text: string, groupName?: string) {
   const jobId = randomUUID()
   await getImportQueue().add('import', {
     entries: accepted.map(entry => ({ line: entry.line, ciphertext: encryptSecret(entry.cookie), fingerprint: entry.fingerprint })),
-    ...(groupName !== undefined ? { groupName } : {}), rejected: parsed.errors, duplicates,
+    ...(groupName !== undefined ? { groupName } : {}), ...(groupIds !== undefined ? { groupIds } : {}), rejected: parsed.errors, duplicates,
   }, { jobId })
   return { jobId, accepted: accepted.length, rejected: parsed.errors.length, duplicates }
 }

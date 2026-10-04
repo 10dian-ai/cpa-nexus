@@ -1,4 +1,5 @@
 import type { ModelModuleId } from './keys'
+import type { GroupBinding } from './groups'
 
 export interface UsageWindow { used: number; cap: number; exceeded: boolean; resetAt: number }
 export interface AccountSnapshot {
@@ -9,7 +10,7 @@ export interface AccountSnapshot {
   usage: Record<string, unknown> | null
   fetchedAt: string
 }
-export interface AccountView {
+export interface AccountView extends Partial<GroupBinding> {
   id: string; label: string; email: string | null; groupName: string; note: string
   enabled: boolean; quotaPaused: boolean; quotaResumeAt: string | null; status: 'pending' | 'ready' | 'credential_expired' | 'sync_error'
   maxConcurrency: number; inFlight: number; hasApiKey: boolean
@@ -28,7 +29,7 @@ export const DEFAULT_SETTINGS: SystemSettings = {
   refreshConcurrency: 2, refreshRatePerSecond: 2,
   logRetentionDays: 30, affinityTtlSeconds: 86400, maxRequestBodyMb: 0,
 }
-export interface GatewayKeyView { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; createdAt: string; lastUsedAt: string | null }
+export interface GatewayKeyView extends Partial<GroupBinding> { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; createdAt: string; lastUsedAt: string | null }
 export interface RequestLogView {
   id: string; accountId: string | null; accountLabel: string | null; keyName: string | null
   model: string; protocol: string; status: string; httpStatus: number | null

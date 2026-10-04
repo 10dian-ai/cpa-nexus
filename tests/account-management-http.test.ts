@@ -42,6 +42,17 @@ describe('account edit HTTP validation', () => {
     await response.arrayBuffer()
     expect(fixture.patch).toHaveBeenCalledWith(ID, fields)
   })
+  it('accepts multiple routing groups and rejects an empty or malformed group list', async () => {
+    const groupIds = [ID, '22222222-2222-4222-8222-222222222222']
+    const response = await update({ groupIds })
+    expect(response.status).toBe(200); await response.arrayBuffer()
+    expect(fixture.patch).toHaveBeenLastCalledWith(ID, { groupIds })
+    fixture.patch.mockClear()
+    for (const groupIds of [[], ['invalid'], 'default']) {
+      const response = await update({ groupIds }); expect(response.status).toBe(400); await response.arrayBuffer()
+    }
+    expect(fixture.patch).not.toHaveBeenCalled()
+  })
   it('rejects empty, unknown and out-of-range changes before updating storage', async () => {
     for (const fields of [{}, { ignored: true }, { maxConcurrency: 0 }, { maxConcurrency: 101 },
       { maxConcurrency: 2.5 }, { maxConcurrency: '2' }, { enabled: 'false' }, { label: 'a'.repeat(201) }, { note: 'n'.repeat(5001) }]) {

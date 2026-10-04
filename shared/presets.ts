@@ -1,3 +1,4 @@
+import type { ModelModuleId } from './keys'
 export interface PresetIssue {
   code: string
   severity: 'warning' | 'error'
@@ -33,7 +34,7 @@ export interface PresetRouteInput {
 }
 export interface KeyPresetBinding {
   keyId: string
-  moduleId: 'commandcode' | 'cpa'
+  moduleId: ModelModuleId
   mode: 'preset' | 'stack' | 'bypass'
   presetId: string | null
   updatedAt: string

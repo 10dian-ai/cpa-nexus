@@ -1,6 +1,11 @@
 import { computed, ref, watch, type Ref } from 'vue'
 
-// Synchronize flat edit forms with live data while retaining fields the user changed.
+function sameField(left: unknown, right: unknown) {
+  return Object.is(left, right) || (Array.isArray(left) && Array.isArray(right) &&
+    left.length === right.length && left.every((value, index) => Object.is(value, right[index])))
+}
+
+// Synchronize scalar and selection-list fields while retaining unsaved edits.
 export function useEditableFields<T extends object>(source: () => T | null | undefined, identity: () => unknown = () => undefined) {
   const form = ref<T | null>(null) as Ref<T | null>
   const baseline = ref<T | null>(null) as Ref<T | null>
@@ -12,14 +17,14 @@ export function useEditableFields<T extends object>(source: () => T | null | und
       form.value = { ...next }
     } else {
       for (const key of Object.keys(next) as (keyof T)[]) {
-        if (Object.is(form.value[key], baseline.value[key])) form.value[key] = next[key]
+        if (sameField(form.value[key], baseline.value[key])) form.value[key] = next[key]
       }
     }
     baseline.value = next
     previousIdentity = id
   }, { immediate: true })
   const dirty = computed(() => !!form.value && !!baseline.value &&
-    (Object.keys(baseline.value) as (keyof T)[]).some(key => !Object.is(form.value![key], baseline.value![key])))
+    (Object.keys(baseline.value) as (keyof T)[]).some(key => !sameField(form.value![key], baseline.value![key])))
   function reset(value = source()) {
     if (value) {
       form.value = { ...value }

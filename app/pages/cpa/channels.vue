@@ -11,7 +11,7 @@ async function readModels() {
 }
 </script>
 <template>
-  <AppPageHeader title="渠道与模型" description="配置 CPA 上游渠道、调度行为和模型映射。" />
+  <AppPageHeader title="渠道与模型" description="配置 CPA 上游渠道、调度行为和模型映射。"><NuxtLink to="/groups/accounts?module=cpa" class="button"><UIcon name="i-ph-users-four-bold" />账号调用分组</NuxtLink></AppPageHeader>
   <CpaGate><div class="nexus-tabs" role="tablist" aria-label="渠道设置"><button v-for="item in [{ id: 'providers', label: 'API 渠道' }, { id: 'routing', label: '路由与重试' }, { id: 'aliases', label: 'OAuth 模型映射' }, { id: 'catalog', label: '模型定义' }]" :key="item.id" role="tab" :aria-selected="tab === item.id" @click="tab = item.id">{{ item.label }}</button></div>
     <CpaResourceEditor v-if="tab === 'providers'" key="providers" path="config/api-keys" title="上游渠道配置" description="每个渠道保存一组或多组上游配置，组内包括名称、服务地址、密钥和模型。新增渠道可在这里添加；客户端访问密钥在独立页面管理。" writable allow-create />
     <CpaResourceEditor v-else-if="tab === 'routing'" key="routing" path="config/routing" title="路由配置" description="管理选号策略、会话亲和、重试和冷却规则。修改规则后由 CPA 执行。" writable allow-create />

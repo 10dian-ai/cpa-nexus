@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createCpaClient } from '../server/lib/cpa/client'
-import { ensureCpaConfigAccountRoute, readCpaConfigAccountRoutes } from '../server/lib/cpa/preset-config-routing'
+import { ensureCpaConfigAccountRoute, readCpaConfigAccountRoutes, readCpaConfigGroupSources } from '../server/lib/cpa/preset-config-routing'
 
 // Opt-in binary, temporary config and random local listeners. Never uses real credentials or upstreams.
 const binary = process.env.TEST_CPA_BINARY
@@ -20,6 +20,7 @@ describe.skipIf(!binary)('real CPA per-account preset routing through native pre
   let child: ChildProcess | undefined, upstream: Server | undefined, directory: string | undefined
   let base = '', upstreamBase = '', output = ''
   const calls: { headers: IncomingHttpHeaders; model: string; path: string }[] = []
+  const unavailableKeys = new Set<string>()
   const cpaHeaders = { authorization: 'Bearer ' + clientKey, 'content-type': 'application/json' }
   const client = () => createCpaClient({ baseUrl: base, managementKey })
   const parse = (body: Uint8Array) => JSON.parse(new TextDecoder().decode(body))
@@ -36,6 +37,11 @@ describe.skipIf(!binary)('real CPA per-account preset routing through native pre
       calls.push({ headers: request.headers, model: body.model, path: request.url || '' })
       response.setHeader('content-type', 'application/json')
       const receivedKey = String(request.headers['x-api-key'] || request.headers.authorization || '')
+      if (unavailableKeys.has(receivedKey.replace(/^Bearer\s+/i, ''))) {
+        response.statusCode = 503
+        response.end(JSON.stringify({ error: { message: 'Isolated selected-account failure', type: 'server_error' } }))
+        return
+      }
       if (request.url?.startsWith('/v1/messages')) response.end(JSON.stringify({ id: 'msg-local', type: 'message', role: 'assistant', model: body.model,
         content: [{ type: 'text', text: receivedKey }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }))
       else response.end(JSON.stringify({ id: 'chatcmpl-local', object: 'chat.completion', created: 1, model: body.model,
@@ -138,6 +144,27 @@ describe.skipIf(!binary)('real CPA per-account preset routing through native pre
     const config = await readFile(join(directory!, 'config.yaml'), 'utf8')
     expect(config).toContain('chat-account-b')
     expect(config).toContain('messages-account-b')
+  })
+
+  it('addresses actual registry owners and never retries a selected source through its sibling credential', async () => {
+    const inventory = await readCpaConfigGroupSources(client())
+    const selected = inventory.find(source => source.prefix === 'messages-account-b')!
+    expect(selected.enabled).toBe(true)
+    expect(selected.authIds).toHaveLength(1)
+    const models = parse((await client().request({ path: 'credentials/models', query: { name: selected.authIds[0]! } })).body)
+    expect(models.models.some((model: { id: string }) => model.id === 'messages-account-b/messages-local')).toBe(true)
+    unavailableKeys.add(messageKeys[1]!)
+    const initialCalls = calls.length
+    try {
+      const response = await post('/v1/messages', 'messages-account-b/messages-local')
+      expect(response.ok).toBe(false)
+      await response.arrayBuffer()
+      const selectedCalls = calls.slice(initialCalls)
+      expect(selectedCalls.length).toBeGreaterThan(0)
+      for (const call of selectedCalls) expect(String(call.headers['x-api-key'] || call.headers.authorization).replace(/^Bearer\s+/i, '')).toBe(messageKeys[1])
+    } finally { unavailableKeys.delete(messageKeys[1]!) }
+    const available = await post('/v1/messages', 'messages-local')
+    expect(available.status, await available.text()).toBe(200)
   })
 
   it('does not fall back to a sibling account when the selected compatibility prefix provider is disabled', async () => {

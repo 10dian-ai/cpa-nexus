@@ -54,7 +54,7 @@ export async function findEnabledModelKey(id: string): Promise<AuthenticatedMode
   return row ? { id: row.id, name: row.name, moduleId: row.module_id || 'commandcode' } : null
 }
 export async function requireModelKeyModule(key: AuthenticatedModelKey, moduleId: ModelModuleId) {
-  if ((key.moduleId || 'commandcode') !== moduleId) throw createError({ statusCode: 403, message: '此 API Key 未绑定请求的模型模块', data: { moduleId } })
+  if (key.moduleId !== 'auto' && (key.moduleId || 'commandcode') !== moduleId) throw createError({ statusCode: 403, message: '此 API Key 未绑定请求的模型模块', data: { moduleId } })
   await requireModule(moduleId)
 }
 export async function authenticateServiceKey(secret: string): Promise<{ id: string; name: string } | null> {

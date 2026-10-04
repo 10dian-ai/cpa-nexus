@@ -3,8 +3,12 @@ import type { AddressInfo } from 'node:net'
 import { createApp, defineEventHandler, getRequestURL, toNodeListener } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), compat: vi.fn(), internal: vi.fn(), limit: 1 }))
-vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module }))
+const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), compat: vi.fn(), internal: vi.fn(), groups: vi.fn(), cpaModels: vi.fn(), cpaRoute: vi.fn(), ccModels: vi.fn(), candidates: vi.fn(), provider: vi.fn(), limit: 1 }))
+vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module, isModuleEnabled: fixture.enabled }))
+vi.mock('../server/lib/groups', () => ({ resolveEnabledKeyGroupIds: fixture.groups }))
+vi.mock('../server/lib/cpa/group-routing', () => ({ listCpaGroupModels: fixture.cpaModels, resolveCpaGroupModel: fixture.cpaRoute }))
+vi.mock('../server/lib/gateway/accounts', () => ({ listGatewayModels: fixture.ccModels, listCandidates: fixture.candidates }))
+vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: fixture.provider }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
 vi.mock('../server/lib/presets', () => ({ resolveKeyPresetStack: async (...args: unknown[]) => { const value = await fixture.route(...args); return Array.isArray(value) ? value : value ? [value] : [] } }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.limit }) }))
@@ -21,9 +25,14 @@ describe('public CPA and original CCM inference routing', () => {
   beforeEach(async () => {
     vi.resetAllMocks(); resetCpaInferenceAuthCache(); fixture.limit = 1
     fixture.route.mockResolvedValue(null); fixture.module.mockResolvedValue(undefined)
+    fixture.enabled.mockResolvedValue(true); fixture.groups.mockResolvedValue(['group-a'])
+    fixture.cpaModels.mockResolvedValue([{ id: 'custom/model' }, { id: 'native-model' }])
+    fixture.cpaRoute.mockImplementation(async (model: string) => ({ accountId: 'source-a', model }))
+    fixture.ccModels.mockResolvedValue({ object: 'list', data: [{ id: 'cc-model' }] }); fixture.candidates.mockResolvedValue([]); fixture.provider.mockResolvedValue(null)
     fixture.authenticate.mockImplementation(async (secret: string) => secret === 'ccm_KA' || secret === 'ccm_KB'
       ? { id: secret.slice(4), name: secret.slice(4), moduleId: 'cpa' }
-      : secret === 'ccm_original' ? { id: 'original', name: 'legacy', moduleId: 'commandcode' } : null)
+      : secret === 'ccm_original' ? { id: 'original', name: 'legacy', moduleId: 'commandcode' }
+        : secret === 'ccm_auto' ? { id: 'auto', name: 'all sources', moduleId: 'auto' } : null)
     fixture.compat.mockImplementation(event => { event.node.res.end('CCM') })
     fixture.internal.mockImplementation(event => { event.node.res.end('internal bridge') })
     received = []; cancelled = false
@@ -88,7 +97,7 @@ describe('public CPA and original CCM inference routing', () => {
     const response = await post({ model: 'fixture', messages: [] }, 'ccm_KA').then(reply => reply.json())
     expect(response.body.model).toBe('fixture')
     const catalog = await fetch(direct + '/models', { headers: { authorization: 'Bearer ccm_KA' } })
-    expect(catalog.status).toBe(200); expect((await catalog.json()).data.map((model: { id: string }) => model.id)).toEqual(['native-model', 'custom/model'])
+    expect(catalog.status).toBe(200); expect((await catalog.json()).data.map((model: { id: string }) => model.id)).toEqual(['custom/model', 'native-model'])
     const bridge = await fetch(direct + '/messages', { method: 'POST', headers: { authorization: 'Bearer ccm_nexus_internal' }, body: '{}' })
     expect(await bridge.text()).toBe('internal bridge'); expect(fixture.internal).toHaveBeenCalledTimes(1)
     const publicBridge = await post({ model: 'fixture' }, 'ccm_nexus_internal')
@@ -153,7 +162,7 @@ describe('public CPA and original CCM inference routing', () => {
 
   it('filters Command Code models and rejects crossing a CPA key module binding', async () => {
     const catalog = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_KA' } })
-    expect(await catalog.json()).toEqual({ object: 'list', data: [{ id: 'native-model' }, { id: 'custom/model' }] })
+    expect(await catalog.json()).toEqual({ object: 'list', data: [{ id: 'custom/model' }, { id: 'native-model' }] })
     received.length = 0
     for (const protocol of ['chat/completions', 'messages', 'responses', 'systemone']) {
       const response = await post({ model: 'commandcode/fixture', messages: [] }, 'ccm_KA', protocol)
@@ -180,6 +189,55 @@ describe('public CPA and original CCM inference routing', () => {
     abort.abort(); await reader.cancel().catch(() => {})
     for (let i = 0; i < 50 && !cancelled; i++) await new Promise(resolve => setTimeout(resolve, 20))
     expect(cancelled).toBe(true)
+  })
+
+  it('combines only the key-accessible catalogs across both modules and deduplicates model IDs', async () => {
+    fixture.ccModels.mockResolvedValue({ object: 'list', data: [{ id: 'cc-model' }, { id: 'native-model' }] })
+    const response = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_auto' } })
+    expect(response.status).toBe(200)
+    expect((await response.json()).data.map((model: { id: string }) => model.id)).toEqual(['cc-model', 'custom/model', 'native-model'])
+    expect(fixture.cpaModels).toHaveBeenCalledWith(['group-a']); expect(fixture.ccModels).toHaveBeenCalledWith('auto')
+    expect(received).toHaveLength(0)
+  })
+
+  it('uses a CommandCode provider from the same groups without consuming the body twice', async () => {
+    fixture.provider.mockResolvedValue({ id: 'cc-model' }); fixture.candidates.mockResolvedValue([{ id: 'cc-account-a' }])
+    const body = { model: 'cc-model', messages: [{ role: 'user', content: 'Group A' }], stream: true }
+    const response = await post(body, 'ccm_auto'); expect(await response.text()).toBe('CCM')
+    expect(fixture.candidates).toHaveBeenCalledWith('cc-model', 'auto')
+    expect(fixture.compat.mock.calls.at(-1)![1]).toEqual({ protocolPath: 'chat/completions', body })
+    expect(fixture.cpaRoute).not.toHaveBeenCalled(); expect(fixture.route).not.toHaveBeenCalled(); expect(received).toHaveLength(0)
+  })
+
+  it('uses the verified CPA source route after applying the shared preset once', async () => {
+    fixture.cpaRoute.mockResolvedValue({ accountId: 'cpa-group-a', model: 'nexus-group-a/native-model(high)' })
+    fixture.route.mockResolvedValue([preset('Shared')])
+    const response = await post({ model: 'native-model(high)', messages: [{ role: 'user', content: 'Original' }] }, 'ccm_auto')
+    expect(response.status).toBe(200)
+    const { body } = await response.json()
+    expect(body.model).toBe('nexus-group-a/native-model(high)')
+    expect(body.messages).toEqual([{ role: 'system', content: 'Shared' }, { role: 'user', content: 'Original' }])
+    expect(fixture.cpaRoute).toHaveBeenCalledWith('native-model(high)', ['group-a'], 'auto')
+    expect(received).toHaveLength(1)
+  })
+
+  it('does not fall back to a model outside the key groups or with no enabled groups', async () => {
+    fixture.cpaRoute.mockResolvedValue(null)
+    const forbidden = await post({ model: 'other-group-model', messages: [] }, 'ccm_auto')
+    expect(forbidden.status).toBe(404); await forbidden.text()
+    fixture.groups.mockResolvedValue([])
+    const disabled = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
+    expect(disabled.status).toBe(403); await disabled.text()
+    expect(received).toHaveLength(0); expect(fixture.compat).not.toHaveBeenCalled()
+  })
+
+  it('keeps the healthy module usable when the other model catalog is unavailable', async () => {
+    fixture.cpaModels.mockRejectedValue(new Error('Core unavailable'))
+    const response = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_auto' } })
+    expect(response.status).toBe(200); expect((await response.json()).data).toEqual([{ id: 'cc-model' }])
+    fixture.provider.mockRejectedValue(new Error('Official catalog temporarily unavailable'))
+    const native = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
+    expect(native.status).toBe(200); await native.text()
   })
 
   it('preserves streaming for a unified CPA key with its selected preset', async () => {

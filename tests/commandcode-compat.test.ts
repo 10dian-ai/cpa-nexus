@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createApp, defineEventHandler, toNodeListener } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+vi.mock('../server/lib/cpa/group-routing', () => ({ assertCpaGroupRoutingSafe: async () => {} }))
 
 const fixture = vi.hoisted(() => ({ authenticate: vi.fn(), module: vi.fn(), direct: vi.fn(), upstream: vi.fn(), maxBody: 1 }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))

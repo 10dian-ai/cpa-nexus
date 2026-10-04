@@ -8,8 +8,12 @@ import { authenticateGatewayKey } from '../auth'
 import { applyPresetStack } from '../presets/engine'
 import { getSettings } from '../settings'
 import { readJsonBodyLimited } from '../gateway/transport'
-import { requireModule } from '../modules'
+import { isModuleEnabled, requireModule } from '../modules'
 import { gatewayCors } from '../gateway/cors'
+import { resolveEnabledKeyGroupIds } from '../groups'
+import { listCpaGroupModels, resolveCpaGroupModel } from './group-routing'
+import { listCandidates, listGatewayModels } from '../gateway/accounts'
+import { getProviderModel } from '../official-catalog'
 
 const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
@@ -82,20 +86,25 @@ export async function forwardNativeCpa(event: H3Event, path: string, body?: Reco
   })
 }
 
-async function listCpaModels(event: H3Event, path: string, clientKey: string) {
-  const headers = requestHeaders(event, clientKey)
-  delete headers['content-length']
-  const upstream = await fetch(destination(path), { headers: headers as HeadersInit, redirect: 'error', signal: AbortSignal.timeout(15_000) })
-  event.node.res.statusCode = upstream.status
-  event.node.res.setHeader('content-type', upstream.headers.get('content-type') || 'application/json; charset=utf-8')
-  if (!upstream.ok) { event.node.res.end(await upstream.text()); return }
-  const result = await upstream.json() as { data?: { id?: string }[]; [key: string]: unknown }
-  if (!Array.isArray(result.data)) throw new Error('CPA returned an invalid model catalog')
-  result.data = result.data.filter(model => typeof model.id === 'string' && !model.id.startsWith('commandcode/'))
-  event.node.res.end(JSON.stringify(result))
+async function listModelGroups(event: H3Event, keyId: string, groupIds: string[], moduleId: string) {
+  const catalogs: Array<Promise<Array<{ id: string }>>> = []
+  if (moduleId !== 'commandcode') catalogs.push(listCpaGroupModels(groupIds))
+  if (moduleId !== 'cpa' && await isModuleEnabled('commandcode')) catalogs.push(listGatewayModels(keyId).then(result => result.data))
+  const results = await Promise.allSettled(catalogs)
+  if (results.every(result => result.status === 'rejected')) throw Object.assign(new Error('模型目录暂不可用'), { statusCode: 503 })
+  const models = new Map<string, Record<string, unknown>>()
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue
+    for (const model of result.value) {
+      const previous = models.get(model.id)
+      if (!previous) models.set(model.id, { ...model })
+    }
+  }
+  event.node.res.setHeader('content-type', 'application/json; charset=utf-8')
+  event.node.res.end(JSON.stringify({ object: 'list', data: [...models.values()].sort((a, b) => String(a.id).localeCompare(String(b.id))) }))
 }
 
-/** A platform model key selects its provider; the internal CommandCode /v1 callback stays separate. */
+/** A platform model key grants group membership across source modules. */
 export async function handleNexusInference(event: H3Event) {
   const requested = getRequestURL(event)
   const path = requested.pathname.replace(/^(?:\/nexus\/cpa)?\/v1\//, '').replace(/\/$/, '')
@@ -117,22 +126,39 @@ export async function handleNexusInference(event: H3Event) {
     if (!key || secret.startsWith('ccm_nexus_')) { fail(event, path, 401, 'A valid model API key is required'); return }
     const moduleId = key.moduleId || 'commandcode'
     if (moduleId === 'commandcode') return await handleCommandcodeCompatibility(event, { protocolPath: path })
-    await requireModule('cpa')
-    if (path === 'systemone') { fail(event, path, 403, 'System One requires a key bound to Command Code'); return }
+    const groupIds = await resolveEnabledKeyGroupIds(key.id)
+    if (!groupIds.length) { fail(event, path, 403, '这个模型 API Key 没有已启用的分组'); return }
+    if (path === 'models') return await listModelGroups(event, key.id, groupIds, moduleId)
+    if (path === 'systemone') {
+      if (moduleId === 'auto') return await handleCommandcodeCompatibility(event, { protocolPath: path })
+      fail(event, path, 403, 'System One requires a key with Command Code group access'); return
+    }
     const clientKey = process.env.CPA_CLIENT_KEY?.trim()
     if (!clientKey) { fail(event, path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
-    if (path === 'models') return await listCpaModels(event, '/v1/models' + requested.search, clientKey)
     if (event.node.req.headers['content-encoding']) { fail(event, path, 415, 'Model API keys require an uncompressed JSON request'); return }
     let body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024)
     const model = typeof body.model === 'string' ? body.model.trim() : ''
     if (!model || model.length > 256) { fail(event, path, 400, 'model must be a non-empty string of at most 256 characters'); return }
-    if (model.startsWith('commandcode/')) { fail(event, path, 403, 'This key is bound to CPA; choose a key bound to Command Code for this model'); return }
+    if (moduleId === 'auto') {
+      if (model.startsWith('commandcode/')) return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
+      // Provider IDs are unambiguous for the existing CommandCode clients. Keep
+      // their protocol bridge and retry pool, restricted to this same key's groups.
+      if (await isModuleEnabled('commandcode')) {
+        let provider: Awaited<ReturnType<typeof getProviderModel>> = null
+        try { provider = await getProviderModel(model) } catch { /* CPA can remain usable during a catalog outage. */ }
+        if (provider && (await listCandidates(model, key.id)).length) return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
+      }
+    } else if (model.startsWith('commandcode/')) { fail(event, path, 403, 'This legacy key is bound to CPA'); return }
+    await requireModule('cpa')
+    const selected = await resolveCpaGroupModel(model, groupIds, key.id)
+    if (!selected) { fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return }
     body.model = model
     const presets = await resolveKeyPresetStack(key.id)
     if (presets.length) {
       body = applyPresetStack(presets, body, { protocol: protocol! })
       event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
     }
+    body.model = selected.model
     return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey)
   } catch (error) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }

@@ -18,6 +18,9 @@ vi.mock('../server/lib/redis', () => ({ getRedis: () => ({ get: fixture.redisGet
 vi.mock('../server/lib/settings', () => ({ getSettings: vi.fn() }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: vi.fn() }))
 vi.mock('../server/lib/queues', () => ({ enqueueAccountRefresh: vi.fn() }))
+vi.mock('../server/lib/groups', () => ({ accountGroupBindings: async (_moduleId: string, ids: string[]) => new Map(ids.map(id => [id, {
+  groupIds: ['11111111-1111-4111-8111-111111111111'], groupNames: ['Routing group'],
+}])) }))
 
 import adminMiddleware from '../server/middleware/admin'
 import listAccountsHandler from '../server/api/external/accounts.get'
@@ -84,7 +87,7 @@ describe('external account reads over HTTP', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(await response.json()).toMatchObject({
-      items: [{ id: accountId, email: 'billing@example.invalid', groupName: 'paid', inFlight: 1, hasApiKey: true }],
+      items: [{ id: accountId, email: 'billing@example.invalid', groupName: 'paid', groupIds: ['11111111-1111-4111-8111-111111111111'], groupNames: ['Routing group'], inFlight: 1, hasApiKey: true }],
       total: 1, page: 1, pageSize: 50, groups: ['paid'],
     })
     expect(fixture.zcount).toHaveBeenCalledExactlyOnceWith('ccm:gateway:leases:account:' + accountId, expect.any(Number), '+inf')

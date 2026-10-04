@@ -21,7 +21,7 @@ CPA 核心的 API 版本适配集中在 `server/lib/cpa/`。业务模块通过�
 - 原生凭证上传、下载、状态、元数据、刷新、模型与冷却状态。
 - OAuth 登录、轮询、手动回调及取消。
 - Vertex 服务账号文件导入，以及管理员明确发起的原生上游请求检查。
-- 原生渠道、模型与路由；统一 API Key 页面管理模型 Key 的模块绑定与历史 CPA 客户端 Key。
+- 原生渠道、模型与路由；统一 API Key 页面管理模型 Key 的调用分组与历史 CPA 客户端 Key。
 - 日志读取、下载、清理及用量队列显式消费；不将临时队列冒充持久历史统计。
 - 原生插件发现、启停、配置、商店安装与更新、额度、菜单资源代理。
 - CommandCode 原有后台、账号池、额度、会话、并发、外调 API 与日志。
@@ -32,15 +32,15 @@ CPA 核心的 API 版本适配集中在 `server/lib/cpa/`。业务模块通过�
 
 ## CommandCode 桥接
 
-统一入口验证平台模型 API Key 的启用状态和数据库模块绑定，内部使用 `CPA_CLIENT_KEY` 调用 CPA。每个模型 Key 绑定 CPA 或 CommandCode；旧 `ccm_` Key 默认绑定 CommandCode。外调服务 Key 独立验证，仅在 CommandCode 开启时可创建和调用。历史 CPA 客户端 Key 保留原生兼容，修改其专用配置节点时保留平台内部凭证。
+统一入口验证平台模型 API Key 的启用状态与当前分组，内部使用 `CPA_CLIENT_KEY` 调用 CPA。模型 Key 可选一个或多个分组，不再选择单模块；迁移 013 将平台 Key 设为 auto，保留旧接口字段兼容。源账号与 Key 的共同启用分组控制目录和选号。外调服务 Key 独立验证，仅在 CommandCode 开启时可创建和调用。历史 CPA 客户端 Key 保留原生调用，专用配置节点保留内部凭证。
 
 桥接创建加密保存的内部 `ccm_nexus_` 密钥，按官方端点分别注册 `nexus-commandcode` Chat 与 `nexus-commandcode-messages` Messages 渠道，指向账号池内部网关。两种入口共享同一号池，由模块最终选号。普通模型 Key 列表不显示内部桥接密钥，CPA 高级渠道配置属于管理员可读取的原生配置。
 
 模型别名明确使用 `commandcode/<原模型ID>`；保持 CPA 原生渠道的模型名称。会话与子代理头通过 CPA 动态请求头配置传递，模块将已验证的内部访问密钥与原 CPA 客户端身份的摘要合并为亲和范围，避免不同客户端在共享内部密钥下合并会话。客户端原始密钥不写入业务日志或 Redis 映射。
 
-绑定 CommandCode 的 `ccm_` 客户端使用 `/v1` 或 `/commandcode/v1` 保持原始模型名，公开入口按模块绑定分流，经过 CPA 转换格式后调用官方协议。原密钥 ID 使用服务端签名传递；内部回调再次检查原 Key 是否启用及是否仍绑定 CommandCode，保留日志、预设与会话归属。浏览器 Cookie 不发给 CPA 或模型调用端点。System One 是独立的非流式决策端点，不注册为聊天模型。
+拥有 CommandCode 来源分组的 `ccm_` 客户端使用 `/v1` 或 `/commandcode/v1` 保持原始模型名，公开入口按分组识别来源，经过 CPA 转换格式后调用官方协议。原密钥 ID 使用服务端签名传递；内部回调再次检查原 Key 是否启用及当前分组，保留日志、预设与会话归属。浏览器 Cookie 不发给 CPA 或模型调用端点。System One 是独立的非流式决策端点，不注册为聊天模型。
 
-酒馆预设是默认关闭的可选模块，JSON 与模型 Key 绑定存入 PostgreSQL。每个 Key 独立选择预设或直连；未绑定的 Key 直连，不继承账号或模块旧路由。CommandCode 使用签名传递的客户端 Key 应用预设，CPA 原生模型在统一入口按同一 Key 规则处理。关闭预设模块时停止新请求处理并保留配置。历史 CPA Key、原生 WebSocket、非聊天能力与 System One 保持原通路；统一 Key 当前支持 HTTP Chat/Messages/Responses。详见 [预设模块契约](presets.md)。
+酒馆预设是默认关闭的可选模块，JSON 与模型 Key 绑定存入 PostgreSQL。每个 Key 独立选择叠加全部已启用预设或普通调用；未绑定的 Key 直连，不继承账号或模块旧路由。CommandCode 使用签名传递的客户端 Key 应用预设，CPA 原生模型在统一入口按同一 Key 规则处理。关闭预设模块时停止新请求处理并保留配置。历史 CPA Key、原生 WebSocket、非聊天能力与 System One 保持原通路；统一 Key 当前支持 HTTP Chat/Messages/Responses。详见 [预设模块契约](presets.md)。
 
 模块内部负责账号选择、Redis 原子租约、续期、取消释放、额度过滤和已确认拒绝的重试。桥接渠道关闭额外重试与冷却，避免 CPA 把一个模块上游当成单一实际账号，再次执行账号级策略。
 

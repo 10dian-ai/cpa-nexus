@@ -6,7 +6,7 @@
 
 ## 更新已有部署
 
-CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；`009_unified_model_keys.sql` 为旧模型 Key 绑定 CommandCode，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 默认绑定 CPA，也可在 CommandCode 启用时选择该模块。创建和编辑模型 Key 时，可选择普通调用或经过酒馆模块；经过酒馆模块的 Key 会按顺序叠加全部已开启预设。外调服务 Key 不经过酒馆模块。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
+CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；迁移 `013_routing_groups.sql` 将平台模型 Key 设为跨模块调用，旧 Key 和账号加入默认组，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 仅选择调用分组，可访问匹配的 CPA 与 CommandCode 来源。创建和编辑模型 Key 时，可选择普通调用或经过酒馆模块；经过酒馆模块的 Key 会按顺序叠加全部已开启预设。外调服务 Key 不经过酒馆模块。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
 
 ## 认证
 
@@ -33,7 +33,7 @@ export CCM_SERVICE_KEY='ccm_service_替换为后台创建的完整密钥'
 
 `POST /api/external/accounts`
 
-请求体必须是 JSON，在 `text`、`token`、`cookie` 中**只提供一个**，可选传入 `groupName`。其他字段不被接受。
+请求体必须是 JSON，在 `text`、`token`、`cookie` 中**只提供一个**，可选传入 `groupIds`（一个或多个分组 UUID）以及兼容旧分类备注的 `groupName`。`groupName` 不参与选号；新账号不传 `groupIds` 使用默认组，重新导入已有账号不传时保留原组。
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |

@@ -76,7 +76,7 @@ export async function syncAccount(id:string,priorSession?:unknown):Promise<void>
 }
 interface Checkpoint { next:number; result:ImportResult }
 export async function processImport(job:Job<ImportJobData & {checkpoint?:Checkpoint}>):Promise<ImportResult> {
-  const {entries,groupName}=job.data
+  const {entries,groupName,groupIds}=job.data
   const checkpoint=job.data.checkpoint ?? {next:0,result:{imported:0,updated:0,failed:job.data.rejected.length,skipped:job.data.duplicates,errors:[...job.data.rejected]}}
   const result=checkpoint.result
   await job.updateProgress({processed:checkpoint.next,total:entries.length})
@@ -85,13 +85,13 @@ export async function processImport(job:Job<ImportJobData & {checkpoint?:Checkpo
     let accountId:string|undefined
     let syncStarted=false
     try {
-      const pending=await createPendingAccount(entry.fingerprint,entry.ciphertext,groupName)
+      const pending=await createPendingAccount(entry.fingerprint,entry.ciphertext,groupName,groupIds)
       accountId=pending.id
       const cookie=decryptSecret(entry.ciphertext), session=await client.session(cookie)
       const user=(session as {user:{id:string;name?:string;email?:string}}).user
       if(!user || typeof user.id!=='string')throw new CommandCodeError('INVALID_SESSION',401,true)
       const identity:AccountSnapshot['identity']={id:user.id,name:user.name??user.id,email:user.email??null}
-      const attached=await attachIdentity(pending.id,identity,entry.fingerprint,entry.ciphertext,groupName)
+      const attached=await attachIdentity(pending.id,identity,entry.fingerprint,entry.ciphertext,groupName,groupIds)
       accountId=attached.account.id
       syncStarted=true
       await syncAccount(accountId!,session)

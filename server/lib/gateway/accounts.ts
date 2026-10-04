@@ -5,15 +5,23 @@ import { getRedis } from '../redis'
 import { cooldownAccount } from './scheduler'
 import { snapshotIsLimited } from './quota'
 import { getOfficialCatalog } from '../official-catalog'
+import { DEFAULT_GROUP_ID } from '../../../shared/groups'
 
 export interface GatewayAccount { id: string; apiKeyCiphertext: string; limit: number }
-export async function listCandidates(model: string): Promise<GatewayAccount[]> {
+export async function listCandidates(model: string, keyId?: string): Promise<GatewayAccount[]> {
   const sql = getDb()
+  const groupScope = keyId ? sql`AND EXISTS (
+    SELECT 1 FROM nexus_account_groups ag JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true
+    WHERE ag.module_id='commandcode' AND ag.account_id=a.id::text AND (
+      EXISTS(SELECT 1 FROM nexus_key_groups kg JOIN gateway_keys k ON k.id=kg.key_id AND k.enabled=true WHERE kg.key_id=${keyId} AND kg.group_id=ag.group_id)
+      OR (ag.group_id=${DEFAULT_GROUP_ID}::uuid AND EXISTS(SELECT 1 FROM gateway_keys k WHERE k.id=${keyId} AND k.enabled=true AND left(k.prefix,10)='ccm_nexus_'))
+    ))` : sql``
   const rows = await sql<{ id: string; api_key_ciphertext: string; max_concurrency: number; snapshot: AccountSnapshot | null }[]>`
     SELECT a.id, a.api_key_ciphertext, a.max_concurrency, a.snapshot
     FROM managed_accounts a
     LEFT JOIN account_models m ON m.account_id = a.id AND m.model_id = ${model} AND m.observation_scope='official-provider'
     WHERE a.enabled = TRUE AND a.status = 'ready' AND a.api_key_ciphertext IS NOT NULL
+      ${groupScope}
       AND (m.status IS NULL OR m.status <> 'denied')
       AND (m.status IS NULL OR m.status <> 'cooldown' OR m.cooldown_until <= NOW() OR m.cooldown_until IS NULL)
     ORDER BY a.last_used_at ASC NULLS FIRST, a.id
@@ -46,14 +54,22 @@ export async function recordFailure(accountId: string, model: string, failure: U
   }
   // A proxy HTTP 401 can mean a model denial. Never abandon/disable the account here.
 }
-export async function listGatewayModels() {
-  const rows = await getDb()<{
+export async function listGatewayModels(keyId?: string) {
+  const sql = getDb()
+  const groupScope = keyId ? sql`AND EXISTS (
+    SELECT 1 FROM nexus_account_groups ag JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true
+    WHERE ag.module_id='commandcode' AND ag.account_id=a.id::text AND (
+      EXISTS(SELECT 1 FROM nexus_key_groups kg JOIN gateway_keys k ON k.id=kg.key_id AND k.enabled=true WHERE kg.key_id=${keyId} AND kg.group_id=ag.group_id)
+      OR (ag.group_id=${DEFAULT_GROUP_ID}::uuid AND EXISTS(SELECT 1 FROM gateway_keys k WHERE k.id=${keyId} AND k.enabled=true AND left(k.prefix,10)='ccm_nexus_'))
+    ))` : sql``
+  const rows = await sql<{
     id: string; name: string; observed_allowed: number; observed_denied: number; unknown_accounts: number; created: number
   }[]>`
     WITH ready AS (
-      SELECT id FROM managed_accounts
+      SELECT a.id FROM managed_accounts a
       WHERE enabled = TRUE AND status = 'ready' AND api_key_ciphertext IS NOT NULL
         AND lower(coalesce(snapshot->'subscription'->>'planId',''))<>'go'
+        ${groupScope}
     ), ids AS (
       SELECT model_id FROM model_catalog
       UNION SELECT m.model_id FROM account_models m JOIN ready a ON a.id = m.account_id

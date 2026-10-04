@@ -1,4 +1,4 @@
-export type ModelModuleId = 'cpa' | 'commandcode'
+export type ModelModuleId = 'auto' | 'cpa' | 'commandcode'
 
 export interface AuthenticatedModelKey {
   id: string

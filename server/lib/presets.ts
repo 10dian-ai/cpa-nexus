@@ -111,7 +111,7 @@ export async function listPresetBindings(): Promise<PresetBinding[]> {
   return (await getDb()`SELECT * FROM nexus_preset_bindings ORDER BY module_id,account_id LIMIT 10000`).map(bindingView)
 }
 export async function listKeyPresetBindings(): Promise<KeyPresetBinding[]> {
-  return (await getDb()`SELECT b.*,k.module_id FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id WHERE left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa') ORDER BY b.updated_at DESC,b.key_id LIMIT 10000`).map(keyBindingView)
+  return (await getDb()`SELECT b.*,k.module_id FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id WHERE left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa','auto') ORDER BY b.updated_at DESC,b.key_id LIMIT 10000`).map(keyBindingView)
 }
 export async function setKeyPresetBinding(input: KeyPresetRouteInput): Promise<KeyPresetBinding | null> {
   if (!idValid(input.keyId)) throw platformError({ statusCode: 400, message: '请选择有效的模型 API key' })
@@ -122,7 +122,7 @@ export async function setKeyPresetBinding(input: KeyPresetRouteInput): Promise<K
     await tx`SELECT pg_advisory_xact_lock(hashtextextended('nexus:presets:write',0))`
     // Removing an obsolete binding also works after a key has been revoked.
     if (input.mode === 'inherit') { await tx`DELETE FROM nexus_key_preset_bindings WHERE key_id=${input.keyId}`; return null }
-    const key = (await tx`SELECT id,module_id FROM gateway_keys WHERE id=${input.keyId} AND left(prefix,10)<>'ccm_nexus_' AND module_id IN ('commandcode','cpa') FOR KEY SHARE`)[0]
+    const key = (await tx`SELECT id,module_id FROM gateway_keys WHERE id=${input.keyId} AND left(prefix,10)<>'ccm_nexus_' AND module_id IN ('commandcode','cpa','auto') FOR KEY SHARE`)[0]
     if (!key) throw platformError({ statusCode: 404, message: '模型 API key 不存在，内部桥接密钥和外调服务密钥不能绑定预设' })
     if (input.mode === 'preset') {
       const row = (await tx`SELECT * FROM nexus_presets WHERE id=${input.presetId!}`)[0]
@@ -148,7 +148,7 @@ export async function resolveKeyPresetStack(keyId: string): Promise<PresetView[]
   const generation = routeCacheGeneration
   let choice = stackKeyCache.get(keyId)
   if (!choice || choice.until <= Date.now()) {
-    const row = (await getDb()`SELECT b.mode,b.preset_id FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id WHERE b.key_id=${keyId} AND left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa') LIMIT 1`)[0]
+    const row = (await getDb()`SELECT b.mode,b.preset_id FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id WHERE b.key_id=${keyId} AND left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa','auto') LIMIT 1`)[0]
     choice = { mode: row?.mode || null, presetId: row?.preset_id || null, until: Date.now() + 2000 }
     if (generation === routeCacheGeneration) {
       if (stackKeyCache.size >= 128) stackKeyCache.delete(stackKeyCache.keys().next().value!)
@@ -190,7 +190,7 @@ export async function resolveKeyPresetRoute(keyId: string): Promise<PresetView |
   const cacheKey = `key\0${keyId}`, cached = routeCache.get(cacheKey)
   if (cached && cached.until > Date.now()) return cached.value
   const generation = routeCacheGeneration
-  const rows = await getDb()`SELECT b.mode,p.* FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id LEFT JOIN nexus_presets p ON p.id=b.preset_id WHERE b.key_id=${keyId} AND left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa') LIMIT 1`
+  const rows = await getDb()`SELECT b.mode,p.* FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id LEFT JOIN nexus_presets p ON p.id=b.preset_id WHERE b.key_id=${keyId} AND left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa','auto') LIMIT 1`
   const row = rows[0]
   if (row && row.mode === 'preset' && !row.id) throw platformError({ statusCode: 503, message: 'API key 绑定的预设不可用' })
   const value = !row || row.mode === 'bypass' ? null : row.mode === 'stack' ? (await resolveKeyPresetStack(keyId))[0] || null : view(row)

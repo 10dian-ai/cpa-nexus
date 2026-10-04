@@ -100,6 +100,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
   const internalBridge = secret?.startsWith('ccm_nexus_') === true
   const originalKeyId = internalBridge ? verifyOriginalGatewayKey(event.node.req.headers) : null
   const presetKeyId = internalBridge ? originalKeyId : key.id
+  const groupKeyId = originalKeyId || key.id
   try {
     const caller = originalKeyId ? await findEnabledModelKey(originalKeyId) : key
     if (!caller) { gatewayError(event, path, 403, 'permission_error', 'The original model API key is disabled or revoked'); return }
@@ -109,7 +110,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
     gatewayError(event, path, status, 'permission_error', error instanceof Error ? error.message : 'This API key cannot call CommandCode')
     return
   }
-  if (path === 'models') return listGatewayModels()
+  if (path === 'models') return listGatewayModels(groupKeyId)
 
   const protocol = path as Protocol
   const settings = await getSettings()
@@ -183,6 +184,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
   let accountId: string | null = null
   let capture = new ResponseCapture()
   let inspection = new ResponseInspection()
+  let completionForwarded = false
   let httpStatus: number | null = null
   let status: 'success' | 'error' | 'cancelled' | 'incomplete' = 'error'
   let errorMessage: string | null = null
@@ -190,7 +192,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
   let effectiveBody = body
 
   try {
-    const allCandidates = await listCandidates(model)
+    const allCandidates = await listCandidates(model, groupKeyId)
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (controller.signal.aborted) throw controller.signal.reason
       const candidates = allCandidates.filter(candidate => !attempted.has(candidate.id))
@@ -221,6 +223,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
       try {
         capture = new ResponseCapture()
         inspection = new ResponseInspection()
+        completionForwarded = false
         upstreamFailure = null
         await touchAccount(accountId)
         const upstreamKey = decryptSecret(account.apiKeyCiphertext)
@@ -266,6 +269,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
             pendingError.length = 0
           }
           await writeWithBackpressure(event.node.res, next.value, controller.signal)
+          if (streaming && inspection.completed && !inspection.incomplete && !inspection.failure) completionForwarded = true
         }
         if (!upstream.ok) {
           upstreamFailure = classifyFailure(upstream.status, capture.truncated ? capture.text() : capture.value(false))
@@ -325,14 +329,20 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
       }
     }
   } catch (error) {
-    status = disconnected && !leaseLost ? 'cancelled' : 'error'
-    errorMessage = error instanceof Error ? error.message : 'Gateway request failed'
+    // CPA can finish its client stream at the terminal protocol frame, then close the
+    // provider connection before its HTTP EOF. An already delivered completion is successful.
+    const deliveredCompletion = disconnected && !leaseLost && streaming && completionForwarded
+      && inspection.hasOutput && inspection.completed && !inspection.incomplete && !inspection.failure
+    status = deliveredCompletion ? 'success' : disconnected && !leaseLost ? 'cancelled' : 'error'
+    errorMessage = deliveredCompletion ? null : error instanceof Error ? error.message : 'Gateway request failed'
     if (leaseLost) errorMessage = 'Concurrency lease renewal failed; upstream request was cancelled'
+    if (deliveredCompletion && accountId) await recordModelAllowed(accountId, model).catch(failure => console.error('[gateway] Model access observation could not be saved', failure instanceof Error ? failure.message : 'Storage unavailable'))
     if (!controller.signal.aborted) controller.abort(error)
     if (!event.node.res.headersSent && !disconnected) {
+      const failureMessage = errorMessage || 'Gateway request failed'
       const validationStatus = Number((error as { statusCode?: number }).statusCode)
-      httpStatus = validationStatus >= 400 && validationStatus < 500 ? validationStatus : /timeout/i.test(errorMessage) ? 504 : 502
-      gatewayError(event, protocol, httpStatus, httpStatus < 500 ? 'preset_route_error' : 'gateway_upstream_error', errorMessage)
+      httpStatus = validationStatus >= 400 && validationStatus < 500 ? validationStatus : /timeout/i.test(failureMessage) ? 504 : 502
+      gatewayError(event, protocol, httpStatus, httpStatus < 500 ? 'preset_route_error' : 'gateway_upstream_error', failureMessage)
     } else if (!event.node.res.writableEnded && !event.node.res.destroyed) {
       event.node.res.destroy()
     }

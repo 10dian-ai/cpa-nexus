@@ -116,6 +116,19 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
     expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='commandcode' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
   })
 
+  it('retains preset routing on cross-module group keys', async () => {
+    const preset = await createPreset({ name: 'Auto key stack', sourceJson: document, variables: { char: 'Grouped' }, enabled: true })
+    const keyId = randomUUID()
+    await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${keyId},'Cross-module key','ccm_test',${randomUUID()},'auto')`
+    await setKeyPresetBinding({ keyId, mode: 'stack' })
+    expect((await listKeyPresetBindings()).find(binding => binding.keyId === keyId)).toMatchObject({ moduleId: 'auto', mode: 'stack' })
+    expect((await resolveKeyPresetStack(keyId)).some(item => item.id === preset.id)).toBe(true)
+    await setKeyPresetBinding({ keyId, mode: 'bypass' })
+    expect(await resolveKeyPresetStack(keyId)).toEqual([])
+    await sql`DELETE FROM gateway_keys WHERE id=${keyId}`
+    await deletePreset(preset.id)
+  })
+
   it('persists shared enabled stack ordering and model-key choices atomically', async () => {
     const first = await createPreset({ name: 'Stack A', sourceJson: document, variables: { char: 'A' }, enabled: true })
     const second = await createPreset({ name: 'Stack B', sourceJson: document, variables: { char: 'B' }, enabled: true })
