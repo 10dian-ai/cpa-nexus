@@ -50,7 +50,7 @@ jobs:
           git -C "$core_source" apply "$GITHUB_WORKSPACE/ops/cpa-nexus/nexus-plugins.patch"
           cd "$core_source"
           go test ./sdk/cliproxy/auth ./sdk/api/handlers ./internal/pluginhost ./internal/api -count=1
-          CGO_ENABLED=1 go build -buildvcs=false -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
+          CGO_ENABLED=1 go build -buildvcs=false -ldflags="-X main.Version=8.0.11 -X main.Commit=${CPA_UPSTREAM_REF}+nexus -X main.BuildDate=source-pinned" -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
           echo "TEST_CPA_BINARY=$RUNNER_TEMP/cli-proxy-api-nexus" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run db:migrate
