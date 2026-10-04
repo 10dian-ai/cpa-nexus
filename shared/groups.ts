@@ -6,9 +6,17 @@ export interface GroupView {
   accountCount: number; keyCount: number; createdAt: string; updatedAt: string
 }
 export type RoutingGroupView = GroupView
+export interface GroupListView {
+  items: RoutingGroupView[]
+  defaultGroupId: string
+  defaultGroupIds?: string[]
+  moduleDefaultGroupIds?: Partial<Record<GroupModuleId, string>>
+}
 export interface GroupAccountView extends GroupBinding {
   id: string; moduleId: GroupModuleId; sourceType: string; sourceId: string
   name: string; provider: string; enabled: boolean
   routingSupported?: boolean; routingPrefix?: string; message?: string
+  /** Actual native runtime owners, used to bind credentials to their stable physical source. */
+  credentialIds?: string[]
   missing?: boolean
 }

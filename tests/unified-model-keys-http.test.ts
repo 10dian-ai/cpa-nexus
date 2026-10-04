@@ -14,6 +14,7 @@ const fixture = vi.hoisted(() => ({
   disabled: new Set<string>(), queries: [] as { sql: string; values: unknown[] }[],
   presetModes: new Map<string, boolean>(), keyGroups: new Map<string, string[]>(), failPresetSave: false, failGroupRead: false,
   publish: vi.fn(async () => 1),
+  defaultModelGroupIds: ['44444444-4444-4444-8444-444444444444', '55555555-5555-4555-8555-555555555555'],
 }))
 vi.mock('../server/lib/modules', () => ({ requireModule: async (id: string) => {
   if (fixture.disabled.has(id)) throw createError({ statusCode: 503, message: '此模块已停用' })
@@ -72,10 +73,10 @@ vi.mock('../server/lib/presets', () => ({
 }))
 vi.mock('../server/lib/groups', async () => { const { z } = await import('zod'); return {
   groupIdsSchema: z.array(z.string().uuid()).min(1),
-  setKeyGroups: async (_tx: unknown, id: string, groupIds?: string[]) => { fixture.keyGroups.set(id, groupIds ?? [DEFAULT_GROUP_ID]) },
+  setKeyGroups: async (_tx: unknown, id: string, groupIds?: string[]) => { fixture.keyGroups.set(id, groupIds ?? [...fixture.defaultModelGroupIds]) },
   keyGroupBindings: async (ids: string[]) => {
     if (fixture.failGroupRead) throw createError({ statusCode: 503, message: 'Group read unavailable' })
-    return new Map(ids.map(id => [id, { groupIds: fixture.keyGroups.get(id) ?? [DEFAULT_GROUP_ID], groupNames: ['测试分组'] }]))
+    return new Map(ids.map(id => [id, { groupIds: fixture.keyGroups.get(id) ?? [...fixture.defaultModelGroupIds], groupNames: ['CPA', 'CommandCode'] }]))
   },
 } })
 vi.mock('../server/lib/redis', () => ({ getRedis: () => ({
@@ -124,7 +125,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
       expect(response.status).toBe(200)
       const created = await response.json()
       expect(created.key).toMatch(/^ccm_[A-Za-z0-9_-]{43}$/)
-      expect(created.item).toMatchObject({ name: moduleId + ' client', moduleId: 'auto', enabled: true, groupIds: [DEFAULT_GROUP_ID] })
+      expect(created.item).toMatchObject({ name: moduleId + ' client', moduleId: 'auto', enabled: true, groupIds: fixture.defaultModelGroupIds })
       expect(fixture.keys.get(created.item.id)?.module_id).toBe('auto')
       expect(await authenticateGatewayKey(created.key)).toEqual({ id: created.item.id, name: moduleId + ' client', moduleId: 'auto' })
       const insert = fixture.queries.filter(query => query.sql.startsWith('INSERT INTO gateway_keys')).at(-1)!

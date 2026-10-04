@@ -5,7 +5,6 @@ import { getRedis } from '../redis'
 import { cooldownAccount } from './scheduler'
 import { snapshotIsLimited } from './quota'
 import { getOfficialCatalog, OfficialCatalogUnavailableError } from '../official-catalog'
-import { DEFAULT_GROUP_ID } from '../../../shared/groups'
 import { commandcodePlanScope, isProviderModelForPlan } from '../../../shared/official-catalog'
 import type { OfficialCatalogView } from '../../../shared/official-catalog'
 
@@ -20,7 +19,7 @@ export async function listCandidates(model: string, keyId?: string): Promise<Gat
     SELECT 1 FROM nexus_account_groups ag JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true
     WHERE ag.module_id='commandcode' AND ag.account_id=a.id::text AND (
       EXISTS(SELECT 1 FROM nexus_key_groups kg JOIN gateway_keys k ON k.id=kg.key_id AND k.enabled=true WHERE kg.key_id=${keyId} AND kg.group_id=ag.group_id)
-      OR (ag.group_id=${DEFAULT_GROUP_ID}::uuid AND EXISTS(SELECT 1 FROM gateway_keys k WHERE k.id=${keyId} AND k.enabled=true AND left(k.prefix,10)='ccm_nexus_'))
+      OR (ag.group_id IN (SELECT group_id FROM nexus_module_group_defaults WHERE module_id='commandcode') AND EXISTS(SELECT 1 FROM gateway_keys k WHERE k.id=${keyId} AND k.enabled=true AND left(k.prefix,10)='ccm_nexus_'))
     ))` : sql`AND EXISTS (SELECT 1 FROM nexus_account_groups ag JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true WHERE ag.module_id='commandcode' AND ag.account_id=a.id::text)`
   const rows = await sql<{ id: string; api_key_ciphertext: string; max_concurrency: number; snapshot: AccountSnapshot | null }[]>`
     SELECT a.id, a.api_key_ciphertext, a.max_concurrency, a.snapshot
@@ -71,7 +70,7 @@ export async function listAvailableCommandcodeModels(keyId?: string, planId?: st
     SELECT 1 FROM nexus_account_groups ag JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true
     WHERE ag.module_id='commandcode' AND ag.account_id=a.id::text AND (
       EXISTS(SELECT 1 FROM nexus_key_groups kg JOIN gateway_keys k ON k.id=kg.key_id AND k.enabled=true WHERE kg.key_id=${keyId} AND kg.group_id=ag.group_id)
-      OR (ag.group_id=${DEFAULT_GROUP_ID}::uuid AND EXISTS(SELECT 1 FROM gateway_keys k WHERE k.id=${keyId} AND k.enabled=true AND left(k.prefix,10)='ccm_nexus_'))
+      OR (ag.group_id IN (SELECT group_id FROM nexus_module_group_defaults WHERE module_id='commandcode') AND EXISTS(SELECT 1 FROM gateway_keys k WHERE k.id=${keyId} AND k.enabled=true AND left(k.prefix,10)='ccm_nexus_'))
     ))` : sql`AND EXISTS (SELECT 1 FROM nexus_account_groups ag JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true WHERE ag.module_id='commandcode' AND ag.account_id=a.id::text)`
   const official = catalog || await getOfficialCatalog()
   const metadata = official.models.filter(model => planId ? isProviderModelForPlan(model, planId)

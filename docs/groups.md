@@ -4,10 +4,21 @@
 
 例如，CommandCode 账号 A 只属于「工作」，账号 B 只属于「个人」。Key A 只选「工作」，Key B 只选「个人」，即使两个账号提供同名模型，两个 Key 也分别使用自己的账号。Key 选择两个分组时，可用来源取这两个分组的并集；账号加入多个分组时，可供这些分组的 Key 使用。
 
+## 面板操作
+
+1. 在「调用分组」点击「创建分组」，也可在 CPA 凭证的分组编辑弹窗中直接新建。
+2. 在「CPA 内核 → 凭证管理」的「调用分组」列点击「编辑分组」，选择一个或多个组并保存；同一文件展开的虚拟凭证共享来源分组。
+3. 「CPA 凭证分组」和「CommandCode 账号分组」分别显示所属模块的来源。
+4. 在 API Key 页面选择相同组：只选 CommandCode 调用该组账号，只选 CPA 调用该组凭证；同时选择可跨模块调用。
+
+使用 Basis Points 等独立执行器时，插件来源和它需要读取的底层账号凭证应加入该 Key 所选分组。账号凭证内容不会因修改分组而改变。
+
 ## 设置与迁移
 
-- 已有模型 Key 和 CommandCode 账号迁入「默认」分组；首次发现的 CPA 来源也加入默认分组，保留原有可用行为。
-- 为需要隔离的来源改选专用分组，并让对应 Key 选择该分组。保留默认组会继续让默认组的 Key 使用该来源。
+- CommandCode 和 CPA 分别使用「CommandCode」「CPA」两个默认调用组；新 CommandCode 账号和首次发现的 CPA 来源默认加入各自模块的组。
+- 升级时，只把原「默认分组」的账号绑定替换为对应模块组，保留其他自定义组。原模型 Key 的「默认分组」替换为两个模块组的并集，保留升级前的调用范围和其他自定义组；私有桥接 Key 不调整。
+- 为需要隔离的来源改选专用分组，并让对应 Key 只选择所需分组。模型 Key 同时选择两个模块组时，可跨模块调用；只选 CommandCode 或 CPA 时使用对应组的来源。
+- 模块默认组记录按 ID 持久保存，可以改名，不因名称变化重新创建；模块默认组不能删除。其他自定义分组可以跨模块复用。
 - 分组停用后，其授权不参与模型目录或调用。账号、Key 自身停用同样不参与调度。
 - 模型目录只显示当前 Key 的分组可用模型。Key 手动请求其他组的来源前缀也会被拒绝，不因同名模型自动越过分组。
 - 酒馆开关与分组独立：选择经过酒馆的模型 Key，先使用自己的组内来源，再按顺序叠加已开启的预设。
@@ -26,7 +37,7 @@ CPA 使用完整官方 v8.0.11，OAuth、刷新、配额、协议转换、模型
 
 「CPA 原生客户端 Key」保留官方完整行为，不自动套用 Nexus 分组。需要账号隔离的客户端应创建平台「模型 API Key」。后台显示这一差别，避免把原生 Key 误认为经过平台分组管控。
 
-来源删除或暂时未注册时，原分组绑定会保留，并在页面标记来源状态。确认来源已经删除后，可手动清理绑定；临时停用来源的分组授权不会自动丢失。仍有账号或 Key 绑定的分组不能删除，默认组不能删除。
+来源删除或暂时未注册时，原分组绑定会保留，并在页面标记来源状态。确认来源已经删除后，可手动清理绑定；临时停用来源的分组授权不会自动丢失。仍有账号或 Key 绑定的分组不能删除，默认组和模块默认调用组不能删除。
 
 ## 管理 API
 
@@ -34,7 +45,7 @@ CPA 使用完整官方 v8.0.11，OAuth、刷新、配额、协议转换、模型
 
 | 方法与路径 | 功能 |
 | --- | --- |
-| `GET /api/groups` | 分组名称、状态及账号／Key 数量 |
+| `GET /api/groups` | 分组名称、状态及账号／Key 数量；`moduleDefaultGroupIds` 为模块默认组 ID，`defaultGroupIds` 为新模型 Key 的默认组并集 |
 | `POST /api/groups` | 创建：`name`、可选 `description`、`enabled` |
 | `PATCH /api/groups/:id` | 编辑分组名称、描述或开关 |
 | `DELETE /api/groups/:id` | 删除未绑定的非默认分组 |
@@ -42,6 +53,6 @@ CPA 使用完整官方 v8.0.11，OAuth、刷新、配额、协议转换、模型
 | `PATCH /api/groups/accounts` | 设置来源组：`moduleId`、`sourceType`、`sourceId`、`groupIds` |
 | `DELETE /api/groups/accounts` | 清理已确认不存在的来源绑定，参数同来源标识 |
 
-模型 Key 创建接口支持 `groupIds`，不传时选择默认组；编辑时不传则保留原分组。`groupIds` 至少一个，重复 ID 去重；停用组可保留绑定但不会赋予调用能力。原生配置及凭据内容不在分组库存响应中暴露。
+模型 Key 创建接口支持 `groupIds`，不传时选择 CPA、CommandCode 两个模块默认组；编辑时不传则保留原分组。`groupIds` 至少一个，重复 ID 去重；停用组可保留绑定但不会赋予调用能力。原生配置及凭据内容不在分组库存响应中暴露。
 
 官方行为依据：[CPA v8.0.11 来源模型选择](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/cliproxy/auth/conductor_selection.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/pluginapi/types.go)。分组的多来源授权行为参考 [New API 分组文档](https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/group)、[渠道选择源码](https://github.com/QuantumNous/new-api/blob/main/service/channel_select.go)，实现使用本项目的 Postgres 数据和内核请求上下文中的来源授权集合。

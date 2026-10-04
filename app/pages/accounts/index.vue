@@ -13,7 +13,7 @@ const page = ref(1)
 const pageSize = 50
 const selected = ref<string[]>([])
 const { data, pending, error, refresh } = await useFetch<AccountList>('/api/accounts', { query: { q: query, status, group, page, pageSize } })
-const routingGroups = await useFetch<{ items: RoutingGroupView[]; defaultGroupId: string }>('/api/groups', { key: 'nexus-routing-groups' })
+const routingGroups = await useFetch<{ items: RoutingGroupView[]; defaultGroupId: string; moduleDefaultGroupIds?: { commandcode?: string } }>('/api/groups', { key: 'nexus-routing-groups' })
 useLiveRefresh(() => Promise.all([refresh(), routingGroups.refresh()]))
 watch([query, status, group], () => { page.value = 1; selected.value = [] })
 watch(page, () => { selected.value = [] })
@@ -24,7 +24,7 @@ function toggleAll() { selected.value = allSelected.value ? [] : (data.value?.it
 const importOpen = ref(route.query.import === '1')
 const importText = ref('')
 const importGroup = ref('')
-const importGroupIds = ref<string[]>([DEFAULT_GROUP_ID])
+const importGroupIds = ref<string[]>([routingGroups.data.value?.moduleDefaultGroupIds?.commandcode || routingGroups.data.value?.defaultGroupId || DEFAULT_GROUP_ID])
 function groupNames(account: AccountView) { return (account.groupIds || [DEFAULT_GROUP_ID]).map((id, index) => routingGroups.data.value?.items.find(group => group.id === id)?.name || account.groupNames?.[index] || '未读取分组').join('、') }
 const { busy, run } = useApiAction()
 const deleteOpen = ref(false)

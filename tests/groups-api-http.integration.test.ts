@@ -31,7 +31,7 @@ import deleteGroup from '../server/api/groups/[id].delete'
 import listSources from '../server/api/groups/accounts.get'
 import patchSource from '../server/api/groups/accounts.patch'
 import deleteSource from '../server/api/groups/accounts.delete'
-import { accountGroupBindings, setAccountGroups } from '../server/lib/groups'
+import { accountGroupBindings, setAccountGroups, getModuleDefaultGroupIds } from '../server/lib/groups'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const schema = 'nexus_groups_http_' + randomUUID().replaceAll('-', '')
@@ -72,6 +72,8 @@ describe.skipIf(!databaseUrl)('group administration over HTTP and PostgreSQL', (
     expect(group).toMatchObject({ name: 'Team A', description: 'Two-source group', enabled: true, accountCount: 0, keyCount: 0 })
     const listed = await (await request('/api/groups')).json()
     expect(listed.defaultGroupId).toBe(DEFAULT_GROUP_ID); expect(listed.items.some((item: { id: string }) => item.id === groupId)).toBe(true)
+    expect(listed.moduleDefaultGroupIds).toEqual(await getModuleDefaultGroupIds())
+    expect(new Set(listed.defaultGroupIds)).toEqual(new Set(Object.values(listed.moduleDefaultGroupIds)))
     const duplicate = await request('/api/groups', 'POST', { name: 'Team A' }); expect(duplicate.status).toBe(409); await duplicate.arrayBuffer()
     const update = await request('/api/groups/' + groupId, 'PATCH', { description: 'Changed', enabled: false })
     expect(update.status).toBe(200); expect(await update.json()).toMatchObject({ description: 'Changed', enabled: false })
@@ -79,7 +81,7 @@ describe.skipIf(!databaseUrl)('group administration over HTTP and PostgreSQL', (
   })
   it('lists and rebinds a CommandCode account without changing its credential or legacy label', async () => {
     const initial = await (await request('/api/groups/accounts?moduleId=commandcode')).json()
-    expect(initial.items).toContainEqual(expect.objectContaining({ sourceId: accountId, sourceType: 'commandcode', groupIds: [DEFAULT_GROUP_ID] }))
+    expect(initial.items).toContainEqual(expect.objectContaining({ sourceId: accountId, sourceType: 'commandcode', groupIds: [(await getModuleDefaultGroupIds()).commandcode] }))
     const update = await request('/api/groups/accounts', 'PATCH', { moduleId: 'commandcode', sourceType: 'commandcode', sourceId: accountId, groupIds: [groupId,DEFAULT_GROUP_ID] })
     expect(update.status).toBe(200); await update.arrayBuffer()
     const binding = (await accountGroupBindings('commandcode', [accountId])).get(accountId)!

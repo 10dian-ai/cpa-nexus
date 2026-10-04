@@ -177,7 +177,7 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 | `CPA_CLIENT_KEY` | 平台调用 CPA 的内部凭证；保留在 CPA 的 access/api-keys 配置中 |
 | 统一模型 API Key | `ccm_` 前缀，选择一个或多个分组，跨 CPA 和 CommandCode 调用组内来源 |
 | CommandCode 桥接 Key | CPA 到模块的内部 `ccm_nexus_` Key，由模块接入建立，普通 Key 列表隐藏并禁止修改 |
-| 原有 `ccm_` Key | 升级后进入默认分组，保留原客户端 Key 与调用地址 |
+| 原有 `ccm_` Key | 原默认组升级为 CPA、CommandCode 两组的并集，保留自定义组、原客户端 Key 与调用地址 |
 | 外调服务 API Key | `ccm_service_` 前缀，专用于 CommandCode 的 `/api/external/*`，与模型 Key 独立验证 |
 | 历史 CPA 客户端 Key | 保留原生兼容调用，在统一页面的历史密钥区管理，不参与按 Key 的预设路由 |
 | `CPA_URL` | 生产容器内 `http://cpa:8317` |

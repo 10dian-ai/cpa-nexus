@@ -18,7 +18,7 @@ vi.mock('../server/lib/official-catalog', () => ({ getOfficialCatalog: async () 
   ].map(model => ({ ...model, planAccess: { goat: { included: true, apiAccess: true }, pro: { included: true, apiAccess: true }, go: { included: true, apiAccess: false } } })),
   { id: 'premium/model', name: 'Premium', providerAvailable: true, supportedEndpoints: ['messages'], planAccess: { goat: { included: false, apiAccess: true }, pro: { included: true, apiAccess: true }, go: { included: false, apiAccess: false } } },
 ] }) }))
-import { assertGroupIds, createGroup, deleteGroup, patchGroup, setAccountGroups, setKeyGroups, resolveEnabledKeyGroupIds, accountGroupBindings, keyGroupBindings } from '../server/lib/groups'
+import { assertGroupIds, createGroup, deleteGroup, patchGroup, setAccountGroups, setKeyGroups, resolveEnabledKeyGroupIds, accountGroupBindings, keyGroupBindings, getModuleDefaultGroupIds, getDefaultModelKeyGroupIds } from '../server/lib/groups'
 import { listAvailableCommandcodeModels, listCandidates, listGatewayModels } from '../server/lib/gateway/accounts'
 import { acquireLease, releaseLease } from '../server/lib/gateway/scheduler'
 import { attachIdentity, createPendingAccount } from '../server/lib/accounts'
@@ -42,8 +42,8 @@ describe.skipIf(!databaseUrl)('group routing on real PostgreSQL data', () => {
     await migrate(sql)
     expect((await sql`SELECT module_id FROM gateway_keys WHERE id IN (${keyA},${keyB})`).map(row => row.module_id)).toEqual(['auto','auto'])
     expect((await sql`SELECT module_id FROM gateway_keys WHERE id=${bridge}`)[0]?.module_id).toBe('commandcode')
-    expect((await keyGroupBindings([keyA])).get(keyA)?.groupIds).toEqual([DEFAULT_GROUP_ID])
-    expect((await accountGroupBindings('commandcode', [accountDefault])).get(accountDefault)?.groupIds).toEqual([DEFAULT_GROUP_ID])
+    expect(new Set((await keyGroupBindings([keyA])).get(keyA)?.groupIds)).toEqual(new Set(await getDefaultModelKeyGroupIds()))
+    expect((await accountGroupBindings('commandcode', [accountDefault])).get(accountDefault)?.groupIds).toEqual([(await getModuleDefaultGroupIds()).commandcode])
     groupA = (await createGroup({ name: 'Account A group' })).id; groupB = (await createGroup({ name: 'Account B group' })).id
     accountA = randomUUID(); accountB = randomUUID()
     await sql`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext,api_key_ciphertext,status,group_name) VALUES
@@ -127,8 +127,8 @@ describe.skipIf(!databaseUrl)('group routing on real PostgreSQL data', () => {
     await sql`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext) VALUES(${account},${randomUUID()},'test-cookie')`
     await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash) VALUES(${key},'Default','ccm_default',${randomUUID()})`
     await sql`INSERT INTO service_keys(id,name,prefix,secret_hash) VALUES(${service},'Service','ccm_service_',${randomUUID()})`
-    expect((await accountGroupBindings('commandcode', [account])).get(account)?.groupIds).toEqual([DEFAULT_GROUP_ID])
-    expect((await keyGroupBindings([key])).get(key)?.groupIds).toEqual([DEFAULT_GROUP_ID])
+    expect((await accountGroupBindings('commandcode', [account])).get(account)?.groupIds).toEqual([(await getModuleDefaultGroupIds()).commandcode])
+    expect(new Set((await keyGroupBindings([key])).get(key)?.groupIds)).toEqual(new Set(await getDefaultModelKeyGroupIds()))
     expect((await keyGroupBindings([service])).has(service)).toBe(false)
     await sql`DELETE FROM managed_accounts WHERE id=${account}`; await sql`DELETE FROM gateway_keys WHERE id=${key}`
     expect((await accountGroupBindings('commandcode', [account])).has(account)).toBe(false)

@@ -13,7 +13,7 @@ const [gateway, service, modules, presetRoutes, routingGroups] = await Promise.a
   useFetch<{ items: GatewayKeyView[] }>('/api/service-keys'),
   useFetch<{ modules: ModuleView[] }>('/api/modules', { key: 'nexus-modules' }),
   useFetch<{ bindings: KeyPresetBinding[] }>('/api/presets/routes', { key: 'nexus-preset-routes' }),
-  useFetch<{ items: RoutingGroupView[]; defaultGroupId: string }>('/api/groups', { key: 'nexus-routing-groups' }),
+  useFetch<{ items: RoutingGroupView[]; defaultGroupId: string; defaultGroupIds?: string[] }>('/api/groups', { key: 'nexus-routing-groups' }),
 ])
 const commandcodeEnabled = computed(() => modules.data.value?.modules.find(module => module.id === 'commandcode')?.enabled === true)
 const presetModuleEnabled = computed(() => modules.data.value?.modules.find(module => module.id === 'presets')?.enabled === true)
@@ -72,7 +72,7 @@ function startCreate() {
   keyName.value = ''
   createKind.value = 'gateway'
   createPresetEnabled.value = false
-  createGroupIds.value = routingGroups.data.value ? [routingGroups.data.value.defaultGroupId] : []
+  createGroupIds.value = routingGroups.data.value ? [...(routingGroups.data.value.defaultGroupIds || [routingGroups.data.value.defaultGroupId])] : []
   createOpen.value = true
 }
 async function createKey() {
@@ -94,7 +94,7 @@ async function createKey() {
 function startEdit(key: ManagedKey) {
   editName.value = key.name
   editPresetEnabled.value = usesPresets(key)
-  editGroupIds.value = [...(key.groupIds || (routingGroups.data.value ? [routingGroups.data.value.defaultGroupId] : []))].sort()
+  editGroupIds.value = [...(key.groupIds || (routingGroups.data.value ? (routingGroups.data.value.defaultGroupIds || [routingGroups.data.value.defaultGroupId]) : []))].sort()
   editTarget.value = key
 }
 async function saveKey() {

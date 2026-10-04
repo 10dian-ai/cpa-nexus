@@ -146,7 +146,7 @@ export async function listCpaGroupSources(options: { fresh?: boolean } = {}): Pr
   for (const source of sources) await ensureAccountGroups(db, 'cpa', source.id)
   const bindings = await accountGroupBindings('cpa', sources.map(source => source.id))
   return sources.map(source => ({ id: source.id, moduleId: 'cpa', sourceType: 'cpa', sourceId: source.id,
-    name: source.name, provider: source.provider, enabled: source.enabled,
+    name: source.name, provider: source.provider, enabled: source.enabled, credentialIds: [...source.authIds],
     ...(bindings.get(source.id) || { groupIds: [], groupNames: [] }),
     routingSupported: source.supported && !routingMessage, routingPrefix: source.prefix,
     ...(routingMessage || source.message ? { message: routingMessage || source.message } : {}),

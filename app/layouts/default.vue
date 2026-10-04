@@ -18,6 +18,7 @@ const groups = computed(() => [
     { to: '/cpa', label: '内核运行', icon: 'i-ph-cpu-bold' },
     { to: '/cpa/config', label: '内核配置', icon: 'i-ph-sliders-horizontal-bold' },
     { to: '/cpa/credentials', label: '凭证管理', icon: 'i-ph-identification-card-bold' },
+    { to: '/groups/accounts?module=cpa', label: 'CPA 凭证分组', icon: 'i-ph-users-four-bold' },
     { to: '/cpa/oauth', label: 'OAuth 授权', icon: 'i-ph-sign-in-bold' },
     { to: '/cpa/quota', label: '配额管理', icon: 'i-ph-gauge-bold' },
     { to: '/cpa/channels', label: '渠道与模型', icon: 'i-ph-git-branch-bold' },
@@ -30,6 +31,7 @@ const groups = computed(() => [
   ...(commandcodeEnabled.value ? [{ label: 'CommandCode', links: [
     { to: '/commandcode', label: '账号池概览', icon: 'i-ph-chart-bar-bold' },
     { to: '/accounts', label: '账号管理', icon: 'i-ph-users-three-bold' },
+    { to: '/groups/accounts?module=commandcode', label: '账号调用分组', icon: 'i-ph-users-four-bold' },
     { to: '/official', label: '官方模型与套餐', icon: 'i-ph-book-open-bold' },
     { to: '/models', label: '模型观察', icon: 'i-ph-cube-bold' },
     { to: '/logs', label: '请求日志', icon: 'i-ph-list-bullets-bold' },
@@ -37,7 +39,11 @@ const groups = computed(() => [
   ] }] : []),
   ...(moduleData.value?.modules.filter(module => module.enabled && !['cpa', 'commandcode', 'platform', 'presets'].includes(module.id) && module.navigation.length).map(module => ({ label: module.name, links: module.navigation })) || []),
 ])
-const current = computed(() => groups.value.flatMap(group => group.links).find(link => link.to === '/' || link.to === '/cpa' ? route.path === link.to : route.path.startsWith(link.to)) || groups.value[0]!.links[0]!)
+const current = computed(() => groups.value.flatMap(group => group.links).filter(link => {
+  const [path, query] = link.to.split('?')
+  if (!path || !(path === '/' || path === '/cpa' ? route.path === path : route.path === path || route.path.startsWith(path + '/'))) return false
+  return !query || [...new URLSearchParams(query).entries()].every(([name, value]) => (route.query[name] || (name === 'module' ? 'cpa' : '')) === value)
+}).sort((a, b) => b.to.length - a.to.length)[0] || groups.value[0]!.links[0]!)
 watch(() => route.fullPath, () => { mobileOpen.value = false })
 const { busy, run } = useApiAction()
 async function logout() {
