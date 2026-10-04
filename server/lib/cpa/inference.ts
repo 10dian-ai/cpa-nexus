@@ -3,6 +3,8 @@ import { request as httpsRequest } from 'node:https'
 import { getRequestURL, type H3Event } from 'h3'
 import { CPA_DEFAULT_URL, validateCpaBaseUrl } from './client'
 import { handleCommandcodeCompatibility } from '../commandcode-compat'
+import { handleGateway } from '../gateway/handler'
+import { verifyOriginalGatewayKey } from '../commandcode-identity'
 import { resolveKeyPresetStack } from '../presets'
 import { authenticateGatewayKey } from '../auth'
 import { applyPresetStack } from '../presets/engine'
@@ -128,6 +130,16 @@ export async function handleNexusInference(event: H3Event) {
   try {
     // Existing native core keys retain their original protocol and authentication.
     if (!secret.startsWith('ccm_')) return await forwardNativeCpa(event, '/v1/' + path + requested.search)
+    // CPA installations before the private app callback was split may still point
+    // their managed CommandCode channel at the public /nexus/cpa/v1 route. A
+    // signed bridge callback is internal and must use the same gateway path as a
+    // direct /v1 callback so the original model key, groups and presets survive.
+    // Require the signature before delegating; an unsigned bridge key remains an
+    // invalid public model key below.
+    const bridgeProtocol = protocol === 'chat' ? 'chat/completions' : protocol || (path === 'systemone' ? 'systemone' : undefined)
+    if (secret.startsWith('ccm_nexus_') && bridgeProtocol && verifyOriginalGatewayKey(event.node.req.headers)) {
+      return await handleGateway(event, { protocolPath: bridgeProtocol })
+    }
     if (!((path === 'models' && event.method === 'GET') || ((protocol || path === 'systemone') && event.method === 'POST'))) { fail(event, path, 404, 'Unsupported model endpoint'); return }
     const key = await authenticateGatewayKey(secret)
     if (!key || secret.startsWith('ccm_nexus_')) { fail(event, path, 401, 'A valid model API key is required'); return }
