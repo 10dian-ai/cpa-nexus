@@ -19,6 +19,7 @@ vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibil
 vi.mock('../server/lib/gateway/handler', () => ({ handleGateway: fixture.internal }))
 import { handleNexusInference, resetCpaInferenceAuthCache } from '../server/lib/cpa/inference'
 import modelRoute from '../server/routes/v1/[...path]'
+import { signOriginalGatewayKey } from '../server/lib/commandcode-identity'
 
 const preset = (name = 'Default') => ({ id: name, sourceJson: { prompts: [{ identifier: 'main', role: 'system', content: name }, { identifier: 'chatHistory', marker: true }], prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] }], temperature: 0.4 }, variables: {} })
 describe('public CPA and original CCM inference routing', () => {
@@ -302,5 +303,27 @@ describe('public CPA and original CCM inference routing', () => {
     expect(JSON.parse(received[0]!.raw).messages[0].content).toBe('KB rule')
     release!()
     while (!(await reader.read()).done) { /* Drain the streamed response. */ }
+  })
+  it('accepts signed bridge callbacks that still arrive through the legacy public path', async () => {
+    const originalKeyId = 'legacy-callback-key'
+    const response = await fetch(url + '/chat/completions', { method: 'POST', headers: {
+      authorization: 'Bearer ccm_nexus_internal', 'content-type': 'application/json',
+      'x-nexus-original-key-id': originalKeyId,
+      'x-nexus-original-key-signature': signOriginalGatewayKey(originalKeyId),
+    }, body: JSON.stringify({ model: 'fixture', messages: [] }) })
+    expect(await response.text()).toBe('internal bridge')
+    expect(fixture.internal).toHaveBeenLastCalledWith(expect.anything(), { protocolPath: 'chat/completions' })
+  })
+
+  it('keeps unsigned or invalidly signed bridge callbacks rejected on the legacy public path', async () => {
+    for (const signature of ['', 'invalid-signature']) {
+      const response = await fetch(url + '/messages', { method: 'POST', headers: {
+        authorization: 'Bearer ccm_nexus_internal', 'content-type': 'application/json',
+        'x-nexus-original-key-id': 'legacy-callback-key',
+        ...(signature ? { 'x-nexus-original-key-signature': signature } : {}),
+      }, body: JSON.stringify({ model: 'fixture', messages: [] }) })
+      expect(response.status).toBe(401)
+      expect((await response.json()).error.message).toBe('A valid model API key is required')
+    }
   })
 })
