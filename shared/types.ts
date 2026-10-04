@@ -38,7 +38,7 @@ export interface RequestLogView {
 }
 export interface ImportResult { imported: number; updated: number; failed: number; skipped: number; errors: { line: number; message: string }[] }
 export interface JobView { id: string; status: string; progress: { processed: number; total: number }; result: ImportResult | null; error: string | null }
-export interface ModelView { id: string; name: string; observedAllowed: number; observedDenied: number; unknownAccounts: number; updatedAt: string }
+export interface ModelView { id: string; name: string; observedAllowed: number; observedDenied: number; unknownAccounts: number; updatedAt: string; eligibleAccounts?: number; unknownSubscriptionAccounts?: number; availabilitySource?: 'official-catalog' }
 export interface QuotaTotal { used: number; cap: number; remaining: number; knownAccounts: number; unknownAccounts: number }
 export interface DashboardView {
   quota: { accountCount: number; fiveHour: QuotaTotal; weekly: QuotaTotal; monthly: QuotaTotal }

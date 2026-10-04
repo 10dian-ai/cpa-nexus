@@ -33,6 +33,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26.x', cache: false }
+      - name: Build and verify the complete CPA kernel
+        env:
+          CPA_UPSTREAM_REF: e2bff0107bb307337aaa19018ccddd55f64253d5
+        run: |
+          set -euo pipefail
+          core_source="$RUNNER_TEMP/cpa-nexus-core"
+          git init --quiet "$core_source"
+          git -C "$core_source" remote add origin https://github.com/router-for-me/CLIProxyAPI.git
+          git -C "$core_source" fetch --depth 1 origin "$CPA_UPSTREAM_REF"
+          git -C "$core_source" checkout --detach FETCH_HEAD
+          test "$(git -C "$core_source" rev-parse HEAD)" = "$CPA_UPSTREAM_REF"
+          git -C "$core_source" apply --check "$GITHUB_WORKSPACE/ops/cpa-nexus/nexus-plugins.patch"
+          git -C "$core_source" apply "$GITHUB_WORKSPACE/ops/cpa-nexus/nexus-plugins.patch"
+          cd "$core_source"
+          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./internal/pluginhost ./internal/api -count=1
+          CGO_ENABLED=1 go build -buildvcs=false -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
+          echo "TEST_CPA_BINARY=$RUNNER_TEMP/cli-proxy-api-nexus" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run db:migrate
       - run: npm run check

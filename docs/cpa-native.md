@@ -25,6 +25,18 @@ Codex、Anthropic、Antigravity、Kimi、Devin、Meta、xAI 的查询通过 CPA 
 
 通用插件／声明式配额继续使用官方保留的 v0 `quota/providers`、`quota/fetch`、`quota/reset`。供应商配额重置、请求冷却重置和凭据 Token 刷新是不同操作，页面分别标明。
 
+## 插件市场与原生插件页面
+
+市场直接读取当前 CPA 的 `plugins/store`，保留官方来源及使用者已配置的其他来源，不使用固定插件名称白名单。安装、指定版本安装、更新、卸载，以及插件总开关、单插件开关和配置节点均使用 CPA 原版接口。市场中的实际安装版本、可更新状态、来源、平台和认证要求以当前内核返回为准；安装成功和已经注册运行分别显示，需要重启时保留内核的 `restart_required` 提示。
+
+插件配置使用内核声明的 `config_fields` 描述字段类型和枚举，同时保留原始 JSON 编辑；插件未声明的配置字段不会被整理后的表单删除。OAuth、配额及其重置能力从当前注册插件动态发现。Nexus 原生适配层还提供实际执行器、调度器、拦截器、模型路由、翻译器和管理界面等能力标记；未返回的能力保留未知，不根据插件名字推测。
+
+插件菜单使用内核实际返回的 `/v0/resource/plugins/<id>/...`，通过已登录的完整原版代理 `/api/cpa/console/v0/resource/plugins/<id>/...` 打开。HTML、脚本、样式和图片使用同一原生通道，插件自己的 v0／v8 管理请求复用管理员会话、来源检查、内部访问密钥保护和原生配置变更钩子。浏览器中的会话标记不是 CPA 管理密钥，后台始终访问已配置的固定 CPA 服务。
+
+新插件菜单不需要手写 `CPA_PLUGIN_ROUTES`。该变量仅用于历史的精确接口适配器和希望主动限制接入范围的旧集成；完整原版插件页面不依赖这份人工路由清单。插件依赖的外部伴随服务、登录账号、上游凭证、原生动态库架构和 ABI 要求仍以插件自身及 CPA 返回的实际状态为准。
+
+官方来源：[实时官方插件市场](https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json)、[固定内核插件市场协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/internal/api/handlers/management/plugin_store.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/pluginapi/types.go)。
+
 ## 官方完整控制台
 
 面板固定 `v1.25.2`，HTML SHA-256 为 `b6ea0bbd1f7bdb2a3da5d960a5ad71bc89f33212ece21124c390511eef7ce041`。经校验的 HTML、许可证与来源记录保存在 `.runtime/cpa/config/static`，用持久挂载及 `MANAGEMENT_STATIC_PATH` 保留；已有有效资产不被普通更新覆盖。
@@ -34,3 +46,5 @@ Codex、Anthropic、Antigravity、Kimi、Devin、Meta、xAI 的查询通过 CPA 
 桥接逐次验证管理员会话，固定访问已配置 CPA 服务并校验路径／参数。模型目录使用内部 `CPA_CLIENT_KEY`，普通 v0／v8 客户端列表操作保留平台内连密钥，其余原生配置及文件操作由内核处理。直接公网管理路径仍不开放。
 
 官方来源：[固定内核管理契约](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/docs/management-api-v8.md)、[官方面板发布](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/releases/tag/v1.25.2)、[Google 提供器](https://github.com/router-for-me/cpa-plugin-gemini-cli)。
+
+模型出站默认使用统一的软件标识，具体生效位置及保留的 OAuth 协议字段见[请求头隐私](request-header-privacy.md)。

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { COMMANDCODE_PROVIDER_URL, normalizeSupportedEndpoints, providerEndpoint, requestCommandCodeProvider } from '../server/lib/commandcode-provider'
+import { privateSessionId } from '../server/lib/privacy-headers'
 
 describe('official CommandCode Provider transport', () => {
   it('calls the official native endpoint using the selected account API key and preserves request shape', async () => {
@@ -9,7 +10,7 @@ describe('official CommandCode Provider transport', () => {
     await requestCommandCodeProvider({ protocol: 'chat/completions', body, apiKey: 'selected-account-key', headers: {
       authorization: 'Bearer client-gateway-key', cookie: 'session=browser-secret', 'x-api-key': 'client-api-key',
       'x-cmd-zdr': '1', 'openai-beta': 'responses=experimental', 'x-session-id': 'conversation',
-    }, signal: controller.signal }, { fetch: upstream })
+    }, signal: controller.signal }, { fetch: upstream, privacySecret: 'test-only-privacy-secret' })
     expect(upstream).toHaveBeenCalledTimes(1)
     const [url, options] = upstream.mock.calls[0]!
     expect(url).toBe(COMMANDCODE_PROVIDER_URL + '/chat/completions')
@@ -21,7 +22,8 @@ describe('official CommandCode Provider transport', () => {
     expect(headers.get('x-api-key')).toBeNull()
     expect(headers.get('x-cmd-zdr')).toBe('1')
     expect(headers.get('openai-beta')).toBe('responses=experimental')
-    expect(headers.get('x-session-id')).toBe('conversation')
+    expect(headers.get('x-session-id')).toBe(privateSessionId('conversation', 'test-only-privacy-secret'))
+    expect(headers.get('user-agent')).toBe('opencode')
   })
   it('supports Messages, Responses and System One without format conversion or credentials from cookies', async () => {
     const upstream = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}'))

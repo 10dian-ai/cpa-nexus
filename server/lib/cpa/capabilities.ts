@@ -1,4 +1,4 @@
-import type { CpaCapabilities, CpaOAuthCapability, CpaQuotaCapability } from '../../../shared/cpa'
+import type { CpaCapabilities, CpaOAuthCapability, CpaQuotaCapability, CpaDiscoveredPlugin } from '../../../shared/cpa'
 import { createCpaClient, type CpaRequest, type CpaResponse } from './client'
 
 export interface CpaCapabilitiesClient {
@@ -32,14 +32,26 @@ function parse(response: CpaResponse): Record<string, unknown> | null {
 export async function getCpaCapabilities(client: CpaCapabilitiesClient = createCpaClient()): Promise<CpaCapabilities> {
   const errors: string[] = []
   let discovery: Record<string, unknown> | null = null
+  let config: Record<string, unknown> | null = null
   let coreVersion: string | null = null
-  try {
-    const response = await client.request({ path: 'plugins' })
-    discovery = parse(response)
-    coreVersion = response.headers.get('x-cpa-version')
-    if (!discovery || !Array.isArray(discovery.plugins)) { discovery = null; errors.push('CPA 插件能力暂时无法读取，请检测内核连接。') }
-  } catch { errors.push('无法读取 CPA 原生能力，请检测内核连接。') }
-  const connected = !!discovery, pluginsEnabled = discovery?.plugins_enabled === true
+  const [configCheck, pluginCheck] = await Promise.allSettled([
+    client.request({ path: 'config' }),
+    client.request({ path: 'plugins' }),
+  ])
+  if (configCheck.status === 'fulfilled') {
+    config = parse(configCheck.value)
+    coreVersion = configCheck.value.headers.get('x-cpa-version')
+    if (config?.['config-version'] !== 8) { config = null; errors.push('CPA 原生配置暂时无法读取，请检测内核连接。') }
+  } else errors.push('无法读取 CPA 原生配置，请检测内核连接。')
+  if (pluginCheck.status === 'fulfilled') {
+    discovery = parse(pluginCheck.value)
+    coreVersion ||= pluginCheck.value.headers.get('x-cpa-version')
+    if (!discovery || !Array.isArray(discovery.plugins)) discovery = null
+  }
+  if (!discovery) errors.push('CPA 插件发现暂时不可用，请检查插件目录或插件配置。')
+  const connected = !!config
+  const configuredPlugins = record(config?.plugins) ? config.plugins : {}
+  const pluginsEnabled = discovery ? discovery.plugins_enabled === true : configuredPlugins.enabled === true
   const oauthProviders: CpaOAuthCapability[] = BUILTIN_OAUTH.map(([id, name, flow]) => ({
     id, name, flow, available: connected, source: 'core', supportsCallback: flow === 'browser', supportsCodeImport: flow === 'browser',
   }))
@@ -48,10 +60,24 @@ export async function getCpaCapabilities(client: CpaCapabilitiesClient = createC
     ...(provider.id === 'xai' ? { message: '只查询真实账单和账户信息；不会自动发送付费模型健康测试。' } : {}),
   }))
   const plugins = Array.isArray(discovery?.plugins) ? discovery.plugins.filter(record) : []
+  const discoveredPlugins: CpaDiscoveredPlugin[] = plugins.filter(plugin => !!providerId(plugin.id)).map(plugin => {
+    const metadata = record(plugin.metadata) ? plugin.metadata : {}
+    const capabilities = record(plugin.capabilities) ? Object.fromEntries(Object.entries(plugin.capabilities).filter(([, value]) => typeof value === 'boolean')) as Record<string, boolean> : {}
+    const fields = Array.isArray(plugin.config_fields) ? plugin.config_fields.filter(record) : []
+    const menus = Array.isArray(plugin.menus) ? plugin.menus.filter(record) : []
+    return { id: providerId(plugin.id), name: text(metadata.name) || providerId(plugin.id), enabled: plugin.enabled === true, registered: plugin.registered === true,
+      effectiveEnabled: pluginsEnabled && plugin.effective_enabled === true, capabilities,
+      ...(providerId(plugin.oauth_provider) ? { oauthProvider: providerId(plugin.oauth_provider) } : {}),
+      ...(providerId(plugin.quota_provider) ? { quotaProvider: providerId(plugin.quota_provider) } : {}),
+      ...(text(plugin.executor_model_scope ?? plugin.executorModelScope) ? { executorModelScope: text(plugin.executor_model_scope ?? plugin.executorModelScope) } : {}),
+      menus: menus.map(menu => ({ path: typeof menu.path === 'string' ? menu.path : '', name: text(menu.menu), description: text(menu.description) })),
+      configFields: fields.map(field => ({ name: text(field.name), type: text(field.type), description: text(field.description), enumValues: Array.isArray(field.enum_values) ? field.enum_values.filter((value): value is string => typeof value === 'string') : [] })),
+    }
+  })
   for (const plugin of plugins) {
     const id = providerId(plugin.id)
     if (!id) continue
-    const effective = plugin.effective_enabled === true && pluginsEnabled
+    const effective = connected && plugin.effective_enabled === true && pluginsEnabled
     const metadata = record(plugin.metadata) ? plugin.metadata : {}
     if (plugin.supports_oauth === true && providerId(plugin.oauth_provider)) {
       const oauthId = providerId(plugin.oauth_provider)
@@ -70,7 +96,7 @@ export async function getCpaCapabilities(client: CpaCapabilitiesClient = createC
     const existing = plugins.find(plugin => plugin.id === 'gemini-cli')
     oauthProviders.push({ id: 'gemini-cli', name: 'Google Gemini CLI', source: 'plugin', pluginId: 'gemini-cli',
       available: false, flow: 'browser', supportsCallback: true, supportsCodeImport: true,
-      message: existing ? 'Google Gemini CLI 插件尚未注册或启用，请在插件管理中检查。' : '安装并启用官方 gemini-cli 插件后，可使用 Google OAuth。',
+      message: !discovery ? '插件发现暂时不可用，Google Gemini CLI 的安装与运行状态尚未确认。' : existing ? 'Google Gemini CLI 插件尚未注册或启用，请在插件管理中检查。' : '安装并启用官方 gemini-cli 插件后，可使用 Google OAuth。',
     })
   }
   // v8 exposes plugin quotas, while the provider/reset metadata still belongs to the native v0 API.
@@ -87,7 +113,8 @@ export async function getCpaCapabilities(client: CpaCapabilitiesClient = createC
         if (!row && actualProvider) {
           row = { id: (pluginId ? 'plugin:' + pluginId : 'probe:' + actualProvider), name: text(provider.display_name) || actualProvider,
             source: pluginId ? 'plugin' : 'probe', ...(pluginId ? { pluginId } : {}), provider: actualProvider,
-            credentialProviders: supported, available: connected, supportsReset: provider.supports_reset === true }
+            credentialProviders: supported, available: connected && (!pluginId || !!discovery && pluginsEnabled && plugins.find(plugin => plugin.id === pluginId)?.effective_enabled !== false), supportsReset: provider.supports_reset === true,
+            ...(pluginId && !discovery ? { message: '插件发现暂时不可用，此插件的运行状态尚未确认。' } : {}) }
           quotaProviders.push(row)
         }
         if (!row) continue
@@ -117,7 +144,7 @@ export async function getCpaCapabilities(client: CpaCapabilitiesClient = createC
       }
     } catch { errors.push('凭据配额探针能力暂时无法读取。') }
   }
-  return { connected, coreVersion, pluginsEnabled, checkedAt: new Date().toISOString(), oauthProviders, quotaProviders,
+  return { connected, coreVersion, pluginsEnabled, checkedAt: new Date().toISOString(), oauthProviders, quotaProviders, plugins: discoveredPlugins,
     ...(errors.length ? { errors } : {}),
   }
 }

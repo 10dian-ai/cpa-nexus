@@ -1,21 +1,14 @@
 <script setup lang="ts">
-import type { OfficialCatalogSource, OfficialCatalogView } from '#shared/official-catalog'
+import type { OfficialCatalogSource } from '#shared/official-catalog'
 
 useHead({ title: '官方模型与套餐 · CPA Nexus' })
-const { data, pending, error, refresh } = await useFetch<OfficialCatalogView>('/api/official/catalog')
-useLiveRefresh(refresh)
+const { data, pending, error, refresh, busy, refreshOfficial } = useOfficialCatalog()
 const selectedPlanId = ref('goat')
 const selectedPlan = computed(() => data.value?.plans.find(plan => plan.id === selectedPlanId.value))
-const { busy, run } = useApiAction()
 
 watch(() => data.value?.plans, plans => {
   if (plans?.length && !plans.some(plan => plan.id === selectedPlanId.value)) selectedPlanId.value = plans[0]!.id
 }, { immediate: true })
-
-async function refreshOfficial() {
-  const result = await run(() => $fetch<OfficialCatalogView>('/api/official/refresh', { method: 'POST', timeout: 120_000 }), '已完成官方来源检查')
-  if (result.ok) data.value = result.value
-}
 
 function sourceName(source: OfficialCatalogSource) {
   const names: Record<string, string> = {
@@ -31,18 +24,15 @@ function sourceName(source: OfficialCatalogSource) {
   return names[source.id] || '官方来源'
 }
 
-let pollTimer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { pollTimer = setInterval(() => { if (document.visibilityState === 'visible' && !pending.value && !busy.value) void refresh() }, 60_000) })
-onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
 
 <template>
   <div class="official-page">
-    <AppPageHeader title="官方模型与套餐" description="从 CommandCode 官方网页与公开 API 获取模型目录和订阅规则。">
-      <button class="button" :disabled="pending || busy" @click="refreshOfficial"><UIcon name="i-ph-arrow-clockwise-bold" :class="{ spinning: busy }" />{{ busy ? '正在检查官方来源' : '刷新官方信息' }}</button>
+    <AppPageHeader title="官方模型与套餐" description="默认只显示所选订阅包含、且官方 API 支持的模型。">
+      <button class="button" :disabled="pending || busy" @click="refreshOfficial"><UIcon name="i-ph-arrow-clockwise-bold" :class="{ spinning: busy }" />{{ busy ? '正在检查官方来源' : '刷新可使用列表' }}</button>
     </AppPageHeader>
 
-    <div class="notice official-notice"><UIcon name="i-ph-info-bold" /><p>官方 API 目录每 5 分钟检查，网页每 15 分钟检查；也可手动刷新。页面每分钟读取后台保存的结果。套餐说明不等于账号当前权限，充值、按量计费和账号状态仍需以实际调用为准。</p></div>
+    <div class="notice official-notice"><UIcon name="i-ph-info-bold" /><p>后台自动更新：官方 API 目录每 5 分钟检查，GOAT 套餐网页每 15 分钟检查。点击“刷新可使用列表”会立即请求官方来源，页面每分钟读取最新结果。列表按官方套餐与精确 API 模型 ID 核对；账号额度与临时冷却另见模型观察。</p></div>
 
     <AppState v-if="error && !data" :error="error" @retry="refresh()" />
     <div v-else-if="!data" class="nexus-skeleton official-loading" role="status" aria-label="正在读取官方目录"><span /><span /><span /></div>

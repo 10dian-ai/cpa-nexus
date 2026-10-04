@@ -8,7 +8,7 @@ import { createConnection, createServer as createTcpServer, type Socket } from '
 import { createHash } from 'node:crypto'
 import { parse } from 'dotenv'
 // @ts-ignore Setup is a plain ESM utility and performs no work when imported.
-import { setupCpa, CPA_IMAGE, CPA_VERSION } from '../scripts/setup-cpa.mjs'
+import { setupCpa, CPA_IMAGE, CPA_VERSION, CPA_UPSTREAM_IMAGE, CPA_UPSTREAM_REF } from '../scripts/setup-cpa.mjs'
 
 describe('CPA Nexus deployment initialization', () => {
   let directory: string
@@ -26,7 +26,8 @@ describe('CPA Nexus deployment initialization', () => {
     const config = await readFile(join(directory, '.runtime/cpa/config/config.yaml'), 'utf8')
     expect(environment.CPA_IMAGE).toBe(CPA_IMAGE)
     expect(environment.CPA_VERSION).toBe(CPA_VERSION)
-    expect(CPA_IMAGE).toMatch(/^eceasy\/cli-proxy-api:v8\.0\.11@sha256:[a-f0-9]{64}$/)
+    expect(CPA_IMAGE).toBe('cpa-nexus-core:v8.0.11-nexus1')
+    expect(CPA_UPSTREAM_IMAGE).toMatch(/^eceasy\/cli-proxy-api:v8\.0\.11@sha256:[a-f0-9]{64}$/)
     expect(environment.CPA_MANAGEMENT_KEY.length).toBeGreaterThanOrEqual(32)
     expect(environment.CPA_CLIENT_KEY).not.toBe(environment.CPA_MANAGEMENT_KEY)
     expect(config).toContain('secret-key: ' + JSON.stringify(environment.CPA_MANAGEMENT_KEY))
@@ -60,6 +61,22 @@ describe('CPA Nexus deployment initialization', () => {
     expect(environment.startsWith(original)).toBe(true)
     expect(parse(environment).CPA_URL).toBe('http://fixture.internal:8317')
     expect(parse(environment).CPA_IMAGE).toBe(CPA_IMAGE)
+  })
+
+  it('upgrades only the former pinned image while preserving keys and customized source selection', async () => {
+    await setupCpa(directory, () => {})
+    const path = join(directory, '.env.cpa')
+    const before = parse(await readFile(path, 'utf8'))
+    await writeFile(path, (await readFile(path, 'utf8')).replace('CPA_IMAGE=' + CPA_IMAGE, 'CPA_IMAGE=' + CPA_UPSTREAM_IMAGE))
+    await setupCpa(directory, () => {})
+    const updated = parse(await readFile(path, 'utf8'))
+    expect(updated.CPA_IMAGE).toBe(CPA_IMAGE)
+    expect(updated.CPA_UPSTREAM_REF).toBe(CPA_UPSTREAM_REF)
+    expect(updated.CPA_MANAGEMENT_KEY).toBe(before.CPA_MANAGEMENT_KEY)
+    expect(updated.CPA_CLIENT_KEY).toBe(before.CPA_CLIENT_KEY)
+    await writeFile(path, (await readFile(path, 'utf8')).replace('CPA_IMAGE=' + CPA_IMAGE, 'CPA_IMAGE=operator/custom-kernel:chosen'))
+    await setupCpa(directory, () => {})
+    expect(parse(await readFile(path, 'utf8')).CPA_IMAGE).toBe('operator/custom-kernel:chosen')
   })
 
   it('refuses to rotate lost keys when existing core state has already been created', async () => {
@@ -283,6 +300,21 @@ describe.skipIf(!nginxBinary)('CPA Nexus native edge transport', () => {
     }
     const escaped = await (await fetch(edgeUrl + '/cpa-api/future-model-path?fixture=1')).json()
     expect(escaped).toMatchObject({ upstream: 'cpa', path: '/future-model-path?fixture=1' })
+  })
+
+  it('preserves original image, video and token-count endpoints with private caller headers', async () => {
+    for (const path of ['/v1/images/generations', '/v1/images/edits', '/v1/videos', '/v1/messages/count_tokens']) {
+      const response = await fetch(edgeUrl + path, { method: 'POST', headers: {
+        authorization: 'Bearer local-native-fixture', 'content-type': 'application/json',
+        'user-agent': 'claude-code/private-software', originator: 'private-codex', cookie: 'private-visitor=local',
+        'x-stainless-os': 'private-device', 'x-opencode-project': 'private-project', traceparent: 'private-trace',
+      }, body: '{"model":"local-fixture-only"}' })
+      const body = await response.json()
+      expect(body.upstream).toBe('cpa'); expect(body.path).toBe(path)
+      expect(body.headers.authorization).toBe('Bearer local-native-fixture')
+      expect(body.headers['user-agent']).toBe('opencode'); expect(body.headers.originator).toBe('opencode')
+      for (const name of ['cookie', 'x-stainless-os', 'x-opencode-project', 'traceparent']) expect(body.headers[name]).toBeUndefined()
+    }
   })
 
   it('blocks native management and credential files before either upstream is called', async () => {

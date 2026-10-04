@@ -1,10 +1,11 @@
 import type { ServerResponse } from 'node:http'
 import type { H3Event } from 'h3'
 import { createError } from 'h3'
+import { privacyHeaders } from '../privacy-headers'
 
 const PASSTHROUGH_HEADERS = ['anthropic-version', 'anthropic-beta', 'openai-beta', 'x-cmd-zdr', 'x-session-id', 'x-claude-code-session-id',
   'x-codex-session-id', 'x-agent-id', 'x-subagent-id']
-export function makeProviderHeaders(headers: Record<string, string | string[] | undefined>, upstreamKey: string): Headers {
+function providerHeaders(headers: Record<string, string | string[] | undefined>, upstreamKey: string): Headers {
   const output = new Headers({ 'content-type': 'application/json', authorization: 'Bearer ' + upstreamKey })
   for (const name of PASSTHROUGH_HEADERS) {
     const value = headers[name]
@@ -14,6 +15,15 @@ export function makeProviderHeaders(headers: Record<string, string | string[] | 
   // are deliberately not forwarded to the official Provider API.
   return output
 }
+export function makeProviderHeaders(headers: Record<string, string | string[] | undefined>, upstreamKey: string, privacySecret?: string): Headers {
+  const sanitized = privacyHeaders(Object.fromEntries(providerHeaders(headers, upstreamKey)), privacySecret)
+  // The original aliases were already allowlisted; anonymize using the caller's original session.
+  const source = privacyHeaders(headers, privacySecret)
+  for (const name of ['x-session-id', 'x-agent-id', 'x-subagent-id']) if (source[name]) sanitized[name] = source[name]
+  return new Headers(sanitized as Record<string, string>)
+}
+/** These hints stay inside the owned CPA/Nexus bridge and are never sent to a supplier. */
+export const makeInternalBridgeHeaders = providerHeaders
 /** Compatibility export for callers that used the old transport helper. */
 export const makeKernelHeaders = makeProviderHeaders
 export async function readJsonBodyLimited(event: H3Event, maximum = 0): Promise<Record<string, unknown>> {

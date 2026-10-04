@@ -1,4 +1,4 @@
-import type { CpaStatus } from '#shared/cpa'
+import type { CpaDiscoveredPlugin, CpaStatus } from '#shared/cpa'
 
 export const cpaManagementUrl = (path: string) => `/api/cpa/management/${path.replace(/^\/+/, '')}`
 
@@ -39,6 +39,7 @@ export interface CpaManagementCapabilities {
   pluginsEnabled?: boolean
   oauthProviders: CpaOAuthProvider[]
   quotaProviders: CpaQuotaProvider[]
+  plugins?: CpaDiscoveredPlugin[]
   errors?: (string | { source?: string; message: string })[]
 }
 export function useCpaCapabilities() {

@@ -31,13 +31,16 @@ import { createCpaClient } from '../server/lib/cpa/client'
 import { readCpaConfigGroupSources } from '../server/lib/cpa/preset-config-routing'
 import { resetCpaGroupRouting } from '../server/lib/cpa/group-routing'
 import { handleNexusInference } from '../server/lib/cpa/inference'
+import { applyCpaPrivacyPolicy } from '../scripts/cpa-privacy-policy.mjs'
 
 // Uses the actual public handler and unmodified pinned CPA binary, with only identity storage
 // replaced by a local ledger. Every provider call goes to these isolated mock listeners.
 const binary = process.env.TEST_CPA_BINARY
+const policyKey = Buffer.alloc(32, 23).toString('base64')
+vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: Buffer.alloc(32, 23).toString('base64') }) }))
 describe.skipIf(!binary)('real CPA groups through the public model-key endpoint', () => {
   let core: ChildProcess | undefined, directory = '', cpaUrl = '', appUrl = '', output = ''
-  const servers: Server[] = [], calls: { source: string; model: string; authorization: string }[] = []
+  const servers: Server[] = [], calls: { source: string; model: string; authorization: string; userAgent: string }[] = []
   const failed = new Set<string>()
   const random = (name: string) => name + randomBytes(16).toString('hex')
   const managementKey = random('local-management-'), clientKey = random('local-client-')
@@ -60,7 +63,7 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
       const url = await listen(createServer(async (request, response) => {
         let raw = ''; for await (const chunk of request) raw += chunk
         const body = JSON.parse(raw || '{}')
-        calls.push({ source, model: body.model, authorization: String(request.headers.authorization || '') })
+        calls.push({ source, model: body.model, authorization: String(request.headers.authorization || ''), userAgent: String(request.headers['user-agent'] || '') })
         response.setHeader('content-type', 'application/json')
         if (failed.has(source)) { response.statusCode = 503; response.end('{"error":{"message":"isolated account failure"}}'); return }
         response.end(JSON.stringify({ id: 'local-' + source, object: 'chat.completion', created: 1, model: body.model,
@@ -83,7 +86,7 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
       observability: { logs: { 'logging-to-file': false } }, 'api-keys': { 'openai-compatibility': providers } }
     const configPath = join(directory, 'config.yaml'); await writeFile(configPath, JSON.stringify(config))
     core = spawn(resolve(binary!), ['-config', configPath, '-local-model'], { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, MANAGEMENT_PASSWORD: '', LOCALAPPDATA: join(directory, 'cache'), XDG_CACHE_HOME: join(directory, 'cache') } })
+      env: { ...process.env, NEXUS_GROUP_POLICY_KEY: policyKey, MANAGEMENT_PASSWORD: '', LOCALAPPDATA: join(directory, 'cache'), XDG_CACHE_HOME: join(directory, 'cache') } })
     for (const stream of [core.stdout, core.stderr]) stream?.on('data', chunk => { output = (output + String(chunk)).slice(-4096) })
     const deadline = Date.now() + 15_000
     while (Date.now() < deadline) {
@@ -94,6 +97,8 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
     const sources = await readCpaConfigGroupSources(client())
     for (const source of sources) fixture.bindings.set(source.accountId, { groupIds: [source.name.slice(-1)], groupNames: [source.name.slice(-1)] })
     vi.stubEnv('CPA_URL', cpaUrl); vi.stubEnv('CPA_CLIENT_KEY', clientKey); vi.stubEnv('CPA_MANAGEMENT_KEY', managementKey)
+    vi.stubEnv('NEXUS_GROUP_POLICY_KEY', policyKey)
+    await applyCpaPrivacyPolicy(client(), { fileNames: [] })
     resetCpaGroupRouting()
     const h3 = createApp(); h3.use(defineEventHandler(handleNexusInference)); appUrl = await listen(createServer(toNodeListener(h3)))
   }, 25_000)
@@ -117,15 +122,15 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
       const response = await post(key)
       expect(response.status, await response.clone().text()).toBe(200)
       expect((await response.json()).choices[0].message.content).toBe(source)
-      expect(calls.at(-1)).toEqual({ source, model: 'gpt-local', authorization: 'Bearer ' + upstreamKeys[source] })
+      expect(calls.at(-1)).toEqual({ source, model: 'gpt-local', authorization: 'Bearer ' + upstreamKeys[source], userAgent: 'opencode' })
       const catalog = await fetch(appUrl + '/v1/models', { headers: { authorization: 'Bearer ' + key } })
-      expect((await catalog.json()).data.map((model: { id: string }) => model.id)).toEqual(['shared-model'])
+      expect((await catalog.json()).data.map((model: { id: string }) => model.id)).toEqual(['shared-model', 'source-' + source.toLowerCase() + '/shared-model'])
     }
   })
   it('rejects a foreign source prefix before invoking a provider and combines allowed groups only', async () => {
     const before = calls.length
     const forbidden = await post('ccm_local_a', 'source-b/shared-model')
-    expect(forbidden.status).toBe(404); await forbidden.text(); expect(calls).toHaveLength(before)
+    expect(forbidden.ok).toBe(false); await forbidden.text(); expect(calls).toHaveLength(before)
     const a = await post('ccm_local_both'), b = await post('ccm_local_both')
     expect(a.status).toBe(200); expect(b.status).toBe(200)
     const origins = new Set([(await a.json()).choices[0].message.content, (await b.json()).choices[0].message.content])
@@ -140,5 +145,47 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
       expect(calls.slice(before).every(call => call.source === 'A')).toBe(true)
     } finally { failed.delete('A') }
     const healthy = await post('ccm_local_b'); expect(healthy.status).toBe(200); await healthy.text(); expect(calls.at(-1)?.source).toBe('B')
+  })
+  it('publishes callable real model IDs when the original core requires source prefixes', async () => {
+    const configure = async (enabled: boolean) => {
+      expect((await client().request({ path: 'config', method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ routing: { 'force-model-prefix': enabled } }) })).status).toBe(200)
+      resetCpaGroupRouting()
+    }
+    await configure(true)
+    try {
+      let ids: string[] = []
+      const deadline = Date.now() + 5000
+      do {
+        resetCpaGroupRouting()
+        const response = await fetch(appUrl + '/v1/models', { headers: { authorization: 'Bearer ccm_local_a' } })
+        expect(response.status).toBe(200)
+        ids = (await response.json()).data.map((model: { id: string }) => model.id)
+        if (JSON.stringify(ids) === JSON.stringify(['source-a/shared-model'])) break
+        await new Promise<void>(finish => setTimeout(finish, 100))
+      } while (Date.now() < deadline)
+      expect(ids).toEqual(['source-a/shared-model'])
+      const result = await post('ccm_local_a', ids[0]!)
+      expect(result.status).toBe(200); expect((await result.json()).choices[0].message.content).toBe('A')
+      expect(calls.at(-1)?.source).toBe('A')
+    } finally { await configure(false) }
+  })
+  it('persists source software headers through native fields merging without losing tokens or unknown metadata', async () => {
+    const name = 'local-privacy-metadata.json'
+    const document = { type: 'claude', access_token: 'local-only-invalid-token', expired: '2050-01-01T00:00:00Z',
+      note: 'synthetic metadata only', unknown: { preserved: 42 }, headers: { 'user-agent': 'private-client-fixture', 'X-Stainless-Os': 'private-device-fixture', 'X-Preserved': 'keep', 'X-App': 'old-client-app' } }
+    expect((await client().request({ path: 'config', method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      upstream: { claude: { 'header-defaults': { os: 'PrivateOperatorOS', arch: 'PrivateOperatorArch', 'package-version': '1.2.3', 'runtime-version': 'v20.0.1', timeout: '600' } } },
+    }) })).status).toBe(200)
+    expect((await client().request({ path: 'credentials', method: 'POST', query: { name }, headers: { 'content-type': 'application/json' }, body: JSON.stringify(document) })).status).toBe(200)
+    expect(await applyCpaPrivacyPolicy(client(), { fileNames: [name] })).toEqual({ changed: true, updatedFiles: 1 })
+    const saved = JSON.parse(new TextDecoder().decode((await client().request({ path: 'credentials/download', query: { name } })).body))
+    expect(saved).toMatchObject({ access_token: document.access_token, unknown: { preserved: 42 }, note: document.note,
+      headers: { 'User-Agent': 'opencode', 'X-Client-App': 'opencode', 'X-Preserved': 'keep' } })
+    expect(saved.headers['user-agent']).toBeUndefined()
+    expect(saved.headers['X-Stainless-Os']).toBeUndefined()
+    expect(saved.headers['X-App']).toBeUndefined()
+    const configuration = JSON.parse(new TextDecoder().decode((await client().request({ path: 'config' })).body))
+    expect(configuration.upstream.claude['header-defaults']).toMatchObject({ os: '', arch: '', 'package-version': '', 'runtime-version': '', 'user-agent': 'opencode', timeout: '600' })
   })
 })

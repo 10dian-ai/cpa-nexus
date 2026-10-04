@@ -56,4 +56,22 @@ export interface OfficialCatalogView {
   stale: boolean
   error: string | null
   sources: OfficialCatalogSource[]
+  /** Another process owns the refresh lock; this response is a last good snapshot, not a completed refresh. */
+  refreshInProgress?: boolean
+  /** Present on a manual refresh response; source errors remain in the catalog's own status. */
+  availabilitySync?: { updatedAt: string; modelCount: number; bridgeUpdated: boolean; bridgeError: string | null }
+}
+
+/** Subscription membership comes only from exact IDs in the official plan scope. */
+export function isProviderModelForPlan(model: OfficialCatalogModel, planId = 'goat'): boolean {
+  const access = model.planAccess[planId]
+  return model.providerAvailable && model.supportedEndpoints.length > 0 && access?.included === true && access.apiAccess === true
+}
+
+/** Unknown billing IDs retain a conservative GOAT scope without claiming a known subscription. */
+export function commandcodePlanScope(planId: string | null | undefined, knownPlanIds: string[]): { id: string; confirmed: boolean } {
+  const normalized = planId?.trim().toLowerCase() || ''
+  const aliases = new Map(knownPlanIds.flatMap(id => [[id, id], [`individual-${id}`, id]] as [string, string][]))
+  const id = aliases.get(normalized)
+  return id ? { id, confirmed: true } : { id: 'goat', confirmed: false }
 }

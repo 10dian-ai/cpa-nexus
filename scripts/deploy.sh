@@ -47,8 +47,8 @@ case "$ACTION" in
     docker run --rm --user "$(id -u):$(id -g)" \
       --mount "type=bind,src=$PROJECT_DIR,dst=/workspace" --workdir /workspace \
       node:24-alpine node scripts/setup-native-cpa.mjs assets
-    # CPA_IMAGE remains the explicit version/digest in .env.cpa. No latest tag,
-    # automatic source pull, account import, or real upstream request is used.
+    # Build the full kernel from the exact upstream commit and checked adapter.
+    # The official runtime stays pinned; account/config volumes are reused.
     compose up -d --build --wait --wait-timeout 180
     native_status=0
     compose exec -T app node .worker/setup-native-cpa.mjs providers || native_status=$?

@@ -1,6 +1,7 @@
 import { createError, defineEventHandler, getHeader, readRawBody, send, setHeader, setResponseStatus } from 'h3'
 import { CpaClientError, cpaPathSegments, createCpaClient } from '../../../lib/cpa/client'
 import { cpaDownstreamAbort } from '../../../lib/cpa/http'
+import { applyCpaPrivacyAfterResponse } from '../../../lib/cpa/privacy-hooks'
 
 const PREFIX = '/api/cpa/management/'
 const ACCESS_KEYS_PATH = 'config/access/api-keys'
@@ -44,6 +45,7 @@ export default defineEventHandler(async event => {
       headers: { 'content-type': getHeader(event, 'content-type') || 'application/json', accept: getHeader(event, 'accept') || '*/*' },
       signal: downstream.signal,
     })
+    await applyCpaPrivacyAfterResponse(path, event.method, response)
     setResponseStatus(event, response.status)
     for (const [key, value] of response.headers) setHeader(event, key, value)
     if (path === ACCESS_KEYS_PATH && event.method === 'GET' && response.status >= 200 && response.status < 300) {

@@ -7,6 +7,12 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 })
 
 describe('CPA management route contract', () => {
+  it('limits the native Nexus adapter to its exact discovery and group-policy methods', () => {
+    expect(resolveCpaManagementRequest('http://cpa:8317', { path: 'nexus/capabilities' }).url.pathname).toBe('/v8/management/nexus/capabilities')
+    expect(resolveCpaManagementRequest('http://cpa:8317', { path: 'nexus/group-policies', method: 'POST' }).method).toBe('POST')
+    expect(() => resolveCpaManagementRequest('http://cpa:8317', { path: 'nexus/group-policies', method: 'GET' })).toThrow(expect.objectContaining({ code: 'unsupported_method' }))
+    expect(() => resolveCpaManagementRequest('http://cpa:8317', { path: 'nexus/anything' })).toThrow(expect.objectContaining({ code: 'unsupported_path' }))
+  })
   it('builds requests only under the configured v8 management origin and encodes query values', () => {
     const result = resolveCpaManagementRequest('http://cpa:8317', {
       path: 'credentials/download', query: { name: 'user+test@example.com.json' },

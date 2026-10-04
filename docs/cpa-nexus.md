@@ -20,7 +20,7 @@ app + worker → PostgreSQL（真实业务记录）+ Redis（队列、租约和�
 
 | 服务 | 用途 | 数据是否持久保存 |
 |---|---|---|
-| `cpa` | 官方 CPA 内核，固定版本和镜像摘要 | `.runtime/cpa/` 保存配置、凭证、插件及日志 |
+| `cpa` | 完整官方内核加可重放分组适配，源码/运行镜像固定 | `.runtime/cpa/` 保存配置、凭证、插件及日志 |
 | `app` | 统一面板、账号池、管理和模块 API | 业务记录在 PostgreSQL |
 | `worker` | Cookie 保活、官方账号与额度同步、自动恢复、队列任务 | 队列在 Redis，任务及账号结果在 PostgreSQL |
 | `postgres` | 账号、加密 Cookie、真实额度快照、密钥、日志与模块设置 | 原有 `postgres-data` 命名卷 |
@@ -175,9 +175,9 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 | `COMMANDCODE_MANAGEMENT_URL` | 默认 `https://api.commandcode.ai`，官方账号管理地址 |
 | `CPA_MANAGEMENT_KEY` | 仅后台调用 CPA 管理接口，不能给模型客户端 |
 | `CPA_CLIENT_KEY` | 平台调用 CPA 的内部凭证；保留在 CPA 的 access/api-keys 配置中 |
-| 统一模型 API Key | `ccm_` 前缀，在统一 API Key 页面绑定 CPA 或 CommandCode，一个 Key 对应一个模块 |
+| 统一模型 API Key | `ccm_` 前缀，选择一个或多个分组，跨 CPA 和 CommandCode 调用组内来源 |
 | CommandCode 桥接 Key | CPA 到模块的内部 `ccm_nexus_` Key，由模块接入建立，普通 Key 列表隐藏并禁止修改 |
-| 原有 `ccm_` Key | 升级后默认绑定 CommandCode，保持原客户端调用 |
+| 原有 `ccm_` Key | 升级后进入默认分组，保留原客户端 Key 与调用地址 |
 | 外调服务 API Key | `ccm_service_` 前缀，专用于 CommandCode 的 `/api/external/*`，与模型 Key 独立验证 |
 | 历史 CPA 客户端 Key | 保留原生兼容调用，在统一页面的历史密钥区管理，不参与按 Key 的预设路由 |
 | `CPA_URL` | 生产容器内 `http://cpa:8317` |
@@ -224,16 +224,18 @@ docker compose --env-file .env --env-file .env.cpa -f compose.yml -f compose.dev
 
 本机 Nuxt 加载两份 env 文件。CPA 访问宿主 Nuxt 时，把 `.env.cpa` 的桥接地址改为 `http://host.docker.internal:3000/v1`，监听容器可达的接口，重启后刷新桥接。Linux 开发需配置 `host-gateway`。不要同时启动生产 app/edge 占用开发端口；生产会覆盖为容器内部地址。
 
-初始 CPA 固定官方版本和多架构摘要：
+Nexus 完整插件内核使用官方 v8.0.11 源码与运行镜像，保留原始 C ABI、全部路由和插件执行能力；`Dockerfile.cpa` 在固定提交上应用 `ops/cpa-nexus/nexus-plugins.patch`。适配增加真实插件能力发现和请求内分组校验，插件仍能改模型别名、调度或嵌套调用，最终账号选择始终限制在服务器授权集合内。成品镜像为 `cpa-nexus-core:v8.0.11-nexus1`。
+
+官方运行镜像的固定多架构摘要：
 
 ```text
 eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9
 ```
 
-CPA 升级先在独立候选环境使用数据库、配置和凭证副本验证，不能让候选 Worker 消费生产队列。核对管理 API、配置、插件 ABI、渠道/OAuth、工具多轮、流式、WebSocket、取消释放及账号池后，修改 `.env.cpa` 中 `CPA_IMAGE`、`CPA_VERSION`，重建 CPA：
+CPA 升级先在独立候选环境使用数据库、配置和凭证副本验证，不能让候选 Worker 消费生产队列。核对管理 API、配置、插件 ABI、渠道/OAuth、工具多轮、流式、WebSocket、取消释放及账号池后，更新 `.env.cpa` 中 `CPA_UPSTREAM_REF`（完整提交 SHA）、`CPA_UPSTREAM_IMAGE`（官方运行镜像摘要）、`CPA_VERSION` 并核对适配补丁可应用；验证完成后设置对应 `CPA_IMAGE` 成品名称，重建 CPA：
 
 ```sh
-docker compose --env-file .env --env-file .env.cpa -f compose.yml up -d --wait cpa
+docker compose --env-file .env --env-file .env.cpa -f compose.yml up -d --build --wait cpa
 ```
 
 edge 自动重新解析服务名。回退需要旧镜像以及匹配的配置、凭证、插件；仅换回镜像不保证旧版能读取新版写入的配置。原生动态库插件也必须匹配 CPU 架构、插件 ABI 和构建环境。

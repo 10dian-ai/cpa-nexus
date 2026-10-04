@@ -46,7 +46,22 @@ export interface CpaCapabilities {
   pluginsEnabled: boolean
   oauthProviders: CpaOAuthCapability[]
   quotaProviders: CpaQuotaCapability[]
+  plugins?: CpaDiscoveredPlugin[]
   errors?: string[]
+}
+export interface CpaDiscoveredPlugin {
+  id: string
+  name: string
+  enabled: boolean
+  registered: boolean
+  effectiveEnabled: boolean
+  oauthProvider?: string
+  quotaProvider?: string
+  executorModelScope?: string
+  /** Actual runtime flags. Empty on a stock core that does not publish the full role matrix. */
+  capabilities: Record<string, boolean>
+  menus: { path: string; name: string; description: string }[]
+  configFields: { name: string; type: string; description: string; enumValues: string[] }[]
 }
 export interface CpaQuotaWindow {
   id: string

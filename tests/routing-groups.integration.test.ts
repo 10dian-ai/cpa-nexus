@@ -11,12 +11,15 @@ const fixture = vi.hoisted(() => ({ sql: undefined as Sql | undefined }))
 vi.mock('../server/lib/db', () => ({ getDb: () => fixture.sql }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: async () => {} }))
 vi.mock('../server/lib/official-catalog', () => ({ getOfficialCatalog: async () => ({ models: [
-  { id: 'same/model', providerAvailable: true, supportedEndpoints: ['chat/completions'] },
-  { id: 'a/model', providerAvailable: true, supportedEndpoints: ['chat/completions'] },
-  { id: 'b/model', providerAvailable: true, supportedEndpoints: ['messages'] },
+  ...[
+    { id: 'same/model', name: 'Shared', providerAvailable: true, supportedEndpoints: ['chat/completions'] },
+    { id: 'a/model', name: 'Only A', providerAvailable: true, supportedEndpoints: ['chat/completions'] },
+    { id: 'b/model', name: 'Only B', providerAvailable: true, supportedEndpoints: ['messages'] },
+  ].map(model => ({ ...model, planAccess: { goat: { included: true, apiAccess: true }, pro: { included: true, apiAccess: true }, go: { included: true, apiAccess: false } } })),
+  { id: 'premium/model', name: 'Premium', providerAvailable: true, supportedEndpoints: ['messages'], planAccess: { goat: { included: false, apiAccess: true }, pro: { included: true, apiAccess: true }, go: { included: false, apiAccess: false } } },
 ] }) }))
 import { assertGroupIds, createGroup, deleteGroup, patchGroup, setAccountGroups, setKeyGroups, resolveEnabledKeyGroupIds, accountGroupBindings, keyGroupBindings } from '../server/lib/groups'
-import { listCandidates, listGatewayModels } from '../server/lib/gateway/accounts'
+import { listAvailableCommandcodeModels, listCandidates, listGatewayModels } from '../server/lib/gateway/accounts'
 import { acquireLease, releaseLease } from '../server/lib/gateway/scheduler'
 import { attachIdentity, createPendingAccount } from '../server/lib/accounts'
 
@@ -66,6 +69,30 @@ describe.skipIf(!databaseUrl)('group routing on real PostgreSQL data', () => {
   it('returns only the models callable by accounts inside the selected key groups', async () => {
     expect((await listGatewayModels(keyA)).data.map(model => model.id)).toEqual(['a/model','same/model'])
     expect((await listGatewayModels(keyB)).data.map(model => model.id)).toEqual(['b/model','same/model'])
+  })
+  it('applies the confirmed subscription scope inside each group without granting premium models to GOAT or unknown plans', async () => {
+    expect(await listCandidates('premium/model', keyA)).toEqual([])
+    expect(await listCandidates('premium/model', keyB)).toEqual([])
+    await sql`UPDATE managed_accounts SET snapshot=${sql.json({ subscription: { planId: 'individual-pro' }, credits: {}, windowLimits: null })} WHERE id=${accountB}`
+    expect((await listCandidates('premium/model', keyB)).map(account => account.id)).toEqual([accountB])
+    expect(await listCandidates('premium/model', keyA)).toEqual([])
+    expect((await listGatewayModels(keyB)).data.map(model => model.id)).toEqual(['b/model','premium/model','same/model'])
+    await sql`UPDATE managed_accounts SET snapshot=${sql.json({ subscription: { planId: 'individual-go' }, credits: {}, windowLimits: null })} WHERE id=${accountB}`
+    expect(await listCandidates('same/model', keyB)).toEqual([])
+    expect((await listGatewayModels(keyB)).data).toEqual([])
+    await sql`UPDATE managed_accounts SET snapshot=NULL WHERE id=${accountB}`
+    expect((await listGatewayModels(keyB)).data.find(model => model.id === 'same/model')?.availability.unknownSubscriptionAccounts).toBe(1)
+  })
+  it('keeps official reference models separate from actual candidates and drops models denied by every eligible account', async () => {
+    const rows = await listAvailableCommandcodeModels(keyA, 'goat', true)
+    expect(rows.map(model => model.id)).toEqual(['a/model','same/model'])
+    expect(rows.find(model => model.id === 'same/model')).toMatchObject({ eligible_accounts: 1, unknown_accounts: 1, observed_allowed: 0, unknown_subscription_accounts: 1 })
+    await sql`UPDATE managed_accounts SET enabled=false WHERE id=${accountA}`
+    const reference = await listAvailableCommandcodeModels(keyA, 'goat', true)
+    expect(reference.map(model => model.id)).toEqual(['a/model','b/model','same/model'])
+    expect(reference.every(model => model.eligible_accounts === 0)).toBe(true)
+    expect((await listGatewayModels(keyA)).data).toEqual([])
+    await sql`UPDATE managed_accounts SET enabled=true WHERE id=${accountA}`
   })
   it('uses the union of multiple key and account groups and never returns duplicate candidates', async () => {
     await sql.begin(async tx => { await setKeyGroups(tx, keyA, [groupA, groupB]); await setAccountGroups(tx, 'commandcode', accountA, [groupA, groupB]) })

@@ -30,6 +30,7 @@ const credential = (label: string) => label + randomBytes(24).toString('base64ur
 const managementKey = credential('test-management-')
 const clientKey = credential('test-client-')
 const bridgeKey = credential('ccm_nexus_')
+const policyKey = Buffer.alloc(32, 9).toString('base64')
 
 describe.skipIf(!binary)('real CPA binary integration with an isolated local upstream', () => {
   let child: ChildProcess | undefined
@@ -105,6 +106,7 @@ describe.skipIf(!binary)('real CPA binary integration with an isolated local ups
     vi.stubEnv('CPA_URL', base)
     vi.stubEnv('CPA_CLIENT_KEY', clientKey)
     vi.stubEnv('CPA_MANAGEMENT_KEY', managementKey)
+    vi.stubEnv('NEXUS_GROUP_POLICY_KEY', policyKey)
     const config = {
       'config-version': 8,
       server: { host: '127.0.0.1', port, discovery: { enabled: false } },
@@ -121,7 +123,7 @@ describe.skipIf(!binary)('real CPA binary integration with an isolated local ups
     await writeFile(configPath, JSON.stringify(config, null, 2))
     child = spawn(resolve(binary!), ['-config', configPath, '-local-model'], {
       cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, MANAGEMENT_PASSWORD: '', LOCALAPPDATA: join(directory, 'cache'), XDG_CACHE_HOME: join(directory, 'cache') },
+      env: { ...process.env, NEXUS_GROUP_POLICY_KEY: policyKey, MANAGEMENT_PASSWORD: '', LOCALAPPDATA: join(directory, 'cache'), XDG_CACHE_HOME: join(directory, 'cache') },
     })
     child.stdout?.on('data', chunk => { output = (output + String(chunk)).slice(-8192) })
     child.stderr?.on('data', chunk => { output = (output + String(chunk)).slice(-8192) })

@@ -2,6 +2,7 @@ import { createError, getHeader, readRawBody, send, setHeader, setResponseStatus
 import { CpaClientError, cpaPathSegments, createCpaClient } from './client'
 import { cpaDownstreamAbort } from './http'
 import { requireAdmin } from '../auth'
+import { applyCpaPrivacyAfterResponse } from './privacy-hooks'
 
 const PREFIX = '/api/cpa/console/'
 /** The official UI keeps its own preferences and never receives the actual management key. */
@@ -88,6 +89,7 @@ export async function proxyCpaConsole(event: H3Event) {
       method = 'PUT'
     }
     const response = await createCpaClient().consoleRequest({ path, method, query: new URLSearchParams(question < 0 ? '' : target.slice(question + 1)), body, headers: { 'content-type': getHeader(event, 'content-type') || 'application/json', accept: getHeader(event, 'accept') || '*/*' }, signal: downstream.signal })
+    await applyCpaPrivacyAfterResponse(path, method, response)
     if (path.startsWith('v0/resource/plugins/')) {
       response.body = adaptNativePluginAsset(response.body, response.headers.get('content-type') || '')
       response.headers.delete('etag'); response.headers.delete('last-modified')

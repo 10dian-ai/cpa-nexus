@@ -11,6 +11,7 @@ import { ensureCpaConfigAccountRoute, readCpaConfigAccountRoutes, readCpaConfigG
 
 // Opt-in binary, temporary config and random local listeners. Never uses real credentials or upstreams.
 const binary = process.env.TEST_CPA_BINARY
+const policyKey = Buffer.alloc(32, 17).toString('base64')
 const key = (label: string) => label + randomBytes(20).toString('hex')
 const managementKey = key('test-management-'), clientKey = key('test-client-')
 const chatKeys = [key('test-chat-a-'), key('test-chat-b-')]
@@ -72,7 +73,7 @@ describe.skipIf(!binary)('real CPA per-account preset routing through native pre
     const configPath = join(directory, 'config.yaml')
     await writeFile(configPath, JSON.stringify(config, null, 2))
     child = spawn(resolve(binary!), ['-config', configPath, '-local-model'], { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, MANAGEMENT_PASSWORD: '', LOCALAPPDATA: join(directory, 'cache'), XDG_CACHE_HOME: join(directory, 'cache') } })
+      env: { ...process.env, NEXUS_GROUP_POLICY_KEY: policyKey, MANAGEMENT_PASSWORD: '', LOCALAPPDATA: join(directory, 'cache'), XDG_CACHE_HOME: join(directory, 'cache') } })
     child.stdout?.on('data', chunk => { output = (output + String(chunk)).slice(-8192) })
     child.stderr?.on('data', chunk => { output = (output + String(chunk)).slice(-8192) })
     child.on('error', error => { output = (output + error.message).slice(-8192) })

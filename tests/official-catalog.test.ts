@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import type { OfficialCatalogView } from '../shared/official-catalog'
+import { commandcodePlanScope, isProviderModelForPlan, type OfficialCatalogView } from '../shared/official-catalog'
 import { decodeDocumentRecords, parseOfficialDocument, parseProviderModels, parseWebsiteModels } from '../server/lib/official-catalog/parser'
 import { buildCatalog, fetchOfficialSource, OFFICIAL_SOURCES, OfficialCatalogService, shouldRefresh, type CatalogStore, type SourceState } from '../server/lib/official-catalog/service'
 import { OfficialCatalogUnavailableError, resolveProviderModel } from '../server/lib/official-catalog'
@@ -67,6 +67,36 @@ describe('real public official catalog markup', () => {
     expect(resolveProviderModel(view, 'typesafe/jev')?.sources).toContain('https://commandcode.ai/docs/provider')
     expect(view.sources.find(source => source.id === 'provider-models')?.modelCount).toBe(85)
   })
+  it('selects only the exact GOAT scope with proven API support and excludes public aliases with unknown membership', () => {
+    const view = buildCatalog(successfulSources(), NOW)
+    const usable = view.models.filter(model => isProviderModelForPlan(model))
+    expect(usable).toHaveLength(63)
+    expect(usable.some(model => model.id === 'typesafe/jev')).toBe(true)
+    expect(usable.some(model => model.id === 'claude-opus-5-5')).toBe(false)
+    expect(usable.some(model => model.id === 'claude-haiku-4-5-20251001')).toBe(false)
+    expect(view.models.filter(model => isProviderModelForPlan(model, 'go'))).toEqual([])
+    expect(commandcodePlanScope('individual-go', view.plans.map(plan => plan.id))).toEqual({ id: 'go', confirmed: true })
+    expect(commandcodePlanScope('individual-goat', view.plans.map(plan => plan.id))).toEqual({ id: 'goat', confirmed: true })
+    expect(commandcodePlanScope('unknown-new-billing-plan', view.plans.map(plan => plan.id))).toEqual({ id: 'goat', confirmed: false })
+  })
+  it('retains unknown protocols for auditing without granting local API support', () => {
+    const parsed = parseProviderModels('{"object":"list","data":[{"id":"future/model","name":"Future","supported_endpoints":["/future-protocol"]}]}')
+    const sources = successfulSources(); sources.find(source => source.id === 'provider-models')!.payload = parsed
+    const model = buildCatalog(sources, NOW).models.find(model => model.id === 'future/model')!
+    expect(model.apiCatalogListed).toBe(true)
+    expect(model.providerAvailable).toBe(false)
+    expect(model.supportedEndpoints).toEqual([])
+    expect(isProviderModelForPlan(model)).toBe(false)
+  })
+  it('accepts an explicit empty official model scope without treating it as a malformed document', () => {
+    const emptyScope = '<script>self.__next_f.push([1,"0:{\\"planScope\\":{\\"label\\":\\"GOAT plan\\",\\"modelIds\\":[]}}\\n"])</script>'
+    const sources = successfulSources(); sources.find(source => source.id === 'goat')!.payload = parseOfficialDocument(emptyScope, 'goat')
+    const view = buildCatalog(sources, NOW)
+    expect(view.models.filter(model => isProviderModelForPlan(model))).toEqual([])
+    expect(view.plans.find(plan => plan.id === 'goat')?.includedModelCount).toBe(0)
+    expect(view.error).toBeNull()
+    expect(view.stale).toBe(false)
+  })
   it('does not grant Systemone support when the official example is missing or changes endpoint', () => {
     const sources = successfulSources(); const provider = sources.find(source => source.id === 'provider')!
     provider.payload = parseOfficialDocument(fixture('provider.html').replaceAll('/systemone', '/unknown-endpoint'), 'provider')
@@ -83,13 +113,13 @@ describe('real public official catalog markup', () => {
     expect(resolveProviderModel(buildCatalog(successfulSources(), NOW), 'unknown/model')).toBeNull()
   })
   it.each([
-    ['empty provider array', () => parseProviderModels('{"object":"list","data":[]}')],
+    ['invalid provider array', () => parseProviderModels('{"object":"list","data":null}')],
     ['truncated provider JSON', () => parseProviderModels(fixture('provider-models.json').slice(0, -30))],
     ['missing endpoint metadata', () => parseProviderModels('{"object":"list","data":[{"id":"claude-opus-5-5","name":"Claude"}]}')],
     ['wrong loader markup', () => parseWebsiteModels('<html><table>Claude</table></html>')],
     ['truncated loader', () => parseWebsiteModels(fixture('models.html').slice(0, -200))],
     ['wrong subscription markup', () => parseOfficialDocument('<html>GOAT has every model</html>', 'goat')],
-    ['empty scope', () => parseOfficialDocument('<script>self.__next_f.push([1,"0:{\\"planScope\\":{\\"label\\":\\"GOAT plan\\",\\"modelIds\\":[]}}\\n"])</script>', 'goat')],
+    ['missing scope IDs', () => parseOfficialDocument('<script>self.__next_f.push([1,"0:{\\"planScope\\":{\\"label\\":\\"GOAT plan\\"}}\\n"])</script>', 'goat')],
   ])('rejects %s without inventing or emptying a catalog', (_, parse) => expect(parse).toThrow())
 })
 
@@ -109,12 +139,20 @@ describe('resource bounded official refresh', () => {
   })
   it('retains last good model snapshot and validators after malformed upstream data', async () => {
     const previous = successfulSources()[0]!
-    const result = await fetchOfficialSource(definition, previous, { fetch: (async () => new Response('{"object":"list","data":[]}')) as typeof fetch, now: () => NOW + 300_000 })
+    const result = await fetchOfficialSource(definition, previous, { fetch: (async () => new Response('{"object":"list","data":null}')) as typeof fetch, now: () => NOW + 300_000 })
     expect(result.payload).toEqual(previous.payload)
     expect(result.fetchedAt).toBe(previous.fetchedAt)
     expect(result.etag).toBe(previous.etag)
     expect(result.lastAttemptAt).toBe(new Date(NOW + 300_000).toISOString())
-    expect(result.error).toContain('empty')
+    expect(result.error).toContain('invalid')
+  })
+  it('replaces the prior successful Provider list with a trusted empty HTTP 200 list', async () => {
+    const previous = successfulSources()[0]!
+    const result = await fetchOfficialSource(definition, previous, { fetch: (async () => new Response('{"object":"list","data":[]}')) as typeof fetch, now: () => NOW + 300_000 })
+    expect(result.payload?.providerModels).toEqual([])
+    expect(result.modelCount).toBe(0)
+    expect(result.fetchedAt).toBe(new Date(NOW + 300_000).toISOString())
+    expect(result.error).toBeNull()
   })
   it('bounds response size even when Content-Length is absent', async () => {
     const result = await fetchOfficialSource(definition, undefined, { fetch: (async () => new Response('x'.repeat(100))) as typeof fetch, maxBytes: 50 })
@@ -146,9 +184,29 @@ describe('resource bounded official refresh', () => {
     const pending = first.sync(); const shared = first.sync()
     expect(shared).toBe(pending)
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
-    await second.sync()
+    expect((await second.sync()).refreshInProgress).toBe(true)
     expect(fetcher).toHaveBeenCalledOnce()
     resolve(new Response(null, { status: 304 })); await pending
+  })
+  it('queues a shared forced refresh after a local API-only refresh instead of pretending all plan sources were checked', async () => {
+    const store = memoryStore(successfulSources()); let resolve!: (response: Response) => void
+    const calls: string[] = []
+    const fetcher = vi.fn((url: string | URL | Request) => {
+      calls.push(String(url))
+      return calls.length === 1 ? new Promise<Response>(done => { resolve = done }) : Promise.resolve(new Response(null, { status: 304 }))
+    })
+    const service = new OfficialCatalogService(store, { fetch: fetcher as typeof fetch, now: () => NOW + 300_000 })
+    const automatic = service.sync()
+    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    const manual = service.sync(true)
+    expect(service.sync(true)).toBe(manual)
+    expect(manual).not.toBe(automatic)
+    resolve(new Response(null, { status: 304 }))
+    await automatic; const refreshed = await manual
+    expect(calls).toHaveLength(8)
+    expect(new Set(calls).size).toBe(8)
+    expect(refreshed.refreshInProgress).not.toBe(true)
+    expect(refreshed.sources.every(source => source.fetchedAt === new Date(NOW + 300_000).toISOString())).toBe(true)
   })
   it('serves durable last good snapshot when Redis cache fails', async () => {
     const store = memoryStore(successfulSources()); store.readCache = async () => { throw new Error('Redis temporarily unavailable') }

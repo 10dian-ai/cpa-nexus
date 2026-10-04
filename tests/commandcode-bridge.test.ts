@@ -273,6 +273,26 @@ describe('CommandCode bridge against a real CPA management HTTP service', () => 
     expect(updates).toHaveLength(2)
     expect(groups.find(group => group.name === COMMANDCODE_CHANNEL)!.models).toEqual([{ name: 'new-model', alias: 'commandcode/new-model' }])
   })
+  it('clears disappeared official models and restores them after a later refresh while keeping native channels intact', async () => {
+    await connectCommandcodeBridge()
+    const nativeChat = structuredClone(groups[0]), nativeMessages = structuredClone(claudeGroups[0])
+    fixture.models = []
+    await refreshCommandcodeBridge()
+    expect(groups.find(group => group.name === COMMANDCODE_CHANNEL)?.models).toEqual([])
+    expect(claudeGroups.find(group => group.name === COMMANDCODE_MESSAGES_CHANNEL)?.models).toEqual([])
+    expect(claudeGroups.find(group => group.name === COMMANDCODE_MESSAGES_CHANNEL)?.['excluded-models']).toEqual(['*'])
+    expect(fixture.integration?.model_count).toBe(0)
+    expect(groups[0]).toEqual(nativeChat)
+    expect(claudeGroups[0]).toEqual(nativeMessages)
+    fixture.models = [{ id: 'restored-model', supported_endpoints: ['/v1/chat/completions'] }]
+    await refreshCommandcodeBridge()
+    expect(groups.find(group => group.name === COMMANDCODE_CHANNEL)?.models).toEqual([{ name: 'restored-model', alias: 'commandcode/restored-model' }])
+    expect(fixture.integration?.model_count).toBe(1)
+    fixture.models.push({ id: 'restored-claude', supported_endpoints: ['/v1/messages'] })
+    await refreshCommandcodeBridge()
+    expect(claudeGroups.find(group => group.name === COMMANDCODE_MESSAGES_CHANNEL)?.['excluded-models']).toEqual([])
+    expect(claudeGroups.find(group => group.name === COMMANDCODE_MESSAGES_CHANNEL)?.models).toEqual([{ name: 'restored-claude', alias: 'commandcode/restored-claude' }])
+  })
 
   it('does not write a live channel while the module is disabled', async () => {
     await connectCommandcodeBridge()

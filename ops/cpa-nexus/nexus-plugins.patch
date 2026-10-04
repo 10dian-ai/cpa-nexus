@@ -1,0 +1,1490 @@
+diff --git a/internal/api/handlers/management/plugins.go b/internal/api/handlers/management/plugins.go
+--- a/internal/api/handlers/management/plugins.go
++++ b/internal/api/handlers/management/plugins.go
+@@ -25,20 +25,22 @@
+ }
+ 
+ type pluginListEntry struct {
+-	ID               string                  `json:"id"`
+-	Path             string                  `json:"path"`
+-	Configured       bool                    `json:"configured"`
+-	Registered       bool                    `json:"registered"`
+-	Enabled          bool                    `json:"enabled"`
+-	EffectiveEnabled bool                    `json:"effective_enabled"`
+-	SupportsOAuth    bool                    `json:"supports_oauth"`
+-	OAuthProvider    string                  `json:"oauth_provider"`
+-	SupportsQuota    bool                    `json:"supports_quota"`
+-	QuotaProvider    string                  `json:"quota_provider,omitempty"`
+-	Logo             string                  `json:"logo"`
+-	ConfigFields     []pluginConfigFieldInfo `json:"config_fields"`
+-	Menus            []pluginMenuInfo        `json:"menus"`
+-	Metadata         *pluginMetadataInfo     `json:"metadata"`
++	Capabilities       map[string]bool         `json:"capabilities,omitempty"`
++	ExecutorModelScope string                  `json:"executor_model_scope,omitempty"`
++	ID                 string                  `json:"id"`
++	Path               string                  `json:"path"`
++	Configured         bool                    `json:"configured"`
++	Registered         bool                    `json:"registered"`
++	Enabled            bool                    `json:"enabled"`
++	EffectiveEnabled   bool                    `json:"effective_enabled"`
++	SupportsOAuth      bool                    `json:"supports_oauth"`
++	OAuthProvider      string                  `json:"oauth_provider"`
++	SupportsQuota      bool                    `json:"supports_quota"`
++	QuotaProvider      string                  `json:"quota_provider,omitempty"`
++	Logo               string                  `json:"logo"`
++	ConfigFields       []pluginConfigFieldInfo `json:"config_fields"`
++	Menus              []pluginMenuInfo        `json:"menus"`
++	Metadata           *pluginMetadataInfo     `json:"metadata"`
+ }
+ 
+ type pluginMetadataInfo struct {
+@@ -122,6 +124,8 @@
+ 			entry := entries[info.ID]
+ 			entry.ID = htmlsanitize.String(info.ID)
+ 			entry.Registered = true
++			entry.Capabilities = info.Capabilities
++			entry.ExecutorModelScope = info.ExecutorModelScope
+ 			entry.SupportsOAuth = info.SupportsOAuth
+ 			entry.OAuthProvider = htmlsanitize.String(info.OAuthProvider)
+ 			entry.SupportsQuota = info.SupportsQuota
+diff --git a/internal/api/nexus_group_policy.go b/internal/api/nexus_group_policy.go
+new file mode 100644
+--- /dev/null
++++ b/internal/api/nexus_group_policy.go
+@@ -0,0 +1,125 @@
++package api
++
++import (
++	"crypto/hmac"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/hex"
++	"github.com/gin-gonic/gin"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"net/http"
++	"os"
++	"strconv"
++	"strings"
++	"time"
++)
++
++func nexusPolicyEnabled() bool { return strings.TrimSpace(os.Getenv("NEXUS_GROUP_POLICY_KEY")) != "" }
++func (s *Server) nexusGroupPolicyMiddleware() gin.HandlerFunc {
++	return func(c *gin.Context) {
++		ctx := c.Request.Context()
++		if strings.HasPrefix(c.Request.URL.Path, "/v1/") || strings.HasPrefix(c.Request.URL.Path, "/v1beta/") {
++			ctx = coreauth.WithNexusModelInvocation(ctx)
++		}
++		if encoded := c.GetHeader("X-Nexus-Group-Policy"); encoded != "" {
++			parts := strings.Split(encoded, ".")
++			deny := func() {
++				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "nexus_group_policy_invalid", "message": "Invalid or expired group policy"}})
++			}
++			if !nexusPolicyEnabled() || len(parts) != 3 {
++				deny()
++				return
++			}
++			expires, err := strconv.ParseInt(parts[1], 10, 64)
++			if err != nil || expires <= time.Now().UnixMilli() {
++				deny()
++				return
++			}
++			signature, err := hex.DecodeString(parts[2])
++			mac := hmac.New(sha256.New, []byte(os.Getenv("NEXUS_GROUP_POLICY_KEY")))
++			mac.Write([]byte(parts[0] + "." + parts[1]))
++			if err != nil || !hmac.Equal(signature, mac.Sum(nil)) {
++				deny()
++				return
++			}
++			stored, exists := s.nexusPolicies.Load(parts[0])
++			if !exists {
++				deny()
++				return
++			}
++			policy, valid := stored.(*coreauth.NexusGroupPolicy)
++			if !valid || policy.ExpiresAt != expires {
++				deny()
++				return
++			}
++			ctx = coreauth.WithNexusGroupPolicy(ctx, policy)
++		}
++		c.Request = c.Request.WithContext(ctx)
++		c.Next()
++	}
++}
++func (s *Server) putNexusGroupPolicy(c *gin.Context) {
++	if !nexusPolicyEnabled() {
++		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nexus_group_policy_not_configured"})
++		return
++	}
++	var body struct {
++		KeyID     string   `json:"keyId"`
++		ExpiresAt int64    `json:"expiresAt"`
++		AuthIDs   []string `json:"allowedAuthIDs"`
++		PluginIDs []string `json:"allowedPluginIDs"`
++	}
++	if err := c.ShouldBindJSON(&body); err != nil || body.KeyID == "" {
++		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_group_policy"})
++		return
++	}
++	now := time.Now().UnixMilli()
++	if body.ExpiresAt <= now || body.ExpiresAt > now+30000 {
++		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_policy_expiry"})
++		return
++	}
++	bytes := make([]byte, 16)
++	if _, err := rand.Read(bytes); err != nil {
++		c.JSON(http.StatusInternalServerError, gin.H{"error": "policy_creation_failed"})
++		return
++	}
++	id := hex.EncodeToString(bytes)
++	lastSweep := s.nexusPolicySweepAt.Load()
++	if now-lastSweep >= 1000 && s.nexusPolicySweepAt.CompareAndSwap(lastSweep, now) {
++		s.nexusPolicies.Range(func(key, value any) bool {
++			if policy, ok := value.(*coreauth.NexusGroupPolicy); !ok || policy.ExpiresAt <= now {
++				s.nexusPolicies.Delete(key)
++			}
++			return true
++		})
++	}
++	s.nexusPolicies.Store(id, coreauth.NewNexusGroupPolicy(body.KeyID, body.ExpiresAt, body.AuthIDs, body.PluginIDs))
++	c.JSON(http.StatusOK, gin.H{"id": id, "expiresAt": body.ExpiresAt})
++}
++func (s *Server) getNexusCapabilities(c *gin.Context) {
++	plugins := []gin.H{}
++	if s.pluginHost != nil {
++		for _, plugin := range s.pluginHost.RegisteredPlugins() {
++			plugins = append(plugins, gin.H{"id": plugin.ID, "provider": plugin.ExecutorProvider, "executorModelScope": plugin.ExecutorModelScope, "capabilities": plugin.Capabilities,
++				"modelClientIDs": []string{"plugin:" + plugin.ID + ":" + plugin.ExecutorProvider, "plugin:" + plugin.ID + ":" + plugin.ExecutorProvider + ":executor"}})
++		}
++	}
++	accounts := []gin.H{}
++	if s.handlers != nil && s.handlers.AuthManager != nil {
++		for _, account := range s.handlers.AuthManager.List() {
++			if account == nil {
++				continue
++			}
++			account.EnsureIndex()
++			source, path := account.AuthSourceKind(), ""
++			if account.Attributes != nil {
++				path = account.Attributes[coreauth.AttributePath]
++			}
++			if source == "" {
++				source = "memory"
++			}
++			accounts = append(accounts, gin.H{"id": account.ID, "authIndex": account.Index, "fileName": account.FileName, "provider": account.Provider, "source": source, "sourcePath": path, "prefix": account.Prefix, "disabled": account.Disabled})
++		}
++	}
++	c.JSON(http.StatusOK, gin.H{"schemaVersion": 1, "groupPolicy": gin.H{"enabled": nexusPolicyEnabled(), "protocol": "opaque-hmac-sha256-v1"}, "plugins": plugins, "runtimeAccounts": accounts})
++}
+diff --git a/internal/api/nexus_group_policy_test.go b/internal/api/nexus_group_policy_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/api/nexus_group_policy_test.go
+@@ -0,0 +1,210 @@
++package api
++
++import (
++	"context"
++	"crypto/hmac"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"github.com/gin-gonic/gin"
++	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++)
++
++type nexusTestAccessProvider struct{}
++
++func (nexusTestAccessProvider) Identifier() string { return "local-native-access" }
++func (nexusTestAccessProvider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.Result, *sdkaccess.AuthError) {
++	if r.Header.Get("Authorization") != "Bearer synthetic-native-key" {
++		return nil, sdkaccess.NewInvalidCredentialError()
++	}
++	return &sdkaccess.Result{Provider: "local-native-access", Principal: "synthetic-native-key"}, nil
++}
++func TestNexusNativeAuthenticatedSourceCookiePreservedAndVisitorDiscarded(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "synthetic-source-policy-secret")
++	calls := 0
++	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls++
++		if r.Header.Get("Cookie") != "vendor_auth=synthetic-configured-source" {
++			t.Error("selected source's required authentication was lost")
++		}
++		if r.Header.Get("User-Agent") != "opencode" {
++			t.Error("SDK software privacy was lost")
++		}
++		_, _ = w.Write([]byte(`{}`))
++	}))
++	defer provider.Close()
++	access := sdkaccess.NewManager()
++	access.SetProviders([]sdkaccess.Provider{nexusTestAccessProvider{}})
++	engine := gin.New()
++	server := &Server{engine: engine}
++	engine.Use(server.nexusGroupPolicyMiddleware(), AuthMiddleware(access))
++	engine.POST("/v1/local-model", func(c *gin.Context) {
++		if c.Request.Header.Get("Cookie") != "" {
++			t.Error("visitor cookie was visible to source execution")
++		}
++		ctx := context.WithValue(c.Request.Context(), "gin", c)
++		ctx = coreauth.WithNexusAuthorizedPluginSource(ctx, "selected-native-plugin", "")
++		req, _ := http.NewRequestWithContext(ctx, "POST", provider.URL, strings.NewReader(`{}`))
++		req.Header.Set("Cookie", "vendor_auth=synthetic-configured-source")
++		req.Header.Set("User-Agent", "private-original-client")
++		coreauth.ApplyNexusPluginNetworkPrivacy(ctx, req.Header)
++		response, err := http.DefaultClient.Do(req)
++		if err != nil {
++			t.Fatal(err)
++		}
++		_, _ = io.Copy(io.Discard, response.Body)
++		_ = response.Body.Close()
++		c.Status(200)
++	})
++	for _, key := range []string{"synthetic-native-key", "invalid-key", ""} {
++		request := httptest.NewRequest("POST", "/v1/local-model", strings.NewReader(`{}`))
++		request.Header.Set("Cookie", "private-visitor")
++		if key != "" {
++			request.Header.Set("Authorization", "Bearer "+key)
++		}
++		response := httptest.NewRecorder()
++		engine.ServeHTTP(response, request)
++		if key == "synthetic-native-key" && response.Code != 200 {
++			t.Fatalf("original authenticated native source status = %d", response.Code)
++		}
++		if key != "synthetic-native-key" && response.Code != 401 {
++			t.Fatalf("unauthorized source status = %d", response.Code)
++		}
++	}
++	if calls != 1 {
++		t.Fatalf("supplier calls = %d, want one authenticated source only", calls)
++	}
++}
++func TestNexusOpaquePolicyHeaderMacAndExpiry(t *testing.T) {
++	secret := "local-policy-key-only"
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", secret)
++	server := newTestServer(t)
++	server.engine.GET("/nexus-policy-test", func(c *gin.Context) {
++		policy := coreauth.NexusGroupPolicyFromContext(c.Request.Context())
++		if policy == nil || !policy.AllowsAuthID("source-A") || policy.AllowsAuthID("source-B") {
++			t.Error("opaque policy did not bind exact source set")
++		}
++		c.Status(200)
++	})
++	expires := time.Now().Add(10 * time.Second).UnixMilli()
++	body, _ := json.Marshal(map[string]any{"keyId": "model-key", "expiresAt": expires, "allowedAuthIDs": []string{"source-A"}, "allowedPluginIDs": []string{}})
++	create := httptest.NewRequest("POST", "/v8/management/nexus/group-policies", strings.NewReader(string(body)))
++	create.Header.Set("Authorization", "Bearer test-management-key")
++	create.Header.Set("Content-Type", "application/json")
++	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
++	// NewServer captures management environment at construction, so invoke protected handler
++	// directly here; management routing itself is covered by existing version-contract tests.
++	recorder := httptest.NewRecorder()
++	ctx, _ := gin.CreateTestContext(recorder)
++	ctx.Request = create
++	server.putNexusGroupPolicy(ctx)
++	if recorder.Code != 200 {
++		t.Fatalf("policy registration status %d", recorder.Code)
++	}
++	var result struct {
++		ID        string `json:"id"`
++		ExpiresAt int64  `json:"expiresAt"`
++	}
++	_ = json.Unmarshal(recorder.Body.Bytes(), &result)
++	message := result.ID + "." + strconv.FormatInt(result.ExpiresAt, 10)
++	mac := hmac.New(sha256.New, []byte(secret))
++	mac.Write([]byte(message))
++	for _, signature := range []string{hex.EncodeToString(mac.Sum(nil)), strings.Repeat("0", 64)} {
++		request := httptest.NewRequest("GET", "/nexus-policy-test", nil)
++		request.Header.Set("X-Nexus-Group-Policy", message+"."+signature)
++		response := httptest.NewRecorder()
++		server.engine.ServeHTTP(response, request)
++		if signature == strings.Repeat("0", 64) && response.Code != 403 {
++			t.Fatalf("forged policy status %d", response.Code)
++		}
++		if signature != strings.Repeat("0", 64) && response.Code != 200 {
++			t.Fatalf("signed policy status %d", response.Code)
++		}
++	}
++}
++
++func TestNexusPolicyConcurrentRegistrationSweepsOnceAndRejectsExpired(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-synthetic-policy-concurrency")
++	server := &Server{}
++	expired := coreauth.NewNexusGroupPolicy("expired-key", time.Now().Add(-time.Second).UnixMilli(), []string{"source"}, nil)
++	server.nexusPolicies.Store("expired", expired)
++	var wg sync.WaitGroup
++	for range 32 {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			body, _ := json.Marshal(map[string]any{"keyId": "key", "expiresAt": time.Now().Add(10 * time.Second).UnixMilli(), "allowedAuthIDs": []string{"source"}})
++			rec := httptest.NewRecorder()
++			ctx, _ := gin.CreateTestContext(rec)
++			ctx.Request = httptest.NewRequest("POST", "/v8/management/nexus/group-policies", strings.NewReader(string(body)))
++			ctx.Request.Header.Set("Content-Type", "application/json")
++			server.putNexusGroupPolicy(ctx)
++			if rec.Code != 200 {
++				t.Errorf("concurrent registration status=%d", rec.Code)
++			}
++		}()
++	}
++	wg.Wait()
++	count := 0
++	server.nexusPolicies.Range(func(_, _ any) bool { count++; return true })
++	if count != 32 {
++		t.Fatalf("active policy count=%d, want32", count)
++	}
++	if _, exists := server.nexusPolicies.Load("expired"); exists {
++		t.Fatal("expired policy was not collected")
++	}
++	sweepAt := server.nexusPolicySweepAt.Load()
++	if sweepAt == 0 {
++		t.Fatal("collection timestamp missing")
++	}
++	engine := gin.New()
++	engine.Use(server.nexusGroupPolicyMiddleware())
++	engine.GET("/v1/test", func(c *gin.Context) { c.Status(200) })
++	message := "expired." + strconv.FormatInt(expired.ExpiresAt, 10)
++	mac := hmac.New(sha256.New, []byte("local-synthetic-policy-concurrency"))
++	mac.Write([]byte(message))
++	request := httptest.NewRequest("GET", "/v1/test", nil)
++	request.Header.Set("X-Nexus-Group-Policy", message+"."+hex.EncodeToString(mac.Sum(nil)))
++	response := httptest.NewRecorder()
++	engine.ServeHTTP(response, request)
++	if response.Code != 403 {
++		t.Fatalf("expired policy status=%d", response.Code)
++	}
++}
++func TestNexusCapabilitiesClassifiesNativeConfigSourceWithoutBackendAttribute(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-policy-test-key")
++	server := newTestServer(t)
++	manager := server.handlers.AuthManager
++	_, err := manager.Register(context.Background(), &coreauth.Auth{ID: "config-native-account", Provider: "claude", Attributes: map[string]string{"source": "config:claude-api-key:0"}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	recorder := httptest.NewRecorder()
++	ctx, _ := gin.CreateTestContext(recorder)
++	ctx.Request = httptest.NewRequest("GET", "/v8/management/nexus/capabilities", nil)
++	server.getNexusCapabilities(ctx)
++	var result struct {
++		Accounts []struct{ ID, Source string } `json:"runtimeAccounts"`
++	}
++	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
++		t.Fatal(err)
++	}
++	for _, account := range result.Accounts {
++		if account.ID == "config-native-account" {
++			if account.Source != "config" {
++				t.Fatalf("native config misclassified as %q", account.Source)
++			}
++			return
++		}
++	}
++	t.Fatal("config runtime account missing")
++}
+diff --git a/internal/api/server.go b/internal/api/server.go
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -37,6 +37,8 @@
+ // Server represents the main API server.
+ // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
+ type Server struct {
++	nexusPolicies      sync.Map
++	nexusPolicySweepAt atomic.Int64
+ 	// engine is the Gin web framework engine instance.
+ 	engine *gin.Engine
+ 
+@@ -229,6 +231,7 @@
+ 	// subscribe-config heartbeat connection is healthy.
+ 	engine.Use(s.homeHeartbeatMiddleware())
+ 	engine.Use(s.exampleAPIKeySafeModeMiddleware())
++	engine.Use(s.nexusGroupPolicyMiddleware())
+ 
+ 	// Setup routes
+ 	s.setupRoutes()
+diff --git a/internal/api/server_management_v8.go b/internal/api/server_management_v8.go
+--- a/internal/api/server_management_v8.go
++++ b/internal/api/server_management_v8.go
+@@ -18,6 +18,8 @@
+ 	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
+ 		c.Set(management.ConfigV8ContextKey, true)
+ 	})
++	v8.GET("/nexus/capabilities", s.getNexusCapabilities)
++	v8.POST("/nexus/group-policies", s.putNexusGroupPolicy)
+ 	v8.GET("/config", s.mgmt.ConfigV8)
+ 	v8.PUT("/config", s.mgmt.ConfigV8)
+ 	v8.PATCH("/config", s.mgmt.ConfigV8)
+diff --git a/internal/api/server_middleware.go b/internal/api/server_middleware.go
+--- a/internal/api/server_middleware.go
++++ b/internal/api/server_middleware.go
+@@ -167,6 +167,11 @@
+ 		if err == nil {
+ 			if result != nil {
+ 				c.Set("userApiKey", result.Principal)
++				if nexusPolicyEnabled() && strings.TrimSpace(result.Principal) != "" {
++					// Native client authentication already succeeded. Browser/client cookies
++					// are discarded; selected SDK sources construct provider auth separately.
++					c.Request.Header.Del("Cookie")
++				}
+ 				c.Set("accessProvider", result.Provider)
+ 				if len(result.Metadata) > 0 {
+ 					c.Set("accessMetadata", result.Metadata)
+diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/adapters_executors.go
+--- a/internal/pluginhost/adapters_executors.go
++++ b/internal/pluginhost/adapters_executors.go
+@@ -656,6 +656,14 @@
+ }
+ 
+ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, err error) {
++	policy := coreauth.NexusGroupPolicyFromContext(ctx)
++	if policy != nil && (a == nil || (auth != nil && !policy.AllowsAuthID(auth.ID)) || (auth == nil && !policy.AllowsPluginID(a.pluginID))) {
++		return resp, &coreauth.Error{Code: "nexus_group_forbidden", Message: "plugin executor source is outside the request group", HTTPStatus: 403}
++	}
++	ctx = coreauth.WithNexusModelInvocation(ctx)
++	if a != nil {
++		ctx = coreauth.WithNexusAuthorizedPluginSource(ctx, a.pluginID, authID(auth))
++	}
+ 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
+ 		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+ 	}
+@@ -714,6 +722,14 @@
+ }
+ 
+ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (result *coreexecutor.StreamResult, err error) {
++	policy := coreauth.NexusGroupPolicyFromContext(ctx)
++	if policy != nil && (a == nil || (auth != nil && !policy.AllowsAuthID(auth.ID)) || (auth == nil && !policy.AllowsPluginID(a.pluginID))) {
++		return nil, &coreauth.Error{Code: "nexus_group_forbidden", Message: "plugin executor source is outside the request group", HTTPStatus: 403}
++	}
++	ctx = coreauth.WithNexusModelInvocation(ctx)
++	if a != nil {
++		ctx = coreauth.WithNexusAuthorizedPluginSource(ctx, a.pluginID, authID(auth))
++	}
+ 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
+ 		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+ 	}
+@@ -877,6 +893,7 @@
+ }
+ 
+ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (refreshed *coreauth.Auth, err error) {
++	ctx = coreauth.WithoutNexusModelNetworkPrivacy(ctx)
+ 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
+ 		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+ 	}
+@@ -965,6 +982,14 @@
+ }
+ 
+ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, err error) {
++	policy := coreauth.NexusGroupPolicyFromContext(ctx)
++	if policy != nil && (a == nil || (auth != nil && !policy.AllowsAuthID(auth.ID)) || (auth == nil && !policy.AllowsPluginID(a.pluginID))) {
++		return resp, &coreauth.Error{Code: "nexus_group_forbidden", Message: "plugin executor source is outside the request group", HTTPStatus: 403}
++	}
++	ctx = coreauth.WithNexusModelInvocation(ctx)
++	if a != nil {
++		ctx = coreauth.WithNexusAuthorizedPluginSource(ctx, a.pluginID, authID(auth))
++	}
+ 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
+ 		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+ 	}
+diff --git a/internal/pluginhost/auth_callbacks.go b/internal/pluginhost/auth_callbacks.go
+--- a/internal/pluginhost/auth_callbacks.go
++++ b/internal/pluginhost/auth_callbacks.go
+@@ -17,7 +17,8 @@
+ )
+ 
+ type rpcHostAuthGetRequest struct {
+-	AuthIndex string `json:"auth_index"`
++	AuthIndex      string `json:"auth_index"`
++	HostCallbackID string `json:"host_callback_id,omitempty"`
+ }
+ 
+ type rpcHostAuthListResponse struct {
+@@ -51,7 +52,17 @@
+ }
+ 
+ func (h *Host) callHostAuthList(ctx context.Context, request []byte) ([]byte, error) {
+-	_ = ctx
++	var scope struct {
++		HostCallbackID string `json:"host_callback_id,omitempty"`
++	}
++	if len(bytesTrimSpace(request)) > 0 {
++		_ = json.Unmarshal(request, &scope)
++	}
++	var errScope error
++	ctx, errScope = h.resolveNexusModelCallbackContext(scope.HostCallbackID, ctx)
++	if errScope != nil {
++		return nil, errScope
++	}
+ 	if len(bytesTrimSpace(request)) > 0 {
+ 		var req map[string]any
+ 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+@@ -62,18 +73,47 @@
+ 	if errList != nil {
+ 		return nil, errList
+ 	}
++	if policy := coreauth.NexusGroupPolicyFromContext(ctx); policy != nil {
++		allowed := make(map[string]struct{})
++		if manager := h.currentAuthManager(); manager != nil {
++			for _, account := range manager.List() {
++				if account != nil && policy.AllowsAuthID(account.ID) {
++					account.EnsureIndex()
++					allowed[account.Index] = struct{}{}
++				}
++			}
++		}
++		filtered := entries[:0]
++		for _, entry := range entries {
++			if _, ok := allowed[entry.AuthIndex]; ok {
++				filtered = append(filtered, entry)
++			}
++		}
++		entries = filtered
++	}
+ 	return marshalRPCResult(rpcHostAuthListResponse{Files: entries})
+ }
+ 
+ func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, error) {
+-	_ = ctx
+ 	var req rpcHostAuthGetRequest
+ 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+ 		return nil, fmt.Errorf("decode host auth get request: %w", errUnmarshal)
+ 	}
++	var errScope error
++	ctx, errScope = h.resolveNexusModelCallbackContext(req.HostCallbackID, ctx)
++	if errScope != nil {
++		return nil, errScope
++	}
+ 	authIndex := strings.TrimSpace(req.AuthIndex)
+ 	if authIndex == "" {
+ 		return nil, fmt.Errorf("auth_index is required")
++	}
++	auth, errGet := h.authByIndex(authIndex)
++	if errGet == nil && !coreauth.NexusGroupPolicyFromContext(ctx).AllowsAuthID(auth.ID) {
++		return nil, fmt.Errorf("credential is outside the request group")
++	}
++	if errGet != nil {
++		return nil, errGet
+ 	}
+ 	auth, rawJSON, errGet := h.authPhysicalJSONByIndex(authIndex)
+ 	if errGet != nil {
+@@ -93,11 +133,15 @@
+ }
+ 
+ func (h *Host) callHostAuthGetRuntime(ctx context.Context, request []byte) ([]byte, error) {
+-	_ = ctx
+ 	var req rpcHostAuthGetRequest
+ 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+ 		return nil, fmt.Errorf("decode host auth get runtime request: %w", errUnmarshal)
+ 	}
++	var errScope error
++	ctx, errScope = h.resolveNexusModelCallbackContext(req.HostCallbackID, ctx)
++	if errScope != nil {
++		return nil, errScope
++	}
+ 	authIndex := strings.TrimSpace(req.AuthIndex)
+ 	if authIndex == "" {
+ 		return nil, fmt.Errorf("auth_index is required")
+@@ -105,6 +149,9 @@
+ 	auth, errGet := h.authByIndex(authIndex)
+ 	if errGet != nil {
+ 		return nil, errGet
++	}
++	if !coreauth.NexusGroupPolicyFromContext(ctx).AllowsAuthID(auth.ID) {
++		return nil, fmt.Errorf("credential is outside the request group")
+ 	}
+ 	entry := h.buildHostAuthFileEntry(auth)
+ 	if entry == nil {
+diff --git a/internal/pluginhost/auth_provider.go b/internal/pluginhost/auth_provider.go
+--- a/internal/pluginhost/auth_provider.go
++++ b/internal/pluginhost/auth_provider.go
+@@ -334,6 +334,7 @@
+ }
+ 
+ func (h *Host) RefreshAuth(ctx context.Context, auth *coreauth.Auth) (refreshed *coreauth.Auth, handled bool, err error) {
++	ctx = coreauth.WithoutNexusModelNetworkPrivacy(ctx)
+ 	if h == nil || auth == nil {
+ 		return nil, false, nil
+ 	}
+diff --git a/internal/pluginhost/host_callbacks.go b/internal/pluginhost/host_callbacks.go
+--- a/internal/pluginhost/host_callbacks.go
++++ b/internal/pluginhost/host_callbacks.go
+@@ -418,7 +418,11 @@
+ 		return nil, fmt.Errorf("host model executor is unavailable")
+ 	}
+ 	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
+-	ctx = h.resolveCallbackContext(req.HostCallbackID, ctx)
++	var errContext error
++	ctx, errContext = h.resolveNexusModelCallbackContext(req.HostCallbackID, ctx)
++	if errContext != nil {
++		return nil, errContext
++	}
+ 	resp, errMsg := executor.ExecuteModel(ctx, modelExecutionRequestFromPlugin(req.HostModelExecutionRequest, skipPluginID))
+ 	if errMsg != nil {
+ 		return nil, modelExecutionError(errMsg)
+diff --git a/internal/pluginhost/host_model_stream_callbacks.go b/internal/pluginhost/host_model_stream_callbacks.go
+--- a/internal/pluginhost/host_model_stream_callbacks.go
++++ b/internal/pluginhost/host_model_stream_callbacks.go
+@@ -24,7 +24,10 @@
+ 		return nil, fmt.Errorf("host model executor is unavailable")
+ 	}
+ 	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
+-	callbackCtx := h.resolveCallbackContext(req.HostCallbackID, ctx)
++	callbackCtx, errContext := h.resolveNexusModelCallbackContext(req.HostCallbackID, ctx)
++	if errContext != nil {
++		return nil, errContext
++	}
+ 	if callbackCtx == nil {
+ 		callbackCtx = context.Background()
+ 	}
+diff --git a/internal/pluginhost/http_bridge.go b/internal/pluginhost/http_bridge.go
+--- a/internal/pluginhost/http_bridge.go
++++ b/internal/pluginhost/http_bridge.go
+@@ -158,6 +158,7 @@
+ 		return nil, cfg, nil, fmt.Errorf("create host http request: %w", errNewRequest)
+ 	}
+ 	httpReq.Header = cloneHeader(req.Headers)
++	coreauth.ApplyNexusPluginNetworkPrivacy(ctx, httpReq.Header)
+ 	c.recordHTTPRequest(ctx, cfg, httpReq, req.Body)
+ 	client, cleanup, errClient := c.newHTTPClientForRequest(ctx, cfg, req, httpReq)
+ 	if errClient != nil {
+diff --git a/internal/pluginhost/nexus_capabilities.go b/internal/pluginhost/nexus_capabilities.go
+new file mode 100644
+--- /dev/null
++++ b/internal/pluginhost/nexus_capabilities.go
+@@ -0,0 +1,84 @@
++package pluginhost
++
++import (
++	"context"
++	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++	"os"
++	"strings"
++)
++
++func nexusPluginCapabilities(c pluginapi.Capabilities) map[string]bool {
++	return map[string]bool{
++		"modelRegistrar": c.ModelRegistrar != nil, "modelProvider": c.ModelProvider != nil, "authProvider": c.AuthProvider != nil, "frontendAuthProvider": c.FrontendAuthProvider != nil,
++		"scheduler": c.Scheduler != nil, "modelRouter": c.ModelRouter != nil, "executor": c.Executor != nil, "requestTranslator": c.RequestTranslator != nil, "requestNormalizer": c.RequestNormalizer != nil,
++		"requestInterceptor": c.RequestInterceptor != nil, "requestLifecyclePlugin": c.RequestLifecyclePlugin != nil, "responseTranslator": c.ResponseTranslator != nil, "responseBeforeTranslator": c.ResponseBeforeTranslator != nil,
++		"responseAfterTranslator": c.ResponseAfterTranslator != nil, "responseInterceptor": c.ResponseInterceptor != nil, "streamChunkInterceptor": c.StreamChunkInterceptor != nil, "webSocketResponseObserver": c.WebSocketResponseObserver != nil,
++		"thinkingApplier": c.ThinkingApplier != nil, "usagePlugin": c.UsagePlugin != nil, "commandLinePlugin": c.CommandLinePlugin != nil, "managementAPI": c.ManagementAPI != nil, "quotaProvider": c.QuotaProvider != nil,
++	}
++}
++
++func (h *Host) resolveNexusModelCallbackContext(id string, fallback context.Context) (context.Context, error) {
++	if strings.TrimSpace(os.Getenv("NEXUS_GROUP_POLICY_KEY")) == "" {
++		return h.resolveCallbackContext(id, fallback), nil
++	}
++	if id != "" {
++		actual, pluginID, instance, valid := h.lookupCallbackContext(id)
++		if !valid || (instance != nil && instance.closed.Load()) {
++			return nil, fmt.Errorf("model callback context is missing or expired")
++		}
++		if caller := hostCallbackPluginIDFromContext(fallback); caller != "" && caller != pluginID {
++			return nil, fmt.Errorf("model callback context belongs to another plugin")
++		}
++		if caller := hostCallbackInstanceFromContext(fallback); caller != nil && instance != nil && caller != instance {
++			return nil, fmt.Errorf("model callback context belongs to another plugin instance")
++		}
++		return actual, nil
++	}
++	// Direct internal calls retain an existing protected context. Dynamic C ABI callbacks
++	// cannot silently become unrestricted background calls if an older plugin omits its ID.
++	pluginID, instance := hostCallbackPluginIDFromContext(fallback), hostCallbackInstanceFromContext(fallback)
++	if h != nil && h.callbackContexts != nil && (pluginID != "" || instance != nil) {
++		h.callbackContexts.mu.RLock()
++		ambiguous := false
++		for _, entry := range h.callbackContexts.contexts {
++			if (pluginID == "" || entry.pluginID == pluginID) && (instance == nil || entry.instance == instance) && coreauth.NexusGroupPolicyFromContext(entry.ctx) != nil {
++				ambiguous = true
++				break
++			}
++		}
++		h.callbackContexts.mu.RUnlock()
++		if ambiguous {
++			return nil, fmt.Errorf("scoped model callback requires host_callback_id")
++		}
++	}
++	return h.resolveCallbackContext(id, fallback), nil
++}
++
++// Static no-auth executor sources are selected through the host, while provider OAuth
++// sources keep the normal auth manager. Only models actually registered by this plugin count.
++func (h *Host) NexusPluginExecutorForModel(ctx context.Context, model string) string {
++	policy := coreauth.NexusGroupPolicyFromContext(ctx)
++	if h == nil || policy == nil {
++		return ""
++	}
++	base := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
++	for _, record := range h.activeRecords() {
++		if record.plugin.Capabilities.Executor == nil || !policy.AllowsPluginID(record.id) || h.isPluginFused(record.id) {
++			continue
++		}
++		provider, valid := h.executorProvider(record, record.plugin.Capabilities.Executor)
++		if !valid {
++			continue
++		}
++		for _, item := range registry.GetGlobalRegistry().GetModelsForClient(pluginExecutorModelClientID(record.id, provider)) {
++			if item != nil && (item.ID == model || item.ID == base) {
++				return record.id
++			}
++		}
++	}
++	return ""
++}
+diff --git a/internal/pluginhost/nexus_group_policy_test.go b/internal/pluginhost/nexus_group_policy_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/pluginhost/nexus_group_policy_test.go
+@@ -0,0 +1,197 @@
++package pluginhost
++
++import (
++	"context"
++	"encoding/json"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++)
++
++func TestNexusPluginSourceIsolatedAndCallerCookieUnavailable(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-synthetic-policy-key-only")
++	var calls int
++	var providerCookieAvailable bool
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls++
++		if r.Header.Get("User-Agent") != "opencode" {
++			t.Errorf("actual SDK upstream user agent = %q", r.Header.Get("User-Agent"))
++		}
++		if r.Header.Get("X-Device-Id") != "" || r.Header.Get("X-Stainless-Os") != "" {
++			t.Error("original device/SDK data was forwarded")
++		}
++		if r.Header.Get("Cookie") == "private-visitor" {
++			t.Error("visitor cookie leaked")
++		}
++		providerCookieAvailable = r.Header.Get("Cookie") == "provider_session=synthetic-vendor-auth" && r.Header.Get("X-Client-Key") == "synthetic-source-api-key"
++		if !providerCookieAvailable {
++			w.WriteHeader(401)
++			return
++		}
++		w.WriteHeader(200)
++		_, _ = w.Write([]byte(`{"ok":true}`))
++	}))
++	defer upstream.Close()
++	executor := &fakeExecutor{identifier: "cookie-provider", execute: func(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
++		ginCtx, _ := ctx.Value("gin").(*gin.Context)
++		if ginCtx == nil || ginCtx.Request.Header.Get("Cookie") != "" {
++			t.Error("caller cookie was not structurally removed before plugin invocation")
++		}
++		response, err := req.HTTPClient.Do(ctx, pluginapi.HTTPRequest{Method: "POST", URL: upstream.URL, Headers: http.Header{"User-Agent": {"Private-Caller-CLI"}, "X-Device-Id": {"private-device"}, "X-Stainless-Os": {"private-os"}, "Cookie": {"provider_session=synthetic-vendor-auth"}, "X-Client-Key": {"synthetic-source-api-key"}}, Body: []byte(`{"model":"local-only"}`)})
++		return pluginapi.ExecutorResponse{Payload: response.Body}, err
++	}}
++	host := newRouteModelHostWithRecords(capabilityRecord{id: "vendor-cookie", plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Executor: executor}}})
++	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
++	ginCtx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
++	ctx := context.WithValue(context.Background(), "gin", ginCtx)
++	ctx = coreauth.WithNexusGroupPolicy(ctx, coreauth.NewNexusGroupPolicy("local-key", time.Now().Add(time.Second).UnixMilli(), nil, []string{"vendor-cookie"}))
++	_, err := host.ExecutePluginExecutor(ctx, "vendor-cookie", coreexecutor.Request{Model: "local-only"}, coreexecutor.Options{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	denied := coreauth.WithNexusGroupPolicy(ctx, coreauth.NewNexusGroupPolicy("other-key", time.Now().Add(time.Second).UnixMilli(), nil, []string{"other-source"}))
++	_, err = host.ExecutePluginExecutor(denied, "vendor-cookie", coreexecutor.Request{Model: "local-only"}, coreexecutor.Options{})
++	if err == nil {
++		t.Fatal("plugin outside group was executed")
++	}
++	if calls != 1 {
++		t.Fatalf("SDK supplier requests = %d, want 1 permitted source only", calls)
++	}
++	if !providerCookieAvailable {
++		t.Fatal("allowed plugin source lost its own vendor authentication cookie")
++	}
++}
++
++func TestNexusHostModelCallbacksRetainImmutablePolicy(t *testing.T) {
++	policy := coreauth.NewNexusGroupPolicy("local-key", 1, []string{"allowed-auth"}, []string{"router"})
++	ctx := coreauth.WithNexusGroupPolicy(context.Background(), policy)
++	host := newHostWithRecords()
++	host.SetModelExecutor(&fakeHostModelExecutor{executeModel: func(child context.Context, request handlers.ModelExecutionRequest) (handlers.ModelExecutionResponse, *interfaces.ErrorMessage) {
++		actual := coreauth.NexusGroupPolicyFromContext(child)
++		if actual != policy || !actual.AllowsAuthID("allowed-auth") || actual.AllowsAuthID("foreign-auth") {
++			t.Error("nested callback widened group policy")
++		}
++		return handlers.ModelExecutionResponse{StatusCode: 200, Body: []byte(`{}`)}, nil
++	}})
++	request, _ := json.Marshal(pluginapi.HostModelExecutionRequest{EntryProtocol: "openai", ExitProtocol: "openai", Model: "any-alias", Body: []byte(`{}`), AuthID: "foreign-auth"})
++	if _, err := host.callFromPlugin(ctx, pluginabi.MethodHostModelExecute, request); err != nil {
++		t.Fatal(err)
++	}
++}
++func TestNexusDynamicCallbackMissingStaleAndNativeBackground(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-test-key")
++	host := New()
++	instance := &hostCallbackInstance{}
++	dynamic := withHostCallbackIdentity(context.Background(), "router", instance)
++	policy := coreauth.NewNexusGroupPolicy("key", 1, []string{"source-A"}, nil)
++	id, closeScope := host.openCallbackContextForPluginInstance(coreauth.WithNexusGroupPolicy(context.Background(), policy), "router", instance)
++	if actual, err := host.resolveNexusModelCallbackContext(id, dynamic); err != nil || coreauth.NexusGroupPolicyFromContext(actual) != policy {
++		t.Fatalf("normal callback lost policy: %v", err)
++	}
++	if _, err := host.resolveNexusModelCallbackContext("", dynamic); err == nil {
++		t.Fatal("ambiguous scoped callback silently became unrestricted")
++	}
++	closeScope()
++	if _, err := host.resolveNexusModelCallbackContext(id, dynamic); err == nil {
++		t.Fatal("stale callback ID was reused")
++	}
++	if _, err := host.resolveNexusModelCallbackContext("", dynamic); err != nil {
++		t.Fatalf("genuine legacy background callback was disabled: %v", err)
++	}
++}
++func TestNexusRPCStreamRetainsExpiredInFlightPolicyUntilFinalChunk(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-test-key")
++	host := New()
++	client := newStreamCallbackPluginClient()
++	adapter := &rpcPluginAdapter{id: "stream-plugin", host: host, client: client}
++	policy := coreauth.NewNexusGroupPolicy("key", 1, []string{"source-A"}, []string{"stream-plugin"})
++	stream, err := adapter.ExecuteStream(coreauth.WithNexusGroupPolicy(context.Background(), policy), pluginapi.ExecutorRequest{Stream: true})
++	if err != nil {
++		t.Fatal(err)
++	}
++	waitForStreamCallbackPlugin(t, client)
++	ctx, err := host.resolveNexusModelCallbackContext(client.callbackID, context.Background())
++	if err != nil || coreauth.NexusGroupPolicyFromContext(ctx) != policy {
++		t.Fatal("returning ExecuteStream released its in-flight policy")
++	}
++	host.SetModelExecutor(&fakeHostModelExecutor{executeModel: func(child context.Context, _ handlers.ModelExecutionRequest) (handlers.ModelExecutionResponse, *interfaces.ErrorMessage) {
++		if coreauth.NexusGroupPolicyFromContext(child) != policy {
++			t.Error("delayed nested execution lost its original policy")
++		}
++		return handlers.ModelExecutionResponse{StatusCode: 200, Body: []byte(`{}`)}, nil
++	}})
++	req, _ := json.Marshal(rpcHostModelExecutionRequest{HostCallbackID: client.callbackID, HostModelExecutionRequest: pluginapi.HostModelExecutionRequest{EntryProtocol: "openai", ExitProtocol: "openai", Model: "delayed", Body: []byte(`{}`)}})
++	if _, err := host.callFromPlugin(context.Background(), pluginabi.MethodHostModelExecute, req); err != nil {
++		t.Fatal(err)
++	}
++	closeReq, _ := json.Marshal(rpcStreamCloseRequest{StreamID: client.streamID})
++	if _, err := host.callFromPlugin(context.Background(), pluginabi.MethodHostStreamClose, closeReq); err != nil {
++		t.Fatal(err)
++	}
++	for range stream.Chunks {
++	}
++	if _, err := host.resolveNexusModelCallbackContext(client.callbackID, context.Background()); err == nil {
++		t.Fatal("closed stream callback scope remained usable")
++	}
++}
++
++func TestNexusNativeBackgroundSourceCookieAndUnauthorizedCallerIsolation(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "synthetic-background-source-policy-key")
++	calls := 0
++	supplier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls++
++		if r.Header.Get("Cookie") != "source_auth=synthetic-configured-background-cookie" || r.Header.Get("X-Client-Key") != "synthetic-background-vendor-key" || r.Header.Get("X-Client-Secret") != "synthetic-background-vendor-secret" {
++			t.Error("native background source authentication lost")
++		}
++		if r.Header.Get("User-Agent") != "opencode" || r.Header.Get("X-Device-Id") != "" {
++			t.Error("background identity privacy lost")
++		}
++		if r.Header.Get("Cookie") == "private-visitor-cookie" {
++			t.Error("visitor Cookie forwarded")
++		}
++		_, _ = w.Write([]byte(`{}`))
++	}))
++	defer supplier.Close()
++	executor := &fakeExecutor{identifier: "background-source", execute: func(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
++		response, err := req.HTTPClient.Do(ctx, pluginapi.HTTPRequest{Method: "POST", URL: supplier.URL, Headers: http.Header{"Cookie": {"source_auth=synthetic-configured-background-cookie"}, "X-Client-Key": {"synthetic-background-vendor-key"}, "X-Client-Secret": {"synthetic-background-vendor-secret"}, "User-Agent": {"private-original-background-agent"}, "X-Device-Id": {"private-device"}}})
++		return pluginapi.ExecutorResponse{Payload: response.Body}, err
++	}}
++	host := newRouteModelHostWithRecords(capabilityRecord{id: "configured-background-source", plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Executor: executor}}})
++	if _, err := host.ExecutePluginExecutor(context.Background(), "configured-background-source", coreexecutor.Request{Model: "local-only"}, coreexecutor.Options{}); err != nil {
++		t.Fatal(err)
++	}
++	if calls != 1 {
++		t.Fatalf("background source calls=%d", calls)
++	}
++	denied := coreauth.WithNexusGroupPolicy(context.Background(), coreauth.NewNexusGroupPolicy("other-key", 1, nil, []string{"foreign-source"}))
++	if _, err := host.ExecutePluginExecutor(denied, "configured-background-source", coreexecutor.Request{Model: "local-only"}, coreexecutor.Options{}); err == nil {
++		t.Fatal("foreign plugin was executed")
++	}
++	if calls != 1 {
++		t.Fatal("foreign policy caused upstream request")
++	}
++	for _, callerCookie := range []string{"", "private-visitor-cookie"} {
++		caller, _ := gin.CreateTestContext(httptest.NewRecorder())
++		caller.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
++		caller.Request.Header.Set("Cookie", callerCookie)
++		// Deliberately no authenticated principal: this is an HTTP caller, not background.
++		ctx := coreauth.WithNexusModelInvocation(context.WithValue(context.Background(), "gin", caller))
++		ctx = coreauth.WithNexusAuthorizedPluginSource(ctx, "configured-background-source", "")
++		headers := http.Header{"Cookie": {"source_auth=synthetic-configured-background-cookie"}}
++		coreauth.ApplyNexusPluginNetworkPrivacy(ctx, headers)
++		if headers.Get("Cookie") != "" {
++			t.Fatal("unauthenticated HTTP caller gained source Cookie")
++		}
++	}
++	if calls != 1 {
++		t.Fatal("visitor or unauthenticated HTTP request caused supplier traffic")
++	}
++}
+diff --git a/internal/pluginhost/snapshot.go b/internal/pluginhost/snapshot.go
+--- a/internal/pluginhost/snapshot.go
++++ b/internal/pluginhost/snapshot.go
+@@ -26,14 +26,17 @@
+ 
+ // RegisteredPluginInfo describes a plugin that is active in the current runtime snapshot.
+ type RegisteredPluginInfo struct {
+-	ID            string
+-	Priority      int
+-	Metadata      pluginapi.Metadata
+-	SupportsOAuth bool
+-	OAuthProvider string
+-	SupportsQuota bool
+-	QuotaProvider string
+-	Menus         []RegisteredPluginMenu
++	Capabilities       map[string]bool
++	ExecutorProvider   string
++	ExecutorModelScope string
++	ID                 string
++	Priority           int
++	Metadata           pluginapi.Metadata
++	SupportsOAuth      bool
++	OAuthProvider      string
++	SupportsQuota      bool
++	QuotaProvider      string
++	Menus              []RegisteredPluginMenu
+ }
+ 
+ // RegisteredPluginMenu describes a plugin-owned resource menu entry.
+@@ -89,15 +92,24 @@
+ 				quotaIdentifier = identifier
+ 			}
+ 		}
++		executorProvider := ""
++		if record.plugin.Capabilities.Executor != nil {
++			if provider, valid := h.executorProvider(record, record.plugin.Capabilities.Executor); valid {
++				executorProvider = provider
++			}
++		}
+ 		out = append(out, RegisteredPluginInfo{
+-			ID:            record.id,
+-			Priority:      record.priority,
+-			Metadata:      clonePluginMetadata(record.meta),
+-			SupportsOAuth: authProvider != nil,
+-			OAuthProvider: oauthProvider,
+-			SupportsQuota: quotaProvider != nil,
+-			QuotaProvider: quotaIdentifier,
+-			Menus:         menusByPlugin[record.id],
++			Capabilities:       nexusPluginCapabilities(record.plugin.Capabilities),
++			ExecutorProvider:   executorProvider,
++			ExecutorModelScope: string(record.plugin.Capabilities.ExecutorModelScope),
++			ID:                 record.id,
++			Priority:           record.priority,
++			Metadata:           clonePluginMetadata(record.meta),
++			SupportsOAuth:      authProvider != nil,
++			OAuthProvider:      oauthProvider,
++			SupportsQuota:      quotaProvider != nil,
++			QuotaProvider:      quotaIdentifier,
++			Menus:              menusByPlugin[record.id],
+ 		})
+ 	}
+ 	return out
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -488,6 +488,16 @@
+ 	if c != nil && c.Request != nil {
+ 		requestCtx = c.Request.Context()
+ 	}
++	// Native handlers intentionally start from Background to own cancellation separately.
++	// Preserve only the protected Nexus authorization/privacy values from HTTP ingress.
++	if requestCtx != nil {
++		if policy := coreauth.NexusGroupPolicyFromContext(requestCtx); policy != nil {
++			parentCtx = coreauth.WithNexusGroupPolicy(parentCtx, policy)
++		}
++		if coreauth.IsNexusModelInvocation(requestCtx) {
++			parentCtx = coreauth.WithNexusModelInvocation(parentCtx)
++		}
++	}
+ 
+ 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
+ 		if requestID := logging.GetRequestID(requestCtx); requestID != "" {
+diff --git a/sdk/api/handlers/handlers_routing.go b/sdk/api/handlers/handlers_routing.go
+--- a/sdk/api/handlers/handlers_routing.go
++++ b/sdk/api/handlers/handlers_routing.go
+@@ -325,6 +325,11 @@
+ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
+ 	var decision modelRouteDecision
+ 	host := h.modelRouterHost()
++	if static, ok := host.(interface {
++		NexusPluginExecutorForModel(context.Context, string) string
++	}); ok {
++		decision.ExecutorPluginID = static.NexusPluginExecutorForModel(ctx, modelName)
++	}
+ 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
+ 		return decision
+ 	}
+@@ -347,6 +352,7 @@
+ 	case pluginapi.ModelRouteTargetSelf, pluginapi.ModelRouteTargetExecutor:
+ 		decision.ExecutorPluginID = strings.TrimSpace(resp.Target)
+ 	case pluginapi.ModelRouteTargetProvider:
++		decision.ExecutorPluginID = ""
+ 		decision.Provider = strings.ToLower(strings.TrimSpace(resp.Target))
+ 		decision.Model = strings.TrimSpace(resp.TargetModel)
+ 	}
+diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -1162,6 +1162,10 @@
+ 	if pinnedAuthID != "" && strings.TrimSpace(auth.ID) != pinnedAuthID {
+ 		endScope()
+ 		return nil, &Error{Code: "auth_not_found", Message: "home returned an auth that does not match the pinned credential", HTTPStatus: http.StatusServiceUnavailable}
++	}
++	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(auth.ID) {
++		endScope()
++		return nil, &Error{Code: "nexus_group_forbidden", Message: "home returned a credential outside the request group", HTTPStatus: http.StatusForbidden}
+ 	}
+ 	if errIdentity := verifyAccountedHomeConcurrencyIdentity(envelope.Tuple, &auth, dispatch.AuthIndex); errIdentity != nil {
+ 		endScope()
+diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
+--- a/sdk/cliproxy/auth/conductor_selection.go
++++ b/sdk/cliproxy/auth/conductor_selection.go
+@@ -76,6 +76,7 @@
+ type credentialPolicyContextKey struct{}
+ 
+ type authSelectionEligibility struct {
++	nexusPolicy      *NexusGroupPolicy
+ 	requiredKind     string
+ 	credentialPolicy string
+ 	disallowFreeAuth bool
+@@ -98,7 +99,7 @@
+ }
+ 
+ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
+-	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
++	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata), nexusPolicy: NexusGroupPolicyFromContext(ctx)}
+ 	if ctx != nil {
+ 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
+ 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
+@@ -108,6 +109,9 @@
+ 
+ func (e authSelectionEligibility) allows(auth *Auth) bool {
+ 	if auth == nil {
++		return false
++	}
++	if !e.nexusPolicy.AllowsAuthID(auth.ID) {
+ 		return false
+ 	}
+ 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
+@@ -923,6 +927,20 @@
+ 	if m == nil || m.scheduler == nil {
+ 		return nil, false, nil
+ 	}
++	if policy := NexusGroupPolicyFromContext(ctx); policy != nil {
++		excluded := make(map[string]struct{}, len(tried))
++		for id := range tried {
++			excluded[id] = struct{}{}
++		}
++		m.mu.RLock()
++		for id := range m.auths {
++			if !policy.AllowsAuthID(id) {
++				excluded[id] = struct{}{}
++			}
++		}
++		m.mu.RUnlock()
++		tried = excluded
++	}
+ 	providerKey := strings.ToLower(strings.TrimSpace(provider))
+ 	var selected *Auth
+ 	var errPick error
+@@ -1800,6 +1818,9 @@
+ 	if selected == nil {
+ 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+ 	}
++	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(selected.ID) {
++		return nil, nil, &Error{Code: "nexus_group_forbidden", Message: "selected credential is outside the request group", HTTPStatus: http.StatusForbidden}
++	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+ 		m.mu.Lock()
+@@ -1986,7 +2007,7 @@
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
+ 
+-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
++	if NexusGroupPolicyFromContext(ctx) != nil || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+ 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
+ 	}
+ 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+@@ -2025,6 +2046,9 @@
+ 	}
+ 	if selected == nil {
+ 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
++	}
++	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(selected.ID) {
++		return nil, nil, &Error{Code: "nexus_group_forbidden", Message: "selected credential is outside the request group", HTTPStatus: http.StatusForbidden}
+ 	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+@@ -2139,6 +2163,9 @@
+ 	if !okExecutor {
+ 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
+ 	}
++	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(selected.ID) {
++		return nil, nil, "", &Error{Code: "nexus_group_forbidden", Message: "selected credential is outside the request group", HTTPStatus: http.StatusForbidden}
++	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+ 		m.mu.Lock()
+@@ -2159,7 +2186,7 @@
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
+ 
+-	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
++	if NexusGroupPolicyFromContext(ctx) != nil || m.hasPluginScheduler() || !m.useSchedulerFastPath() {
+ 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
+ 	}
+ 
+@@ -2225,6 +2252,9 @@
+ 	executor, okExecutor := m.Executor(providerKey)
+ 	if !okExecutor {
+ 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
++	}
++	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(selected.ID) {
++		return nil, nil, "", &Error{Code: "nexus_group_forbidden", Message: "selected credential is outside the request group", HTTPStatus: http.StatusForbidden}
+ 	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+diff --git a/sdk/cliproxy/auth/nexus_group_policy.go b/sdk/cliproxy/auth/nexus_group_policy.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/cliproxy/auth/nexus_group_policy.go
+@@ -0,0 +1,187 @@
++package auth
++
++import (
++	"context"
++	"crypto/hmac"
++	"crypto/sha256"
++	"encoding/hex"
++	"github.com/gin-gonic/gin"
++	"net/http"
++	"os"
++	"strings"
++)
++
++// NexusGroupPolicy is a request-scoped authorization boundary. Plugins can change models
++// and retry them, but cannot widen this immutable credential/plugin set through metadata.
++type NexusGroupPolicy struct {
++	KeyID     string
++	ExpiresAt int64
++	authIDs   map[string]struct{}
++	pluginIDs map[string]struct{}
++}
++type nexusGroupPolicyContextKey struct{}
++type nexusModelInvocationContextKey struct{}
++type nexusAuthorizedPluginSourceContextKey struct{}
++
++// Only core executor dispatch creates this provenance marker after immutable policy checks.
++func WithNexusAuthorizedPluginSource(ctx context.Context, pluginID, authID string) context.Context {
++	policy := NexusGroupPolicyFromContext(ctx)
++	allowed := policy != nil && ((authID != "" && policy.AllowsAuthID(authID)) || (authID == "" && policy.AllowsPluginID(pluginID)))
++	if policy == nil {
++		// Source dispatch has already selected an actual executor. Independent native
++		// background invocations have no HTTP visitor identity and retain original source
++		// authentication. HTTP requests still require the original authenticated principal.
++		if ctx.Value("gin") == nil && (pluginID != "" || authID != "") {
++			allowed = true
++		}
++		// This value is set only by the original access middleware after Authenticate
++		// succeeds with a nonempty principal. No anonymous or management request is added.
++		if caller, ok := ctx.Value("gin").(*gin.Context); ok && caller != nil {
++			if principal, exists := caller.Get("userApiKey"); exists {
++				if value, valid := principal.(string); valid && strings.TrimSpace(value) != "" {
++					allowed = true
++				}
++			}
++		}
++	}
++	return context.WithValue(ctx, nexusAuthorizedPluginSourceContextKey{}, allowed)
++}
++func nexusVendorCookieAllowed(ctx context.Context) bool {
++	allowed, _ := ctx.Value(nexusAuthorizedPluginSourceContextKey{}).(bool)
++	if !allowed {
++		return false
++	}
++	ginCtx, _ := ctx.Value("gin").(*gin.Context)
++	// Root/Nexus removes visitor cookies structurally before the core. Absence is checked
++	// again here; unknown or cookie-bearing caller provenance never permits cookie forwarding.
++	return ctx.Value("gin") == nil || (ginCtx != nil && ginCtx.Request != nil && ginCtx.Request.Header.Get("Cookie") == "")
++}
++
++func NewNexusGroupPolicy(keyID string, expiresAt int64, authIDs, pluginIDs []string) *NexusGroupPolicy {
++	p := &NexusGroupPolicy{KeyID: keyID, ExpiresAt: expiresAt, authIDs: make(map[string]struct{}), pluginIDs: make(map[string]struct{})}
++	for _, id := range authIDs {
++		if id = strings.TrimSpace(id); id != "" {
++			p.authIDs[id] = struct{}{}
++		}
++	}
++	for _, id := range pluginIDs {
++		if id = strings.TrimSpace(id); id != "" {
++			p.pluginIDs[id] = struct{}{}
++		}
++	}
++	return p
++}
++func WithNexusGroupPolicy(ctx context.Context, policy *NexusGroupPolicy) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, nexusGroupPolicyContextKey{}, policy)
++}
++func NexusGroupPolicyFromContext(ctx context.Context) *NexusGroupPolicy {
++	if ctx == nil {
++		return nil
++	}
++	p, _ := ctx.Value(nexusGroupPolicyContextKey{}).(*NexusGroupPolicy)
++	return p
++}
++func (p *NexusGroupPolicy) AllowsAuthID(id string) bool {
++	if p == nil {
++		return true
++	}
++	_, allowed := p.authIDs[strings.TrimSpace(id)]
++	return allowed
++}
++func (p *NexusGroupPolicy) AllowsPluginID(id string) bool {
++	if p == nil {
++		return true
++	}
++	_, allowed := p.pluginIDs[strings.TrimSpace(id)]
++	return allowed
++}
++func WithNexusModelInvocation(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, nexusModelInvocationContextKey{}, true)
++}
++func WithoutNexusModelNetworkPrivacy(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, nexusModelInvocationContextKey{}, false)
++}
++func IsNexusModelInvocation(ctx context.Context) bool {
++	if ctx == nil {
++		return false
++	}
++	modelCall, _ := ctx.Value(nexusModelInvocationContextKey{}).(bool)
++	return modelCall
++}
++func nexusPrivateNetworkHeader(name string) bool {
++	switch name {
++	case "origin", "referer", "forwarded", "x-real-ip", "traceparent", "tracestate", "baggage", "x-request-id", "client-request-id", "x-client-request-id", "x-agent-id", "x-subagent-id", "x-app", "anthropic-dangerous-direct-browser-access", "x-project-id", "x-workspace-id", "x-originator", "x-openai-originator", "x-requested-with", "sec-ch-ua", "sec-ch-ua-platform", "sec-ch-ua-mobile", "cf-connecting-ip", "true-client-ip", "x-original-forwarded-for", "x-envoy-external-address", "sentry-trace", "version", "session_id", "session-id", "x-session-id":
++		return true
++	}
++	for _, prefix := range []string{"x-stainless-", "x-claude-code-", "x-claude-remote-", "x-opencode-", "x-client-", "x-device-", "x-openai-client-", "x-sentry-", "x-datadog-", "x-sdk-", "x-nexus-", "x-forwarded-"} {
++		if strings.HasPrefix(name, prefix) {
++			return true
++		}
++	}
++	return strings.HasPrefix(name, "x-codex-") && name != "x-codex-turn-state"
++}
++func ApplyNexusPluginNetworkPrivacy(ctx context.Context, headers http.Header) {
++	if ctx == nil || headers == nil || strings.TrimSpace(os.Getenv("NEXUS_GROUP_POLICY_KEY")) == "" {
++		return
++	}
++	modelCall, _ := ctx.Value(nexusModelInvocationContextKey{}).(bool)
++	if !modelCall {
++		return
++	}
++	allowVendorCookie := nexusVendorCookieAllowed(ctx)
++	googleClientHeader := false
++	session := ""
++	for _, name := range []string{"X-Session-Id", "Session_id", "Session-Id", "X-Claude-Code-Session-Id", "X-Codex-Session-Id"} {
++		if value := strings.TrimSpace(headers.Get(name)); value != "" {
++			session = value
++			break
++		}
++	}
++	for name := range headers {
++		lower := strings.ToLower(name)
++		if lower == "x-goog-api-client" {
++			googleClientHeader = true
++		}
++		if lower == "user-agent" || lower == "originator" || lower == "x-goog-api-client" || (lower == "cookie" && !allowVendorCookie) {
++			delete(headers, name)
++			continue
++		}
++		if lower == "x-app" && strings.EqualFold(strings.TrimSpace(headers.Get(name)), "cli") {
++			continue
++		}
++		// Source authentication exceptions require the same proven selected-source marker
++		// as vendor Cookie. If the caller supplied this name, it is discarded regardless
++		// of value; no generic x-client-* exception exists.
++		if allowVendorCookie {
++			switch lower {
++			case "x-client-key", "x-client-secret":
++				caller, _ := ctx.Value("gin").(*gin.Context)
++				if ctx.Value("gin") == nil || (caller != nil && caller.Request != nil && caller.Request.Header.Get(name) == "") {
++					continue
++				}
++			}
++		}
++		if nexusPrivateNetworkHeader(lower) {
++			delete(headers, name)
++		}
++	}
++	headers.Set("User-Agent", "opencode")
++	headers.Set("Originator", "opencode")
++	if googleClientHeader {
++		headers.Set("X-Goog-Api-Client", "opencode")
++	}
++	if session != "" {
++		mac := hmac.New(sha256.New, []byte(os.Getenv("NEXUS_GROUP_POLICY_KEY")))
++		mac.Write([]byte("cpa-nexus:private-session:v1\x00" + session))
++		headers.Set("X-Session-Id", "session-"+hex.EncodeToString(mac.Sum(nil)))
++	}
++}
+diff --git a/sdk/cliproxy/auth/nexus_group_policy_test.go b/sdk/cliproxy/auth/nexus_group_policy_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/cliproxy/auth/nexus_group_policy_test.go
+@@ -0,0 +1,116 @@
++package auth
++
++import (
++	"context"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestNexusGroupEligibilityIsNotOverriddenByRequestMetadata(t *testing.T) {
++	input := []string{"allowed"}
++	policy := NewNexusGroupPolicy("key", 1, input, []string{"plugin-source"})
++	input[0] = "foreign"
++	ctx := WithNexusGroupPolicy(context.Background(), policy)
++	eligibility := authSelectionEligibilityForRequest(ctx, executor.Options{Metadata: map[string]any{"allowedAuthIDs": []string{"foreign"}}})
++	if !eligibility.allows(&Auth{ID: "allowed"}) || eligibility.allows(&Auth{ID: "foreign"}) {
++		t.Fatal("mutable input/metadata widened the source policy")
++	}
++	child := context.WithoutCancel(ctx)
++	if NexusGroupPolicyFromContext(child) != policy {
++		t.Fatal("stream detachment discarded authorization policy")
++	}
++	if !policy.AllowsPluginID("plugin-source") || policy.AllowsPluginID("other-plugin") {
++		t.Fatal("plugin policy is not isolated")
++	}
++}
++func TestNexusModelPrivacyDoesNotModifyOAuthNetwork(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-test-policy-secret")
++	ctx := WithNexusModelInvocation(context.Background())
++	headers := http.Header{"User-Agent": {"Private-CLI"}, "Authorization": {"Bearer synthetic-upstream"}, "Anthropic-Beta": {"oauth-required-protocol"}, "X-Device-Id": {"private-device"}}
++	ApplyNexusPluginNetworkPrivacy(ctx, headers)
++	if headers.Get("User-Agent") != "opencode" || headers.Get("X-Device-Id") != "" {
++		t.Fatal("SDK software privacy did not apply")
++	}
++	if headers.Get("Authorization") != "Bearer synthetic-upstream" || headers.Get("Anthropic-Beta") != "oauth-required-protocol" {
++		t.Fatal("required authentication/protocol headers were changed")
++	}
++	oauth := http.Header{"User-Agent": {"required-login-agent"}}
++	ApplyNexusPluginNetworkPrivacy(WithoutNexusModelNetworkPrivacy(ctx), oauth)
++	if oauth.Get("User-Agent") != "required-login-agent" {
++		t.Fatal("OAuth network headers were changed")
++	}
++}
++func TestNexusSDKPrivacyDropsCallerIdentitiesAndKeepsVendorProtocol(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-test-policy-secret")
++	headers := http.Header{"user-agent": {"PrivateCLI"}, "x-opencode-device": {"device"}, "x-openai-client-info": {"client"}, "x-client-version": {"version"}, "x-codex-window-id": {"window"}, "x-claude-code-agent-id": {"actor"}, "Traceparent": {"trace"}, "Baggage": {"bag"}, "Cf-Connecting-Ip": {"private-ip"}, "sentry-trace": {"trace"}, "X-Codex-Turn-State": {"protocol-state"}, "X-App": {"cli"}, "Authorization": {"Bearer synthetic-vendor"}, "Anthropic-Beta": {"oauth-protocol-beta"}}
++	ApplyNexusPluginNetworkPrivacy(WithNexusModelInvocation(context.Background()), headers)
++	if headers.Get("User-Agent") != "opencode" {
++		t.Fatal("SDK agent not normalized")
++	}
++	for key := range headers {
++		lower := strings.ToLower(key)
++		if nexusPrivateNetworkHeader(lower) && lower != "x-app" {
++			t.Fatalf("caller identity remained: %s", key)
++		}
++	}
++	if headers.Get("Authorization") != "Bearer synthetic-vendor" || headers.Get("X-App") != "cli" || headers.Get("X-Codex-Turn-State") != "protocol-state" || headers.Get("Anthropic-Beta") != "oauth-protocol-beta" {
++		t.Fatal("vendor authentication or required protocol state changed")
++	}
++}
++
++func TestNexusSchedulerCannotReturnForeignAuthOrDelegateOutsideGroup(t *testing.T) {
++	for _, response := range []pluginapi.SchedulerPickResponse{
++		{Handled: true, AuthID: "source-foreign"},
++		{Handled: true, DelegateBuiltin: pluginapi.SchedulerBuiltinFillFirst},
++		{Handled: true, DelegateBuiltin: pluginapi.SchedulerBuiltinRoundRobin},
++	} {
++		manager := NewManager(nil, &FillFirstSelector{}, nil)
++		manager.executors["gemini"] = schedulerTestExecutor{}
++		for _, id := range []string{"source-foreign", "source-permitted"} {
++			if _, err := manager.Register(context.Background(), &Auth{ID: id, Provider: "gemini"}); err != nil {
++				t.Fatal(err)
++			}
++		}
++		manager.SetPluginScheduler(&fakePluginScheduler{resp: response, handled: true})
++		ctx := WithNexusGroupPolicy(context.Background(), NewNexusGroupPolicy("key", 1, []string{"source-permitted"}, nil))
++		for range 3 {
++			selected, _, err := manager.pickNext(ctx, "gemini", "", executor.Options{}, nil)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if selected == nil || selected.ID != "source-permitted" {
++				t.Fatalf("scheduler selected foreign source: %#v", selected)
++			}
++		}
++	}
++}
++func TestNexusSelectedSourceAuthenticationHeaderRequiresCallerAbsence(t *testing.T) {
++	t.Setenv("NEXUS_GROUP_POLICY_KEY", "local-only-header-test-key")
++	for _, hasCallerHeader := range []bool{false, true} {
++		caller, _ := gin.CreateTestContext(httptest.NewRecorder())
++		caller.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
++		caller.Set("userApiKey", "synthetic-authenticated-native-principal")
++		if hasCallerHeader {
++			caller.Request.Header.Set("X-Client-Key", "private-caller-value")
++			caller.Request.Header.Set("X-Client-Secret", "private-caller-value")
++		}
++		ctx := WithNexusModelInvocation(context.WithValue(context.Background(), "gin", caller))
++		ctx = WithNexusAuthorizedPluginSource(ctx, "selected-native-source", "")
++		headers := http.Header{"X-Client-Key": {"synthetic-source-vendor-key"}, "X-Client-Secret": {"synthetic-source-vendor-secret"}, "X-Client-Version": {"private-software-version"}}
++		ApplyNexusPluginNetworkPrivacy(ctx, headers)
++		if hasCallerHeader && (headers.Get("X-Client-Key") != "" || headers.Get("X-Client-Secret") != "") {
++			t.Fatal("caller credential header was permitted")
++		}
++		if !hasCallerHeader && (headers.Get("X-Client-Key") != "synthetic-source-vendor-key" || headers.Get("X-Client-Secret") != "synthetic-source-vendor-secret") {
++			t.Fatal("selected authenticated source's vendor key was lost")
++		}
++		if headers.Get("X-Client-Version") != "" {
++			t.Fatal("client identity header was permitted")
++		}
++	}
++}

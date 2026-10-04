@@ -4,6 +4,8 @@ const fixture = vi.hoisted(() => ({ credentials: [] as Record<string, unknown>[]
   config: [] as any[], plugins: [] as any[], persistent: true, request: vi.fn() }))
 vi.mock('../server/lib/cpa/client', () => ({ createCpaClient: () => ({ request: fixture.request }) }))
 vi.mock('../server/lib/cpa/preset-routing', () => ({ resetCpaPresetAccountRoutes: () => {} }))
+vi.mock('../server/lib/cpa/privacy', () => ({ ensureNativeCpaPrivacy: async () => ({ changed: false, updatedFiles: 0 }) }))
+vi.mock('../server/lib/cpa/nexus-capabilities', () => ({ getNexusCpaCapabilities: async () => null, resetNexusCpaCapabilities: () => {} }))
 vi.mock('../server/lib/cpa/preset-config-routing', () => ({ readCpaConfigGroupSources: async () => fixture.config,
   ensureCpaConfigAccountRoute: async (_client: unknown, credential: { id: string }, prefix: string) => { fixture.config.find(source => source.accountId === credential.id)!.prefix = prefix } }))
 vi.mock('../server/lib/groups', () => ({ ensureAccountGroups: async (_sql: unknown, _moduleId: string, id: string) => {
@@ -49,13 +51,13 @@ describe('CPA source-backed group isolation', () => {
   it('reads names and source identities without changing native routing or exposing tokens', async () => {
     file('a.json', 'A', 'existing')
     const sources = await listCpaGroupSources()
-    expect(sources[0]).toMatchObject({ id: 'a.json', sourceType: 'cpa', sourceId: 'a.json', groupIds: ['A'], routingPrefix: 'existing', routingSupported: true })
+    expect(sources[0]).toMatchObject({ id: 'a.json', sourceType: 'cpa', sourceId: 'a.json', groupIds: ['A'], routingPrefix: 'existing', routingSupported: false })
     expect(JSON.stringify(sources)).not.toContain('synthetic')
     expect(fixture.patches).toEqual([])
   })
   it('separates identical models by source, handles group unions and preserves thinking suffixes', async () => {
     file('a.json', 'A'); file('b.json', 'B')
-    expect((await listCpaGroupModels(['A'])).map(model => model.id)).toEqual(['same-model'])
+    await expect(listCpaGroupModels(['A'])).rejects.toMatchObject({ statusCode: 503 })
     expect(fixture.patches).toEqual([])
     const a = await resolveCpaGroupModel('same-model(high)', ['A'], 'key-a')
     const b = await resolveCpaGroupModel('same-model', ['B'], 'key-b')
@@ -63,7 +65,7 @@ describe('CPA source-backed group isolation', () => {
     expect(a?.model).toMatch(/^nexus-[a-f0-9]{20}\/same-model\(high\)$/)
     expect(a?.model.split('/')[0]).not.toBe(b?.model.split('/')[0])
     expect(await resolveCpaGroupModel(b!.model, ['A'], 'key-a')).toBeNull()
-    expect((await listCpaGroupModels(['A', 'B'])).map(model => model.id)).toEqual(['same-model'])
+    await expect(listCpaGroupModels(['A', 'B'])).rejects.toMatchObject({ statusCode: 503 })
     const first = await resolveCpaGroupModel('same-model', ['A', 'B'], 'union')
     const second = await resolveCpaGroupModel('same-model', ['A', 'B'], 'union')
     expect(new Set([first?.accountId, second?.accountId])).toEqual(new Set(['a.json', 'b.json']))
@@ -79,7 +81,7 @@ describe('CPA source-backed group isolation', () => {
     file('projects.json', 'A', '', ['project-1', 'project-2'])
     fixture.models.set('project-1', ['first']); fixture.models.set('project-2', ['second'])
     expect(await listCpaGroupSources()).toHaveLength(1)
-    expect((await listCpaGroupModels(['A'])).map(model => model.id)).toEqual(['first', 'second'])
+    await expect(listCpaGroupModels(['A'])).rejects.toMatchObject({ statusCode: 503 })
     const selected = await resolveCpaGroupModel('second', ['A'], 'key')
     expect(selected?.accountId).toBe('projects.json')
     expect(fixture.patches[0]).toMatchObject({ path: 'credentials', name: 'projects.json', body: {
@@ -100,11 +102,11 @@ describe('CPA source-backed group isolation', () => {
     fixture.models.set('b.json', ['private-a/same-model'])
     await expect(resolveCpaGroupModel('same-model', ['A'], 'key')).rejects.toMatchObject({ statusCode: 409 })
   })
-  it('fails closed for unverified active router plugins and accepts the pinned official Google provider', async () => {
+  it('requires the upgraded core for active plugins when no native group policy is available', async () => {
     file('a.json', 'A', 'private-a')
     fixture.plugins = [{ id: 'custom-router', effective_enabled: true, metadata: { version: '1.0.0' } }]
-    await expect(resolveCpaGroupModel('same-model', ['A'], 'key')).rejects.toMatchObject({ statusCode: 409 })
+    await expect(resolveCpaGroupModel('same-model', ['A'], 'key')).rejects.toMatchObject({ statusCode: 503 })
     fixture.plugins = [{ id: 'gemini-cli', effective_enabled: true, metadata: { version: '1.0.5' } }]
-    expect(await resolveCpaGroupModel('same-model', ['A'], 'key')).toEqual({ accountId: 'a.json', model: 'private-a/same-model' })
+    await expect(resolveCpaGroupModel('same-model', ['A'], 'key')).rejects.toMatchObject({ statusCode: 503 })
   })
 })

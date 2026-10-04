@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../server/lib/redis', () => ({
   getRedis: () => ({ get: async () => 'admin' }),
 }))
+vi.mock('../server/lib/cpa/privacy-hooks', () => ({ applyCpaPrivacyAfterResponse: async () => {} }))
 
 import adminMiddleware from '../server/middleware/admin'
 import statusHandler from '../server/api/cpa/status.get'

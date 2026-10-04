@@ -83,6 +83,11 @@ function entries(config: JsonObject): Entry[] {
 export interface CpaConfigGroupSource {
   accountId: string; name: string; provider: string; prefix: string; authIds: string[]; enabled: boolean; supported: boolean; reason?: string
 }
+/** Safe internal bridge identities; never grant the rest of the native account pool. */
+export async function readCpaManagedBridgeSources(client: CpaConfigRoutingClient): Promise<{ authIndex: string; authIDs: string[] }[]> {
+  const all = entries(await readConfig(client)).filter(entry => entry.managed)
+  return all.map(entry => ({ authIndex: entry.authIndex, authIDs: [entry.id] }))
+}
 
 /** Safe source metadata for group routing; runtime IDs identify registry owners, never upstream secrets. */
 export async function readCpaConfigGroupSources(client: CpaConfigRoutingClient): Promise<CpaConfigGroupSource[]> {

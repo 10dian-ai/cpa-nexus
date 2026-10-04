@@ -5,7 +5,9 @@ import { pathToFileURL } from 'node:url'
 import { parseEnv } from 'node:util'
 
 export const CPA_VERSION = 'v8.0.11'
-export const CPA_IMAGE = 'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9'
+export const CPA_IMAGE = 'cpa-nexus-core:v8.0.11-nexus1'
+export const CPA_UPSTREAM_REF = 'e2bff0107bb307337aaa19018ccddd55f64253d5'
+export const CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9'
 
 async function readOptional(path) {
   try { return await readFile(path, 'utf8') }
@@ -15,11 +17,10 @@ async function readOptional(path) {
 export async function setupCpa(directory = process.cwd(), log = console.log) {
   const environmentPath = resolve(directory, '.env.cpa')
   const configurationPath = resolve(directory, '.runtime/cpa/config/config.yaml')
-  const environmentText = await readOptional(environmentPath)
+  let environmentText = await readOptional(environmentPath)
   const existingConfiguration = await readOptional(configurationPath)
   // Native parsing keeps initial Docker setup independent of npm/node_modules.
   const environment = parseEnv(environmentText ?? '')
-
   // A running core hashes the management key in YAML. Recreating its lost key
   // would silently disconnect Nexus from that core, so recovery must be explicit.
   if (existingConfiguration !== null && (!environment.CPA_MANAGEMENT_KEY || !environment.CPA_CLIENT_KEY)) {
@@ -30,10 +31,18 @@ export async function setupCpa(directory = process.cwd(), log = console.log) {
       throw new Error(`${key} in .env.cpa must contain at least 24 characters. Existing files were preserved.`)
     }
   }
+  // Upgrade only the project's former pinned default after validating its keys.
+  if (environment.CPA_IMAGE === CPA_UPSTREAM_IMAGE && environment.CPA_VERSION === CPA_VERSION) {
+    environmentText = environmentText.replace(/^(?:export\s+)?CPA_IMAGE\s*=.*$/m, 'CPA_IMAGE=' + CPA_IMAGE)
+    environment.CPA_IMAGE = CPA_IMAGE
+    await writeFile(environmentPath, environmentText, { mode: 0o600 })
+  }
 
   const defaults = {
     CPA_VERSION,
     CPA_IMAGE,
+    CPA_UPSTREAM_REF,
+    CPA_UPSTREAM_IMAGE,
     CPA_URL: 'http://127.0.0.1:8317',
     CPA_MANAGEMENT_KEY: randomBytes(32).toString('base64url'),
     CPA_CLIENT_KEY: 'nexus_' + randomBytes(32).toString('base64url'),

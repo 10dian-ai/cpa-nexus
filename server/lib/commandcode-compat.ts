@@ -7,9 +7,10 @@ import { CPA_DEFAULT_URL, validateCpaBaseUrl } from './cpa/client'
 import { handleGateway } from './gateway/handler'
 import { listGatewayModels } from './gateway/accounts'
 import { gatewayCors } from './gateway/cors'
-import { makeProviderHeaders, readJsonBodyLimited, writeWithBackpressure } from './gateway/transport'
+import { makeInternalBridgeHeaders, readJsonBodyLimited, writeWithBackpressure } from './gateway/transport'
 import { ORIGINAL_KEY_ID_HEADER, ORIGINAL_KEY_SIGNATURE_HEADER, signOriginalGatewayKey } from './commandcode-identity'
-import { assertCpaGroupRoutingSafe } from './cpa/group-routing'
+import { assertCpaGroupRoutingSafe, resolveCommandcodeBridgePolicy } from './cpa/group-routing'
+import { registerCpaGroupPolicy, CPA_GROUP_POLICY_HEADER } from './cpa/group-policy'
 
 const PROTOCOLS = ['chat/completions', 'messages', 'responses']
 const IDLE_MS = 120_000
@@ -62,7 +63,10 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
     if (!clientKey) throw new Error('Missing CPA client key')
     destination = new URL('/v1/' + path, validateCpaBaseUrl(process.env.CPA_URL || CPA_DEFAULT_URL)).toString()
   } catch { error(event, path, 503, 'cpa_unavailable', 'Configure CPA_URL and CPA_CLIENT_KEY before using the compatibility endpoint'); return }
-  const headers = makeProviderHeaders(event.node.req.headers, clientKey)
+  const headers = makeInternalBridgeHeaders(event.node.req.headers, clientKey)
+  const bridgePolicy = await resolveCommandcodeBridgePolicy(key.id)
+  headers.set(CPA_GROUP_POLICY_HEADER, await registerCpaGroupPolicy({ keyId: key.id,
+    allowedAuthIDs: bridgePolicy.allowedAuthIDs, allowedPluginIDs: bridgePolicy.allowedPluginIDs }))
   headers.set(ORIGINAL_KEY_ID_HEADER, key.id)
   headers.set(ORIGINAL_KEY_SIGNATURE_HEADER, signOriginalGatewayKey(key.id))
   const controller = new AbortController()

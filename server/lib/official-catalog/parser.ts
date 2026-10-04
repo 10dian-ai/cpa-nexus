@@ -94,7 +94,7 @@ function renderedText(value: unknown): string {
   return object(value) ? renderedText(value.children) : ''
 }
 function websiteModels(value: unknown): WebsiteModel[] {
-  if (!Array.isArray(value) || !value.length || value.length > 5000) throw new Error('Official model catalog is empty or invalid')
+  if (!Array.isArray(value) || value.length > 5000) throw new Error('Official model catalog is invalid')
   const models = value.map(row => {
     if (!object(row) || !nonempty(row.id) || !nonempty(row.name)) throw new Error('Official model entry is invalid')
     return { id: row.id, name: row.name, contextLength: positive(row.contextWindow), minPlanName: optionalString(row.minPlanName), vendor: optionalString(row.vendor), category: optionalString(row.category) }
@@ -104,16 +104,15 @@ function websiteModels(value: unknown): WebsiteModel[] {
 }
 export function parseProviderModels(json: string): ParsedPage {
   const body: unknown = JSON.parse(json)
-  if (!object(body) || body.object !== 'list' || !Array.isArray(body.data) || !body.data.length || body.data.length > 5000) throw new Error('Provider model list is empty or invalid')
+  if (!object(body) || body.object !== 'list' || !Array.isArray(body.data) || body.data.length > 5000) throw new Error('Provider model list is invalid')
   const result = empty()
   result.providerModels = body.data.map(row => {
-    if (!object(row) || !nonempty(row.id) || !nonempty(row.name) || !Array.isArray(row.supported_endpoints) || !row.supported_endpoints.length) throw new Error('Provider model endpoints are missing')
+    if (!object(row) || !nonempty(row.id) || !nonempty(row.name) || !Array.isArray(row.supported_endpoints)) throw new Error('Provider model endpoints are missing')
     const endpoints = row.supported_endpoints.map(value => {
       if (typeof value !== 'string') throw new Error('Invalid provider endpoint')
       const endpoint = value.replace(/^\//, '') as OfficialEndpoint
-      if (!endpointSet.has(endpoint)) throw new Error('Unsupported provider endpoint: ' + endpoint)
       return endpoint
-    })
+    }).filter(endpoint => endpointSet.has(endpoint))
     return { id: row.id, name: row.name, contextLength: positive(row.context_length), supportedEndpoints: [...new Set(endpoints)] }
   })
   if (new Set(result.providerModels.map(model => model.id)).size !== result.providerModels.length) throw new Error('Duplicate Provider model IDs')
@@ -158,7 +157,7 @@ export function parseOfficialDocument(html: string, kind: 'pricing' | 'go' | 'go
     if (Array.isArray(value)) { if (value[1] === 'p' || value[1] === 'li') paragraphs.push(renderedText(value).replace(/\s+/g, ' ').trim()); return }
     if (object(value.planScope)) {
       const scope = value.planScope
-      if (!nonempty(scope.label) || !Array.isArray(scope.modelIds) || !scope.modelIds.length || !scope.modelIds.every(nonempty)) throw new Error('Official plan model scope is incomplete')
+      if (!nonempty(scope.label) || !Array.isArray(scope.modelIds) || !scope.modelIds.every(nonempty)) throw new Error('Official plan model scope is incomplete')
       const expected = kind === 'goat' ? 'GOAT plan' : kind === 'pro' ? 'Pro plan' : kind === 'go' ? 'Go plan' : null
       if (expected && scope.label === expected) result.scope = [...new Set(scope.modelIds as string[])]
     }

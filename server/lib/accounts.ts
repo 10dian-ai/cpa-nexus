@@ -6,6 +6,8 @@ import { publishUpdate } from './events'
 import { enqueueAccountRefresh } from './queues'
 import type { AccountView, AccountSnapshot, ModelView } from '../../shared/types'
 import { accountGroupBindings, setAccountGroups, ensureAccountGroups } from './groups'
+import { listAvailableCommandcodeModels } from './gateway/accounts'
+import { getOfficialCatalog } from './official-catalog'
 const iso = (value: unknown): string | null => value == null ? null : new Date(value as string).toISOString()
 export async function accountViews(rows: Record<string, any>[]): Promise<AccountView[]> {
   const pipeline = getRedis().pipeline()
@@ -92,11 +94,9 @@ export async function attachIdentity(pendingId:string,identity:AccountSnapshot['
   })
 }
 export async function listModels(): Promise<{items:ModelView[];updatedAt:string|null}> {
-  const sql=getDb()
-  const rows=await sql`SELECT c.*,count(m.account_id) FILTER(WHERE m.status='allowed')::int AS allowed,
-    count(m.account_id) FILTER(WHERE m.status='denied')::int AS denied,
-    (SELECT count(*)::int FROM managed_accounts a WHERE NOT EXISTS (SELECT 1 FROM account_models known WHERE known.account_id=a.id AND known.model_id=c.model_id AND known.status IN ('allowed','denied') AND known.observation_scope='official-provider')) AS unknown
-    FROM model_catalog c LEFT JOIN account_models m ON m.model_id=c.model_id AND m.observation_scope='official-provider' GROUP BY c.model_id ORDER BY c.name,c.model_id`
-  return {items:rows.map(r=>({id:r.model_id,name:r.name,observedAllowed:r.allowed,observedDenied:r.denied,unknownAccounts:r.unknown,updatedAt:iso(r.updated_at)!})),
-    updatedAt:rows.length?new Date(Math.max(...rows.map(r=>new Date(r.updated_at).getTime()))).toISOString():null}
+  const catalog = await getOfficialCatalog()
+  const rows = await listAvailableCommandcodeModels(undefined, 'goat', true, catalog)
+  return {items:rows.map(row=>({id:row.id,name:row.name,observedAllowed:row.observed_allowed,observedDenied:row.observed_denied,unknownAccounts:row.unknown_accounts,
+    eligibleAccounts:row.eligible_accounts,unknownSubscriptionAccounts:row.unknown_subscription_accounts,availabilitySource:'official-catalog' as const,
+    updatedAt:iso(row.updated_at) || catalog.fetchedAt || ''})),updatedAt:catalog.fetchedAt}
 }

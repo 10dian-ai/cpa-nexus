@@ -16,6 +16,7 @@ export interface ProviderTransportOptions {
   /** Server-owned configuration only; never take this value from an API request. */
   baseUrl?: string
   fetch?: typeof globalThis.fetch
+  privacySecret?: string
 }
 
 export function providerEndpoint(baseUrl: string, protocol: ProviderProtocol): string {
@@ -34,7 +35,7 @@ export function providerEndpoint(baseUrl: string, protocol: ProviderProtocol): s
  * proven-safe retry decisions, streaming inspection and cancellation.
  */
 export async function requestCommandCodeProvider(request: ProviderRequest, options: ProviderTransportOptions = {}): Promise<Response> {
-  const headers = makeProviderHeaders(request.headers, request.apiKey)
+  const headers = makeProviderHeaders(request.headers, request.apiKey, options.privacySecret)
   if (request.protocol === 'messages' && !headers.has('anthropic-version')) headers.set('anthropic-version', '2023-06-01')
   return (options.fetch || globalThis.fetch)(providerEndpoint(options.baseUrl || COMMANDCODE_PROVIDER_URL, request.protocol), {
     method: 'POST', headers, body: JSON.stringify(request.body), signal: request.signal, redirect: 'error',

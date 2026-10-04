@@ -80,6 +80,8 @@ const routes: RouteContract[] = [
   { path: /^plugins\/store\/[^/]+\/install$/, methods: ['POST'], query: ['source', 'version'] },
   { path: /^plugins\/[^/]+\/quota$/, methods: ['GET', 'POST', 'DELETE'], query: ['auth_index', 'authIndex'] },
   { path: /^plugins\/[^/]+$/, methods: ['DELETE'] },
+  { path: /^nexus\/capabilities$/, methods: ['GET'] },
+  { path: /^nexus\/group-policies$/, methods: ['POST'] },
 ]
 
 export function validateCpaBaseUrl(value: string): URL {

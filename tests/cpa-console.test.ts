@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { runInNewContext } from 'node:vm'
 import { createApp, createRouter, defineEventHandler, toNodeListener } from 'h3'
+vi.mock('../server/lib/cpa/privacy-hooks', () => ({ applyCpaPrivacyAfterResponse: async () => {} }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const fixture = vi.hoisted(() => ({ sessions: new Map<string, string>() }))
 vi.mock('../server/lib/redis', () => ({ getRedis: () => ({ get: async (key: string) => fixture.sessions.get(key) ?? null }) }))

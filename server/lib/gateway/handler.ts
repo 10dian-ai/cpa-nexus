@@ -241,7 +241,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
         // account API key; browser cookies and client gateway keys are omitted.
         const upstream = await requestCommandCodeProvider({
           protocol, body: effectiveBody, apiKey: upstreamKey, headers: event.node.req.headers, signal: controller.signal,
-        }, { baseUrl: getConfig().commandcodeApiUrl })
+        }, { baseUrl: getConfig().commandcodeApiUrl, privacySecret: getConfig().encryptionKey })
         if (idleTimer) clearTimeout(idleTimer)
         httpStatus = upstream.status
         if (!upstream.body) throw new Error('Upstream response has no body')

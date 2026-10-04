@@ -3,13 +3,16 @@ import type { AddressInfo } from 'node:net'
 import { createApp, defineEventHandler, getRequestURL, toNodeListener } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), compat: vi.fn(), internal: vi.fn(), groups: vi.fn(), cpaModels: vi.fn(), cpaRoute: vi.fn(), ccModels: vi.fn(), candidates: vi.fn(), provider: vi.fn(), limit: 1 }))
+const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), compat: vi.fn(), internal: vi.fn(), groups: vi.fn(), cpaModels: vi.fn(), cpaRoute: vi.fn(), ccModels: vi.fn(), candidates: vi.fn(), provider: vi.fn(), policy: vi.fn(), limit: 1 }))
 vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module, isModuleEnabled: fixture.enabled }))
 vi.mock('../server/lib/groups', () => ({ resolveEnabledKeyGroupIds: fixture.groups }))
-vi.mock('../server/lib/cpa/group-routing', () => ({ listCpaGroupModels: fixture.cpaModels, resolveCpaGroupModel: fixture.cpaRoute }))
+vi.mock('../server/lib/cpa/group-routing', () => ({ listCpaGroupModels: fixture.cpaModels,
+  resolveCpaGroupPolicy: async (...args: unknown[]) => { const value = await fixture.cpaRoute(...args); return value ? { allowedAuthIDs: [value.accountId], allowedPluginIDs: [], legacyPrefix: true, ...value } : null } }))
+vi.mock('../server/lib/cpa/group-policy', () => ({ CPA_GROUP_POLICY_HEADER: 'x-nexus-group-policy', registerCpaGroupPolicy: fixture.policy }))
 vi.mock('../server/lib/gateway/accounts', () => ({ listGatewayModels: fixture.ccModels, listCandidates: fixture.candidates }))
 vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: fixture.provider }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
+vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: 'test-only-privacy-secret' }) }))
 vi.mock('../server/lib/presets', () => ({ resolveKeyPresetStack: async (...args: unknown[]) => { const value = await fixture.route(...args); return Array.isArray(value) ? value : value ? [value] : [] } }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.limit }) }))
 vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: fixture.compat }))
@@ -26,6 +29,7 @@ describe('public CPA and original CCM inference routing', () => {
     vi.resetAllMocks(); resetCpaInferenceAuthCache(); fixture.limit = 1
     fixture.route.mockResolvedValue(null); fixture.module.mockResolvedValue(undefined)
     fixture.enabled.mockResolvedValue(true); fixture.groups.mockResolvedValue(['group-a'])
+    fixture.policy.mockResolvedValue('server-generated-private-policy')
     fixture.cpaModels.mockResolvedValue([{ id: 'custom/model' }, { id: 'native-model' }])
     fixture.cpaRoute.mockImplementation(async (model: string) => ({ accountId: 'source-a', model }))
     fixture.ccModels.mockResolvedValue({ object: 'list', data: [{ id: 'cc-model' }] }); fixture.candidates.mockResolvedValue([]); fixture.provider.mockResolvedValue(null)
@@ -47,7 +51,8 @@ describe('public CPA and original CCM inference routing', () => {
         release = () => res.end('data: [DONE]\n\n')
         res.once('close', () => { cancelled = true }); return
       }
-      res.writeHead(200, { 'content-type': 'application/json', 'x-cpa-version': 'v8.0.11' }); res.end(JSON.stringify({ raw, body: JSON.parse(raw || '{}') }))
+      let decoded: unknown; try { decoded = JSON.parse(raw || '{}') } catch { /* Native multipart uploads stay opaque. */ }
+      res.writeHead(200, { 'content-type': 'application/json', 'x-cpa-version': 'v8.0.11' }); res.end(JSON.stringify({ raw, body: decoded }))
     })
     await new Promise<void>(resolve => core.listen(0, '127.0.0.1', resolve))
     vi.stubEnv('CPA_URL', 'http://127.0.0.1:' + (core.address() as AddressInfo).port)
@@ -62,6 +67,27 @@ describe('public CPA and original CCM inference routing', () => {
     vi.unstubAllEnvs(); resetCpaInferenceAuthCache()
   })
   const post = (body: Record<string, unknown>, key = 'native-key', protocol = 'chat/completions') => fetch(url + '/' + protocol, { method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json', 'anthropic-beta': 'tools-fixture' }, body: JSON.stringify(body) })
+
+  it('preserves extended original model endpoints, query strings and multipart bodies for native keys', async () => {
+    fixture.limit = 0.000001
+    for (const path of ['images/generations', 'messages/count_tokens', 'videos']) {
+      const body = { model: 'native-model', prompt: 'native protocol', messages: [{ role: 'user', content: 'native count' }] }
+      const response = await post(body, 'native-key', path)
+      expect(response.status).toBe(200); expect((await response.json()).body).toEqual(body)
+      expect(received.at(-1)?.path).toBe('/v1/' + path)
+    }
+    const raw = '--fixture-boundary\r\nContent-Disposition: form-data; name="image"; filename="fixture.png"\r\nContent-Type: image/png\r\n\r\nlocal-image-bytes\r\n--fixture-boundary--\r\n'
+    const edit = await fetch(url + '/images/edits?size=original', { method: 'POST', headers: { authorization: 'Bearer native-key', 'content-type': 'multipart/form-data; boundary=fixture-boundary', 'x-nexus-group-policy': 'caller-forged-policy' }, body: raw })
+    expect(edit.status).toBe(200); expect((await edit.json()).raw).toBe(raw)
+    expect(received.at(-1)?.path).toBe('/v1/images/edits?size=original')
+    expect(received.at(-1)?.headers['content-type']).toBe('multipart/form-data; boundary=fixture-boundary')
+    expect(received.at(-1)?.headers['x-nexus-group-policy']).toBeUndefined()
+    const status = await fetch(url + '/videos/native-job?poll=true', { headers: { authorization: 'Bearer native-key' } })
+    expect(status.status).toBe(200); await status.text()
+    expect(received.at(-1)?.path).toBe('/v1/videos/native-job?poll=true')
+    expect(fixture.authenticate).not.toHaveBeenCalled(); expect(fixture.policy).not.toHaveBeenCalled()
+    expect(fixture.route).not.toHaveBeenCalled(); expect(fixture.cpaRoute).not.toHaveBeenCalled()
+  })
 
   it('forwards all enabled presets for an opted-in key exactly once in library order', async () => {
     fixture.route.mockResolvedValue([preset('First'), preset('Second')])
@@ -81,6 +107,21 @@ describe('public CPA and original CCM inference routing', () => {
     expect(received[0]).toMatchObject({ path: '/v1/chat/completions?test=1', headers: { authorization: 'Bearer native-key', 'anthropic-beta': 'fixture' } })
     expect(fixture.route).not.toHaveBeenCalled()
     const denied = await post({ model: 'fixture' }, 'invalid'); expect(denied.status).toBe(401); await denied.text()
+  })
+
+  it('normalizes the original client identity before every CPA model request', async () => {
+    for (const client of ['claude-code/private-device', 'opencode/private-project', 'codex/private-device']) {
+      const response = await fetch(url + '/messages', { method: 'POST', headers: {
+        authorization: 'Bearer ccm_KA', 'user-agent': client, 'x-stainless-os': 'private-device',
+        'x-claude-code-session-id': 'private-session', cookie: 'private-cookie',
+        'anthropic-version': '2023-06-01', 'anthropic-beta': 'claude-code-20250219,interleaved-thinking-2025-05-14',
+      }, body: JSON.stringify({ model: 'fixture', messages: [] }) })
+      expect(response.status).toBe(200); await response.text()
+      const headers = received.at(-1)!.headers
+      expect(headers).toMatchObject({ 'user-agent': 'opencode', originator: 'opencode', 'anthropic-version': '2023-06-01', 'anthropic-beta': 'interleaved-thinking-2025-05-14' })
+      for (const name of ['cookie', 'x-stainless-os', 'x-claude-code-session-id']) expect(headers[name]).toBeUndefined()
+      expect(String(headers['x-session-id'])).not.toContain('private-session')
+    }
   })
 
   it('restores original CCM keys on all original public model paths', async () => {
@@ -229,6 +270,18 @@ describe('public CPA and original CCM inference routing', () => {
     const disabled = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
     expect(disabled.status).toBe(403); await disabled.text()
     expect(received).toHaveLength(0); expect(fixture.compat).not.toHaveBeenCalled()
+  })
+
+  it('keeps plugin router aliases intact and attaches only the server-generated allowed-account policy', async () => {
+    fixture.cpaRoute.mockResolvedValue({ accountId: 'source-a', model: 'plugin-model-alias', legacyPrefix: false,
+      allowedAuthIDs: ['source-a', 'source-b'], allowedPluginIDs: ['grouped-direct-executor'] })
+    const response = await fetch(url + '/chat/completions', { method: 'POST', headers: {
+      authorization: 'Bearer ccm_auto', 'content-type': 'application/json', 'x-nexus-group-policy': 'forged-client-policy',
+    }, body: JSON.stringify({ model: 'plugin-model-alias', messages: [] }) })
+    expect(response.status).toBe(200)
+    expect((await response.json()).body.model).toBe('plugin-model-alias')
+    expect(fixture.policy).toHaveBeenCalledWith({ keyId: 'auto', allowedAuthIDs: ['source-a', 'source-b'], allowedPluginIDs: ['grouped-direct-executor'] })
+    expect(received.at(-1)!.headers['x-nexus-group-policy']).toBe('server-generated-private-policy')
   })
 
   it('keeps the healthy module usable when the other model catalog is unavailable', async () => {

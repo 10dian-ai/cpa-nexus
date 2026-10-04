@@ -5,13 +5,14 @@
 ## 功能
 
 - CPA 配置、凭证与 OAuth、渠道与模型、日志与用量、原生插件。
-- CPA 原版完整控制台、独立 OAuth 与供应商配额中心、Google 官方提供器和完整插件页面。
-- 统一 API Key 页面：模型 Key 绑定 CPA 或 CommandCode，按 Key 启停、撤销和选择预设；CommandCode 开启后可创建外调服务 Key。
+- CPA 原版完整控制台、独立 OAuth 与供应商配额中心、完整官方插件市场、配置与插件自带页面。
+- 统一 API Key 页面：模型 Key 选择一个或多个分组，跨 CPA 和 CommandCode 来源调用，按 Key 启停、撤销和选择酒馆处理；CommandCode 开启后可创建外调服务 Key。
 - GOAT 账号池：批量导入、保活、真实额度、自动恢复、并发租约、会话亲和和调用日志。
-- 官方模型与套餐目录：准确模型 ID、原生协议、包含范围、来源和检查时间；未知资料保留未知。
+- 官方模型与套餐目录：GOAT 默认只显示官方确认支持的模型；手动刷新、Provider 每 5 分钟和官网每 15 分钟自动刷新，保留实际来源、时间和错误状态。
 - 原加账号、外调、任务、账号、密钥、日志与设置接口保留。
 - 可选酒馆 JSON 预设：提示词/参数编辑，为不同模型 API Key 选择直连或预设处理。
 - PostgreSQL 持久数据与官网快照，Redis 队列、并发、会话和缓存。
+- 模型请求头默认使用 OpenCode 软件标识，清理调用方设备、SDK 和转发链信息；[隐私作用范围](docs/request-header-privacy.md)。
 
 ## Ubuntu / 1Panel 部署
 
@@ -25,7 +26,7 @@ bash scripts/deploy.sh up
 
 管理员用户名与密码位于 `.env`；`.env.cpa` 的 `CPA_CLIENT_KEY` 用于平台内部调用 CPA，应保留在内核访问密钥配置中。日常客户端 Key 在面板 **API Key** 页面创建。默认只绑定主机 `127.0.0.1:3000`。正式域名部署前配置 HTTPS `APP_URL`。
 
-首次登录：导入 GOAT Cookie → 查看账号同步 → 在官方目录确认更新 → 在模块管理接入 CommandCode → 在 **API Key** 创建绑定 CommandCode 的模型 Key → 客户端使用 `/v1` 和原模型 ID。调用 CPA 原生渠道时，在同一页面创建绑定 CPA 的模型 Key。
+首次登录：导入 GOAT Cookie 或配置 CPA 原生渠道 → 查看账号同步 → 在官方目录确认更新 → 接入需要的模块 → 给来源账号选择分组 → 在 **API Key** 创建选择相同分组的模型 Key → 客户端使用 `/v1` 和原模型 ID。模型 Key 可同时调用选定分组中的 CPA 与 CommandCode 来源。
 
 [详细部署、1Panel 网络、备份恢复与升级说明](docs/cpa-nexus.md)。
 
@@ -92,4 +93,4 @@ npm run check
 
 ## 上游许可
 
-CLIProxyAPI 与历史 CommandCode 适配器分别遵循上游许可。`reference/commandcode-proxy-6217305` 保留 MIT 版权声明；当前官方 API 接入不运行该私有协议适配器。
+CLIProxyAPI 与历史 CommandCode 适配器分别遵循上游许可。`ops/cpa-nexus/UPSTREAM-LICENSE` 保留当前完整 CPA 内核的 MIT 声明，源码固定版本与增量适配见 `Dockerfile.cpa`；`reference/commandcode-proxy-6217305` 保留历史适配器的 MIT 声明。当前官方 API 接入不运行该私有协议适配器。

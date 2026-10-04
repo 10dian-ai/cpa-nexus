@@ -59,7 +59,7 @@ export async function syncAccount(id:string,priorSession?:unknown):Promise<void>
       }
       const updated=await saveAccountSnapshot(id,activeFingerprint,snapshot,account.snapshot ?? null)
       if(!updated.length)return
-      if(account.snapshot?.subscription?.planId && account.snapshot.subscription.planId!==snapshot.subscription.planId) {
+      if(account.snapshot && account.snapshot.subscription.planId!==snapshot.subscription.planId) {
         await sql`UPDATE account_models SET observation_scope='superseded-plan' WHERE account_id=${id} AND observation_scope='official-provider'`
       }
       await assertLock(); await ensureDedicatedKey(id,cookieRef.value,scopedClient)
@@ -121,15 +121,7 @@ export async function processRefresh(job:Job<{accountId:string;reason?:string}>,
   await redis.eval(`if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) else return 0 end`,1,key,version??'')
 }
 export async function refreshCatalog() {
-  const { syncOfficialCatalog } = await import('../server/lib/official-catalog')
-  const official=await syncOfficialCatalog()
-  const models=official.models.filter(model=>model.providerAvailable).map(model=>({id:model.id,name:model.name,metadata:{...model,supported_endpoints:model.supportedEndpoints.map(endpoint=>'/provider/v1/'+endpoint)}})),sql=getDb()
-  if(!models.length)throw new Error('OFFICIAL_CATALOG_UNAVAILABLE')
-  await sql.begin(async tx=> {
-    for(const model of models)await tx`INSERT INTO model_catalog(model_id,name,metadata) VALUES(${model.id},${model.name},${sql.json(model.metadata as any)})
-      ON CONFLICT(model_id) DO UPDATE SET name=EXCLUDED.name,metadata=EXCLUDED.metadata,updated_at=now()`
-    await tx`DELETE FROM model_catalog WHERE model_id NOT IN ${sql(models.map(m=>m.id))}`
-  })
-  await getRedis().set('ccm:catalog:updatedAt',new Date().toISOString())
-  await publishUpdate({type:'models'})
+  const { refreshOfficialAvailability } = await import('../server/lib/official-catalog/refresh')
+  const result = await refreshOfficialAvailability()
+  if (result.availabilitySync?.bridgeError) throw new Error('COMMANDCODE_BRIDGE_REFRESH_FAILED')
 }

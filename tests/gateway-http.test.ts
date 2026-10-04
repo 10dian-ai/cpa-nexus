@@ -38,6 +38,7 @@ vi.mock('../server/lib/gateway/scheduler', () => ({
 import { handleGateway } from '../server/lib/gateway/handler'
 import { ORIGINAL_KEY_ID_HEADER, ORIGINAL_KEY_SIGNATURE_HEADER, signOriginalGatewayKey } from '../server/lib/commandcode-identity'
 import { extractAffinity } from '../server/lib/gateway/affinity'
+import { privateSessionId } from '../server/lib/privacy-headers'
 
 const actualFetch = globalThis.fetch
 const answer = () => new Response(JSON.stringify({ choices: [{ message: { content: 'answer' }, finish_reason: 'stop' }] }), {
@@ -120,7 +121,8 @@ describe('gateway over real HTTP connections', () => {
     expect(options.headers.get('cookie')).toBeNull()
     expect(options.headers.get('x-api-key')).toBeNull()
     expect(options.headers.get('x-cmd-zdr')).toBe('1')
-    expect(options.headers.get('x-session-id')).toBe('conversation-a')
+    expect(options.headers.get('x-session-id')).toBe(privateSessionId('conversation-a', Buffer.alloc(32, 9).toString('base64')))
+    expect(options.headers.get('user-agent')).toBe('opencode')
   })
   it('attributes signed legacy callers to their original key for logs and affinity only through an authenticated bridge key', async () => {
     const originalId = 'original-client-key'

@@ -53,7 +53,7 @@ export function buildCatalog(sources: SourceState[], now = Date.now()): Official
   for (const model of website?.payload?.models || []) byId.set(model.id, { ...model, providerAvailable: false, apiCatalogListed: false, apiDocumented: false, supportedEndpoints: [], planAccess: {}, sources: [website!.url] })
   for (const model of provider?.payload?.providerModels || []) {
     const existing = byId.get(model.id)
-    byId.set(model.id, { id: model.id, name: model.name, contextLength: model.contextLength, minPlanName: existing?.minPlanName || null, vendor: existing?.vendor || null, category: existing?.category || null, providerAvailable: true, apiCatalogListed: true, apiDocumented: false, supportedEndpoints: model.supportedEndpoints, planAccess: {}, sources: [...(existing?.sources || []), provider!.url] })
+    byId.set(model.id, { id: model.id, name: model.name, contextLength: model.contextLength, minPlanName: existing?.minPlanName || null, vendor: existing?.vendor || null, category: existing?.category || null, providerAvailable: model.supportedEndpoints.length > 0, apiCatalogListed: true, apiDocumented: false, supportedEndpoints: model.supportedEndpoints, planAccess: {}, sources: [...(existing?.sources || []), provider!.url] })
   }
   for (const documented of providerDoc?.payload?.documentedProviderModels || []) {
     // Require a matching official catalog ID as well as the exact documented request example.
@@ -123,7 +123,8 @@ export async function fetchOfficialSource(definition: typeof OFFICIAL_SOURCES[nu
     }
     const text = Buffer.concat(chunks).toString('utf8')
     const payload = definition.kind === 'provider-models' ? parseProviderModels(text) : definition.kind === 'website-models' ? parseWebsiteModels(text) : parseOfficialDocument(text, definition.kind)
-    return { ...state, payload, fetchedAt: attempted, etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), error: null, modelCount: payload.providerModels.length || payload.models.length || payload.scope?.length || null }
+    const modelCount = definition.kind === 'provider-models' ? payload.providerModels.length : definition.kind === 'website-models' ? payload.models.length : payload.scope?.length ?? null
+    return { ...state, payload, fetchedAt: attempted, etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), error: null, modelCount }
   } catch (error) {
     return { ...state, error: controller.signal.aborted ? 'Official source request timed out' : error instanceof Error ? error.message.slice(0, 300) : 'Official source refresh failed' }
   } finally { clearTimeout(timeout); await reader?.cancel().catch(() => {}) }
@@ -131,6 +132,8 @@ export async function fetchOfficialSource(definition: typeof OFFICIAL_SOURCES[nu
 
 export class OfficialCatalogService {
   private pending: Promise<OfficialCatalogView> | undefined
+  private pendingForced = false
+  private queuedForce: Promise<OfficialCatalogView> | undefined
   private pendingRead: Promise<OfficialCatalogView> | undefined
   private local: { until: number; view: OfficialCatalogView } | undefined
   constructor(private store: CatalogStore, private options: CatalogOptions = {}) {}
@@ -149,14 +152,21 @@ export class OfficialCatalogService {
     return view
   }
   sync(force = false): Promise<OfficialCatalogView> {
-    if (this.pending) return this.pending
-    this.pending = this.refresh(force).finally(() => { this.pending = undefined })
+    if (this.pending) {
+      if (force && !this.pendingForced) {
+        if (!this.queuedForce) this.queuedForce = this.pending.then(() => this.sync(true)).finally(() => { this.queuedForce = undefined })
+        return this.queuedForce
+      }
+      return this.pending
+    }
+    this.pendingForced = force
+    this.pending = this.refresh(force).finally(() => { this.pending = undefined; this.pendingForced = false })
     return this.pending
   }
   private time() { return (this.options.now || Date.now)() }
   private async refresh(force: boolean): Promise<OfficialCatalogView> {
     const token = randomUUID()
-    if (!await this.store.acquireLock(token)) return this.getCatalog()
+    if (!await this.store.acquireLock(token)) return { ...await this.getCatalog(), refreshInProgress: true }
     try {
       const sources = await this.store.readSources(); const now = this.time()
       const due = OFFICIAL_SOURCES.filter(definition => {

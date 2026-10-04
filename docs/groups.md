@@ -18,11 +18,11 @@
 
 CPA 使用完整官方 v8.0.11，OAuth、刷新、配额、协议转换、模型别名和流式响应继续由内核执行。分组按实际来源隔离：OAuth 凭据文件、原生配置中的每个上游 Key 都有稳定来源身份。Google 一个文件中的多个虚拟项目账号共享该来源的分组；项目模型目录取实际运行时账号模型的并集。
 
-平台在保存来源分组或首次选择该来源调用时，为其准备独占的 CPA 模型前缀。已有独占前缀会复用；多个来源共用的前缀会拆开。页面显示实际前缀，使用旧共用前缀的原生客户端需要相应调整。`force-model-prefix=false` 时，原生裸模型名字仍按官方行为保留。平台模型 Key 可以继续请求通常的裸模型名字，服务器把它映射到选定来源的独占前缀，不要求客户端填写内部前缀。
+完整插件内核通过请求内授权集合限制真实账号与独立插件执行器。模型名保持原样交给原版路由/转换/调度插件；每次选号、重试和嵌套插件调用都继承同一集合，不再用单个预选来源前缀限制插件，也不按插件名称或版本白名单拒绝插件。OAuth 文件、配置 Key、运行时插件账号和无凭据独立插件执行器均可作为来源绑定分组。同文件的虚拟项目共享来源分组。
 
-调用前核验来源实际注册的模型以及其他来源是否共用该路由。CPA 重试只针对这个独占来源的凭据，不会使用组外账号；同一来源展开的虚拟账号仍由内核调度。同名模型可在允许的来源之间轮换，但选定来源失败后不退回不带来源前缀的全局模型池。
+标准插件向 CPA 注册的账号可分别绑定分组。没有注册账号的独立执行器以 `plugin:<id>` 作为一个来源；如果插件把自己的多个上游 Key 隐藏在内部池里，只能整体分组，逐 Key 分流需要插件提供账号注册接口。CommandCode 账号由本模块逐账号管理，仍支持两个账号分别绑定不同组。
 
-无持久化来源的纯内存／插件账号、重复且无法唯一识别的配置账号，会显示不可独立分组的原因。插件可能改写模型路由，而固定内核的插件发现 API 不公布全部路由能力，因此目前分组调用支持已核验的官方 `gemini-cli` **1.0.5** 以及没有启用其他插件的内核；启用尚未适配的插件时，分组请求明确拒绝，原生管理与客户端功能继续保留。Home 外部调度模式隐藏本地管理接口，无法核验本地来源时不会绕过分组。
+服务器在内部管理通道注册短期授权集合，客户端请求只附服务器签名的短引用；认证密钥、策略签名和全量账号 ID 不发到客户端或供应商。原版客户端未附策略时继续原行为。未安装适配或未配置内部策略密钥时，平台分组调用明确要求更新内核，不退回全账号池。
 
 「CPA 原生客户端 Key」保留官方完整行为，不自动套用 Nexus 分组。需要账号隔离的客户端应创建平台「模型 API Key」。后台显示这一差别，避免把原生 Key 误认为经过平台分组管控。
 
@@ -44,4 +44,4 @@ CPA 使用完整官方 v8.0.11，OAuth、刷新、配额、协议转换、模型
 
 模型 Key 创建接口支持 `groupIds`，不传时选择默认组；编辑时不传则保留原分组。`groupIds` 至少一个，重复 ID 去重；停用组可保留绑定但不会赋予调用能力。原生配置及凭据内容不在分组库存响应中暴露。
 
-官方行为依据：[CPA v8.0.11 来源模型选择](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/cliproxy/auth/conductor_selection.go)、[来源模型前缀转换](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/cliproxy/auth/conductor_models.go)、[Google 提供器 v1.0.5 能力注册](https://github.com/router-for-me/cpa-plugin-gemini-cli/blob/v1.0.5/internal/plugin/plugin.go)。分组的多来源授权行为参考 [New API 分组文档](https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/group)、[渠道选择源码](https://github.com/QuantumNous/new-api/blob/main/service/channel_select.go)，实现使用本项目的 Postgres 数据与 CPA 官方前缀机制。
+官方行为依据：[CPA v8.0.11 来源模型选择](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/cliproxy/auth/conductor_selection.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/pluginapi/types.go)。分组的多来源授权行为参考 [New API 分组文档](https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/group)、[渠道选择源码](https://github.com/QuantumNous/new-api/blob/main/service/channel_select.go)，实现使用本项目的 Postgres 数据和内核请求上下文中的来源授权集合。

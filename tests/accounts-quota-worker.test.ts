@@ -8,6 +8,7 @@ const fixture=vi.hoisted(()=>({
   account:{id:'account-id',upstream_user_id:'user-id',credential_fingerprint:'fingerprint',cookie_ciphertext:'encrypted-cookie',snapshot:null as AccountSnapshot|null},
   lost:false,
   failureWrites:vi.fn(),
+  supersedeObservations:vi.fn(),
   save:vi.fn(async(..._args:unknown[])=>[{id:'account-id'}]),
   complete:vi.fn(async(..._args:unknown[])=>[{id:'account-id'}]),
   ensureKey:vi.fn(async()=>{}),
@@ -22,6 +23,10 @@ vi.mock('../server/lib/db',()=>{
     if(query.includes('UPDATE managed_accounts SET status=?')){
       fixture.failureWrites()
       return Promise.resolve([{id:fixture.account.id}])
+    }
+    if(query.includes("UPDATE account_models SET observation_scope='superseded-plan'")) {
+      fixture.supersedeObservations(..._values)
+      return Promise.resolve([])
     }
     throw new Error('Unexpected query: '+query)
   }
@@ -58,6 +63,17 @@ beforeEach(()=>{
 })
 
 describe('quota sync ownership at asynchronous boundaries',()=>{
+  it('supersedes denials from an unconfirmed plan when the synchronized subscription first becomes known',async()=>{
+    const fresh=snapshot();fresh.subscription.planId='individual-goat'
+    vi.spyOn(CommandCodeClient.prototype,'snapshot').mockResolvedValue(fresh)
+    await syncAccount('account-id')
+    expect(fixture.supersedeObservations).toHaveBeenCalledExactlyOnceWith('account-id')
+  })
+  it('retains observed permissions while the synchronized subscription ID remains unchanged',async()=>{
+    vi.spyOn(CommandCodeClient.prototype,'snapshot').mockResolvedValue(snapshot())
+    await syncAccount('account-id')
+    expect(fixture.supersedeObservations).not.toHaveBeenCalled()
+  })
   it('passes the originally loaded snapshot to the atomic quota write',async()=>{
     const initial=fixture.account.snapshot,fresh=snapshot(true)
     vi.spyOn(CommandCodeClient.prototype,'snapshot').mockResolvedValue(fresh)

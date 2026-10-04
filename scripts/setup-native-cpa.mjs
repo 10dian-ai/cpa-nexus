@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { applyCpaPrivacyPolicy } from './cpa-privacy-policy.mjs'
 
 export const NATIVE_PANEL_VERSION = 'v1.25.2'
 export const NATIVE_PANEL_SHA256 = 'b6ea0bbd1f7bdb2a3da5d960a5ad71bc89f33212ece21124c390511eef7ce041'
@@ -55,9 +56,36 @@ export async function prepareNativeProviders(options = {}) {
   return { installed: true, pluginsEnabled: !!discovery.plugins_enabled, googleReady: false, restartRequired: !!discovery.plugins_enabled && (installed.restart_required !== false) }
 }
 
+export async function prepareNativePrivacy(options = {}) {
+  const url = new URL(options.baseUrl || process.env.CPA_URL || 'http://cpa:8317')
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('Invalid CPA core address')
+  const managementKey = options.managementKey || process.env.CPA_MANAGEMENT_KEY
+  if (!managementKey || /[\r\n]/.test(managementKey)) throw Error('Missing CPA server management credential')
+  const fetcher = options.fetch || fetch
+  const client = { request: async input => {
+    const target = new URL('/v8/management/' + input.path, url)
+    for (const [name, value] of Object.entries(input.query || {})) target.searchParams.set(name, value)
+    const response = await fetcher(target, { method: input.method || 'GET', headers: {
+      authorization: 'Bearer ' + managementKey, accept: 'application/json', ...(input.headers || {}),
+    }, ...(input.body === undefined ? {} : { body: input.body }), redirect: 'error', signal: AbortSignal.timeout(120_000) })
+    return { status: response.status, body: new Uint8Array(await response.arrayBuffer()) }
+  } }
+  const apply = () => applyCpaPrivacyPolicy(client)
+  // Deployment runs this inside the app image. Coordinate array updates with the same lock
+  // used by live bridge and account-prefix writes, while retaining standalone mock tests.
+  if (!options.fetch && process.env.DATABASE_URL) {
+    const { default: postgres } = await import('postgres')
+    const database = postgres(process.env.DATABASE_URL, { max: 1 })
+    try { return await database.begin(async sql => { await sql`SELECT pg_advisory_xact_lock(71645203)`; return apply() }) }
+    finally { await database.end() }
+  }
+  return apply()
+}
+
 export async function main(mode = process.argv[2]) {
-  const result = mode === 'assets' ? await prepareNativePanel() : mode === 'providers' ? await prepareNativeProviders() : undefined
-  if (!result) throw Error('Expected assets or providers mode')
+  const result = mode === 'assets' ? await prepareNativePanel() : mode === 'providers' ? await prepareNativeProviders() : mode === 'privacy' ? {} : undefined
+  if (!result) throw Error('Expected assets, providers or privacy mode')
+  if (mode === 'providers' || mode === 'privacy') result.privacy = await prepareNativePrivacy()
   console.log(JSON.stringify(result))
   if (result.restartRequired) process.exitCode = 10
 }

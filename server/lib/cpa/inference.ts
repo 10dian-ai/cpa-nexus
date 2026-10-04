@@ -11,9 +11,12 @@ import { readJsonBodyLimited } from '../gateway/transport'
 import { isModuleEnabled, requireModule } from '../modules'
 import { gatewayCors } from '../gateway/cors'
 import { resolveEnabledKeyGroupIds } from '../groups'
-import { listCpaGroupModels, resolveCpaGroupModel } from './group-routing'
+import { listCpaGroupModels, resolveCpaGroupPolicy } from './group-routing'
 import { listCandidates, listGatewayModels } from '../gateway/accounts'
 import { getProviderModel } from '../official-catalog'
+import { privacyHeaders } from '../privacy-headers'
+import { getConfig } from '../config'
+import { CPA_GROUP_POLICY_HEADER, registerCpaGroupPolicy } from './group-policy'
 
 const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
@@ -37,7 +40,10 @@ function fail(event: H3Event, protocol: string, status: number, message: string)
 }
 
 function requestHeaders(event: H3Event, clientKey?: string): IncomingHttpHeaders {
-  const headers = copyHeaders(event.node.req.headers)
+  const input = copyHeaders(event.node.req.headers)
+  const hasSession = ['x-session-id', 'session_id', 'x-claude-code-session-id', 'x-codex-session-id'].some(name => typeof input[name] === 'string')
+  const headers = privacyHeaders(input, hasSession ? getConfig().encryptionKey : undefined)
+  for (const name of Object.keys(headers)) if (name.startsWith('x-nexus-')) delete headers[name]
   if (clientKey) {
     for (const name of Object.keys(headers)) {
       if (name === 'cookie' || name === 'x-api-key' || name === 'x-goog-api-key' || name.startsWith('x-nexus-')) delete headers[name]
@@ -48,9 +54,10 @@ function requestHeaders(event: H3Event, clientKey?: string): IncomingHttpHeaders
 }
 
 /** Stream native requests and replies without changing their protocol or credentials. */
-export async function forwardNativeCpa(event: H3Event, path: string, body?: Record<string, unknown>, clientKey?: string) {
+export async function forwardNativeCpa(event: H3Event, path: string, body?: Record<string, unknown>, clientKey?: string, groupPolicy?: string) {
   const url = destination(path)
   const headers = requestHeaders(event, clientKey)
+  if (groupPolicy) headers[CPA_GROUP_POLICY_HEADER] = groupPolicy
   let transformed: Buffer | undefined
   if (body) {
     transformed = Buffer.from(JSON.stringify(body))
@@ -114,7 +121,6 @@ export async function handleNexusInference(event: H3Event) {
     for (const [name, value] of Object.entries(cors.headers)) event.node.res.setHeader(name, value)
     if (cors.preflight) { event.node.res.statusCode = 204; event.node.res.end(); return }
   }
-  if (!((path === 'models' && event.method === 'GET') || ((protocol || path === 'systemone') && event.method === 'POST'))) { fail(event, path, 404, 'Unsupported model endpoint'); return }
   const authorization = event.node.req.headers.authorization
   const apiKey = event.node.req.headers['x-api-key']
   const secret = typeof authorization === 'string' && /^Bearer\s+/i.test(authorization)
@@ -122,6 +128,7 @@ export async function handleNexusInference(event: H3Event) {
   try {
     // Existing native core keys retain their original protocol and authentication.
     if (!secret.startsWith('ccm_')) return await forwardNativeCpa(event, '/v1/' + path + requested.search)
+    if (!((path === 'models' && event.method === 'GET') || ((protocol || path === 'systemone') && event.method === 'POST'))) { fail(event, path, 404, 'Unsupported model endpoint'); return }
     const key = await authenticateGatewayKey(secret)
     if (!key || secret.startsWith('ccm_nexus_')) { fail(event, path, 401, 'A valid model API key is required'); return }
     const moduleId = key.moduleId || 'commandcode'
@@ -150,7 +157,7 @@ export async function handleNexusInference(event: H3Event) {
       }
     } else if (model.startsWith('commandcode/')) { fail(event, path, 403, 'This legacy key is bound to CPA'); return }
     await requireModule('cpa')
-    const selected = await resolveCpaGroupModel(model, groupIds, key.id)
+    const selected = await resolveCpaGroupPolicy(model, groupIds, key.id)
     if (!selected) { fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return }
     body.model = model
     const presets = await resolveKeyPresetStack(key.id)
@@ -159,7 +166,9 @@ export async function handleNexusInference(event: H3Event) {
       event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
     }
     body.model = selected.model
-    return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey)
+    const policy = selected.legacyPrefix ? undefined : await registerCpaGroupPolicy({ keyId: key.id,
+      allowedAuthIDs: selected.allowedAuthIDs, allowedPluginIDs: selected.allowedPluginIDs })
+    return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey, policy)
   } catch (error) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }
     const status = Number((error as { statusCode?: number }).statusCode) || (/timeout/i.test(String(error)) ? 504 : 502)

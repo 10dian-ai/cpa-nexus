@@ -39,6 +39,7 @@ describe('gateway credentials are isolated from upstream credentials', () => {
     expect(headers.get('cookie')).toBeNull()
     expect(headers.get('x-forwarded-host')).toBeNull()
     expect(headers.get('anthropic-version')).toBe('2023-06-01')
-    expect(headers.get('x-session-id')).toBe('conversation-a')
+    expect(headers.get('x-session-id')).toBeNull()
+    expect(headers.get('user-agent')).toBe('opencode')
   })
 })

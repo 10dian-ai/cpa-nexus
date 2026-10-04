@@ -49,6 +49,8 @@ export function buildCommandcodeMessagesChannel(secret: string, models: { id: st
   return {
     ...buildCommandcodeChannel(secret, models, baseURL.replace(/\/v1$/, '')),
     name: COMMANDCODE_MESSAGES_CHANNEL,
+    // Native Claude credentials otherwise fall back to CPA's complete built-in catalog.
+    'excluded-models': models.length ? [] : ['*'],
     keys: [{ 'api-key': secret, cloak: { mode: 'never' } }],
   }
 }
@@ -134,7 +136,7 @@ async function connectCommandcodeBridgeUnlocked(maintenance = false) {
     return { connected: false, name: COMMANDCODE_CHANNEL, models: 0 }
   const catalog = await listGatewayModels()
   const split=splitCommandcodeModels(catalog.data)
-  if(!split.chat.length&&!split.messages.length)throw createError({statusCode:409,message:'账号池暂时没有可接入 CPA 的官方模型，请先导入 GOAT 账号并同步官方目录'})
+  if(!split.chat.length&&!split.messages.length&&!maintenance)throw createError({statusCode:409,message:'账号池暂时没有可接入 CPA 的官方模型，请先导入 GOAT 账号并同步官方目录'})
   const secret = await ensureBridgeCredential()
   const channel=buildCommandcodeChannel(secret,split.chat,commandcodeBaseURL())
   const messagesChannel=buildCommandcodeMessagesChannel(secret,split.messages,commandcodeBaseURL())
@@ -144,9 +146,9 @@ async function connectCommandcodeBridgeUnlocked(maintenance = false) {
   if (maintenance && !managedPresent([...latest,...latestMessages]))
     return { connected: false, name: COMMANDCODE_CHANNEL, models: 0 }
   const next=maintenance&&!latest.some(group=>channelMatches(group,COMMANDCODE_CHANNEL))?latest:
-    split.chat.length?mergeCommandcodeChannel(latest,channel):latest.filter(group=>!channelMatches(group,COMMANDCODE_CHANNEL))
+    split.chat.length||maintenance?mergeCommandcodeChannel(latest,channel):latest.filter(group=>!channelMatches(group,COMMANDCODE_CHANNEL))
   const nextMessages=latestMessages.filter(group=>!channelMatches(group,COMMANDCODE_MESSAGES_CHANNEL))
-  if(split.messages.length&&(!maintenance||latestMessages.some(group=>channelMatches(group,COMMANDCODE_MESSAGES_CHANNEL))))nextMessages.push(messagesChannel)
+  if((split.messages.length||maintenance)&&(!maintenance||latestMessages.some(group=>channelMatches(group,COMMANDCODE_MESSAGES_CHANNEL))))nextMessages.push(messagesChannel)
   const result=await client.request({path:'config/api-keys',method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({'openai-compatibility':next,claude:nextMessages})})
   if (result.status < 200 || result.status >= 300) {
     await getDb()`UPDATE module_integrations SET last_error='CPA 拒绝渠道配置，原渠道未替换',updated_at=now() WHERE module_id='commandcode'`
@@ -180,6 +182,8 @@ export async function refreshCommandcodeBridge() {
   const split=splitCommandcodeModels(catalog.data)
   const expected=(models:{id:string}[])=>models.map(model=>model.id).sort().map(id=>({name:id,alias:`commandcode/${id}`}))
   const current=(collection:unknown[],name:string)=>((collection.find(group=>channelMatches(group,name)) as {models?:unknown})?.models)||[]
-  if(JSON.stringify(current(groups,COMMANDCODE_CHANNEL))===JSON.stringify(expected(split.chat))&&JSON.stringify(current(messages,COMMANDCODE_MESSAGES_CHANNEL))===JSON.stringify(expected(split.messages)))return
+  const messagesChannel = messages.find(group => channelMatches(group, COMMANDCODE_MESSAGES_CHANNEL)) as { 'excluded-models'?: string[] } | undefined
+  const messagesExclusionsMatch = !messagesChannel || JSON.stringify(messagesChannel['excluded-models'] || []) === JSON.stringify(split.messages.length ? [] : ['*'])
+  if(messagesExclusionsMatch&&JSON.stringify(current(groups,COMMANDCODE_CHANNEL))===JSON.stringify(expected(split.chat))&&JSON.stringify(current(messages,COMMANDCODE_MESSAGES_CHANNEL))===JSON.stringify(expected(split.messages)))return
   await updateCommandcodeBridge(true)
 }
