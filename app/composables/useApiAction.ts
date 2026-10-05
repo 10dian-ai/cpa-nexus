@@ -12,8 +12,8 @@ export function useApiAction() {
   const toast = useToast()
   const route = useRoute()
   const { session } = useAuth()
-  async function run<T>(action: () => Promise<T>, message?: string): Promise<{ ok: true; value: T } | { ok: false }> {
-    if (busy.value) return { ok: false }
+  async function run<T>(action: () => Promise<T>, message?: string): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+    if (busy.value) return { ok: false, error: new Error('已有操作正在进行') }
     busy.value = true
     try {
       const value = await action()
@@ -26,7 +26,7 @@ export function useApiAction() {
       } else {
         toast.add({ title: '操作未完成', description: apiErrorMessage(error), color: 'error', icon: 'i-ph-warning-circle-bold' })
       }
-      return { ok: false }
+      return { ok: false, error }
     } finally { busy.value = false }
   }
   return { busy, run }
