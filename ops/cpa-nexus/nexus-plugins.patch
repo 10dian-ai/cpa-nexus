@@ -1596,3 +1596,42 @@ diff --git a/internal/runtime/executor/helps/devin_wire_test.go b/internal/runti
 +		t.Fatal("description prefix was not preserved")
 +	}
 +}
+diff --git a/internal/runtime/executor/devin_executor.go b/internal/runtime/executor/devin_executor.go
+index 17092f3..6b6cbeb 100644
+--- a/internal/runtime/executor/devin_executor.go
++++ b/internal/runtime/executor/devin_executor.go
+@@ -2473,6 +2473,14 @@ func (e *DevinExecutor) getSensitiveWordMatcher() *helps.SensitiveWordMatcher {
+ 
+ func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
+ 	err := statusErr{code: code, msg: string(body)}
++	// Some Devin gateways return the same permission_denied/internal-error
++	// payload as an HTTP 403 instead of an EOS trailer. Treat that shape as a
++	// transient upstream failure so it does not poison the credential.
++	if code == http.StatusForbidden {
++		if mappedCode, mappedErr := helps.ParseDevinTrailerError(body); mappedErr != nil && mappedCode == http.StatusBadGateway {
++			err.code, err.msg = mappedCode, mappedErr.Error()
++		}
++	}
+ 	if code == http.StatusTooManyRequests && headers != nil {
+ 		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
+ 			if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
+diff --git a/internal/runtime/executor/devin_executor_test.go b/internal/runtime/executor/devin_executor_test.go
+index f3b7815..ac34345 100644
+--- a/internal/runtime/executor/devin_executor_test.go
++++ b/internal/runtime/executor/devin_executor_test.go
+@@ -351,6 +351,15 @@ func TestDevinStatusError_RetryAfter(t *testing.T) {
+ 	if err3.retryAfter != nil {
+ 		t.Fatalf("expected nil retryAfter for 500, got %v", err3.retryAfter)
+ 	}
++
++	transientPermission := []byte(`{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: f9fa46daf1094c59e02eeb47e08742eb)"}}`)
++	err4 := newDevinStatusError(http.StatusForbidden, nil, transientPermission)
++	if err4.code != http.StatusBadGateway {
++		t.Fatalf("status code = %d, want 502 for HTTP 403 transient permission_denied", err4.code)
++	}
++	if !strings.Contains(err4.msg, "devin upstream error (permission_denied)") {
++		t.Fatalf("message = %q, want normalized Devin upstream error", err4.msg)
++	}
+ }
+ 
+ func TestResolveDevinSessionAndCascadeIDs(t *testing.T) {
