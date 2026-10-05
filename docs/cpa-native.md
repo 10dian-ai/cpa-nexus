@@ -1,6 +1,6 @@
 # CPA 原生功能与完整控制台
 
-CPA Nexus 使用完整官方 CLIProxyAPI v8.0.11。原版能力以官方内核及完整官方管理控制台为来源，Nexus 同时提供 OAuth、配额、凭据、配置和插件的中文入口。
+CPA Nexus 使用完整官方 CLIProxyAPI v8.0.15。原版能力以官方内核及完整官方管理控制台为来源，Nexus 同时提供 OAuth、配额、凭据、配置和插件的中文入口。
 
 | 页面 | 原生功能 |
 | --- | --- |
@@ -38,7 +38,7 @@ Nexus 侧栏按官方管理中心的导航组织 CPA 能力。API 渠道支持�
 
 新插件菜单不需要手写 `CPA_PLUGIN_ROUTES`。该变量仅用于历史的精确接口适配器和希望主动限制接入范围的旧集成；完整原版插件页面不依赖这份人工路由清单。插件依赖的外部伴随服务、登录账号、上游凭证、原生动态库架构和 ABI 要求仍以插件自身及 CPA 返回的实际状态为准。
 
-官方来源：[实时官方插件市场](https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json)、[固定内核插件市场协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/internal/api/handlers/management/plugin_store.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/pluginapi/types.go)。
+官方来源：[实时官方插件市场](https://raw.githubusercontent.com/router-for-me/CLIProxyAPI-Plugins-Store/main/registry.json)、[固定内核插件市场协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/internal/api/handlers/management/plugin_store.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/sdk/pluginapi/types.go)。
 
 ## 官方完整控制台
 
@@ -48,6 +48,6 @@ Nexus 侧栏按官方管理中心的导航组织 CPA 能力。API 渠道支持�
 
 桥接逐次验证管理员会话，固定访问已配置 CPA 服务并校验路径／参数。模型目录使用内部 `CPA_CLIENT_KEY`，普通 v0／v8 客户端列表操作保留平台内连密钥，其余原生配置及文件操作由内核处理。直接公网管理路径仍不开放。
 
-官方来源：[固定内核管理契约](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/docs/management-api-v8.md)、[官方面板发布](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/releases/tag/v1.25.2)、[Google 提供器](https://github.com/router-for-me/cpa-plugin-gemini-cli)。
+官方来源：[固定内核管理契约](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/docs/management-api-v8.md)、[官方面板发布](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/releases/tag/v1.25.2)、[Google 提供器](https://github.com/router-for-me/cpa-plugin-gemini-cli)。
 
 模型出站默认使用统一的软件标识，具体生效位置及保留的 OAuth 协议字段见[请求头隐私](request-header-privacy.md)。

@@ -60,4 +60,4 @@ CPA 模型 key 由平台认证，再使用配置好的 CPA 客户端密钥调用
 
 预设、分组覆盖、开关、顺序和 key 选择持久化在 PostgreSQL（迁移 008、010、012、016），分组覆盖表使用 `(group_id,preset_id)` 复合主键；空覆盖字段继承全局值。进程短缓存减少重复读取，修改立即使当前进程缓存失效；多应用实例最迟在短缓存过期后更新，不增加服务或部署依赖。
 
-格式及行为依据：[SillyTavern Prompt Manager](https://docs.sillytavern.app/usage/prompts/prompt-manager/)、[官方消息转换源码](https://github.com/SillyTavern/SillyTavern/blob/release/src/prompt-converters.js)。CPA 账号路由依据项目固定的官方 [v8.0.11 源码](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.11)。本模块独立实现 JSON 兼容处理。
+格式及行为依据：[SillyTavern Prompt Manager](https://docs.sillytavern.app/usage/prompts/prompt-manager/)、[官方消息转换源码](https://github.com/SillyTavern/SillyTavern/blob/release/src/prompt-converters.js)。CPA 账号路由依据项目固定的官方 [v8.0.15 源码](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.15)。本模块独立实现 JSON 兼容处理。

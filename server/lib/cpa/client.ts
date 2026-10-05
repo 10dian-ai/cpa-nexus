@@ -51,7 +51,7 @@ export function cpaRequestTimeoutMs(request: Pick<CpaRequest, 'path' | 'method'>
 }
 
 interface RouteContract { path: RegExp; methods: string[]; query?: string[] }
-// The official v8.0.11 registration contract (server_management_v8.go).
+// The official v8.0.15 registration contract (server_management_v8.go).
 // Keep this list explicit so an upgraded core cannot silently expose another API.
 const routes: RouteContract[] = [
   { path: /^config$/, methods: ['GET', 'PUT', 'PATCH'] },

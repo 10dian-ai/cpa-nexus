@@ -161,10 +161,10 @@ describe.skipIf(!binary)('real CPA binary integration with an isolated local ups
 
   it('accepts the generated CommandCode group through actual v8 configuration validation', async () => {
     const client = createCpaClient({ baseUrl: base, managementKey })
-    expect(await client.status()).toMatchObject({ connected: true, version: '8.0.11' })
+    expect(await client.status()).toMatchObject({ connected: true, version: '8.0.15' })
     const channel = buildCommandcodeChannel(bridgeKey, [{ id: 'gpt-test' }], upstreamBase)
     const messagesChannel = buildCommandcodeMessagesChannel(bridgeKey, [{ id: 'claude-test' }], upstreamBase)
-    // v8.0.11 supports retry/cooling overrides at the group level, not in keys[].
+    // v8.0.15 supports retry/cooling overrides at the group level, not in keys[].
     expect(channel.keys[0]).toEqual({ 'api-key': bridgeKey })
     const response = await client.request({ path: 'config/api-keys', method: 'PATCH', body: JSON.stringify({ 'openai-compatibility': [channel], claude: [messagesChannel] }), headers: { 'content-type': 'application/json' } })
     expect(response.status, new TextDecoder().decode(response.body)).toBe(200)

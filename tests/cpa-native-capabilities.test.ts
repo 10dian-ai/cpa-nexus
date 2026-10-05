@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { getCpaCapabilities, type CpaCapabilitiesClient } from '../server/lib/cpa/capabilities'
 import { createCpaClient } from '../server/lib/cpa/client'
-const response = (body: unknown, status = 200) => ({ status, statusText: 'OK', headers: new Headers({ 'x-cpa-version': '8.0.11' }), body: Buffer.from(JSON.stringify(body)) })
+const response = (body: unknown, status = 200) => ({ status, statusText: 'OK', headers: new Headers({ 'x-cpa-version': '8.0.15' }), body: Buffer.from(JSON.stringify(body)) })
 const client = (plugins: unknown[] = [], enabled = false, providers: unknown[] = [], credentials: unknown[] = []): CpaCapabilitiesClient => ({
   request: async input => response(input.path === 'config' ? { 'config-version': 8, plugins: { enabled } } : input.path === 'plugins' ? { plugins_enabled: enabled, plugins } : { files: credentials }),
   legacyQuotaRequest: async () => response({ providers }),
@@ -11,7 +11,7 @@ const client = (plugins: unknown[] = [], enabled = false, providers: unknown[] =
 describe('actual CPA native and plugin capability discovery', () => {
   it('lists all eight real built-in flows and keeps missing Google plugin unavailable', async () => {
     const result = await getCpaCapabilities(client())
-    expect(result).toMatchObject({ connected: true, coreVersion: '8.0.11', pluginsEnabled: false })
+    expect(result).toMatchObject({ connected: true, coreVersion: '8.0.15', pluginsEnabled: false })
     expect(result.oauthProviders.filter(provider => provider.source === 'core').map(provider => provider.id)).toEqual(['claude', 'codex', 'antigravity', 'devin', 'kimi', 'kimi-ai', 'xai', 'meta'])
     expect(result.oauthProviders.find(provider => provider.id === 'kimi')).toMatchObject({ flow: 'device', supportsCallback: false })
     expect(result.oauthProviders.find(provider => provider.id === 'claude')).toMatchObject({ flow: 'browser', supportsCallback: true })
@@ -67,7 +67,7 @@ describe('actual CPA native and plugin capability discovery', () => {
     const upstream = createServer((request, reply) => {
       calls.push(request.url || '')
       reply.setHeader('content-type', 'application/json')
-      reply.setHeader('x-cpa-version', 'v8.0.11')
+      reply.setHeader('x-cpa-version', 'v8.0.15')
       if (request.url === '/v8/management/config') reply.end(JSON.stringify({ 'config-version': 8, plugins: { enabled: true }, privateSetting: 'synthetic-config-private-value' }))
       else if (request.url === '/v8/management/plugins') { reply.statusCode = 500; reply.end(JSON.stringify({ error: 'plugin_directory_invalid', message: 'synthetic-private-plugin-directory' })) }
       else if (request.url === '/v0/management/quota/providers') reply.end(JSON.stringify({ providers: [{ plugin_id: 'quota-extra', provider: 'extra', supported_providers: ['extra'] }] }))
@@ -77,7 +77,7 @@ describe('actual CPA native and plugin capability discovery', () => {
     await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
     try {
       const result = await getCpaCapabilities(createCpaClient({ baseUrl: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, managementKey: 'synthetic-test-management' }))
-      expect(result).toMatchObject({ connected: true, coreVersion: 'v8.0.11', pluginsEnabled: true })
+      expect(result).toMatchObject({ connected: true, coreVersion: 'v8.0.15', pluginsEnabled: true })
       expect(result.oauthProviders.filter(provider => provider.source === 'core')).toHaveLength(8)
       expect(result.oauthProviders.filter(provider => provider.source === 'core').every(provider => provider.available)).toBe(true)
       expect(result.quotaProviders.filter(provider => provider.source === 'core-api-call')).toHaveLength(7)

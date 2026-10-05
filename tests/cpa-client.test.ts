@@ -91,7 +91,7 @@ describe('CPA server-side management transport', () => {
   })
 
   it('uses only the server key and strips browser credentials, cookies, proxy headers and response cookies', async () => {
-    const fetcher = vi.fn(async () => json({ ok: true }, 200, { 'set-cookie': 'upstream=secret', 'x-cpa-version': 'v8.0.11' }))
+    const fetcher = vi.fn(async () => json({ ok: true }, 200, { 'set-cookie': 'upstream=secret', 'x-cpa-version': 'v8.0.15' }))
     const client = createCpaClient({ baseUrl: 'http://cpa:8317', managementKey: KEY, fetch: fetcher })
     const response = await client.request({
       path: 'config/access/api-keys', method: 'PUT', body: '["client-key"]',
@@ -107,7 +107,7 @@ describe('CPA server-side management transport', () => {
     expect(options.body).toBe('["client-key"]')
     expect(options.redirect).toBe('manual')
     expect(response.headers.get('set-cookie')).toBeNull()
-    expect(response.headers.get('x-cpa-version')).toBe('v8.0.11')
+    expect(response.headers.get('x-cpa-version')).toBe('v8.0.15')
     expect(response.headers.get('x-nexus-upstream')).toBe('cpa')
   })
 
@@ -165,9 +165,9 @@ describe('CPA server-side management transport', () => {
   })
 
   it('reports installed version only from CPA response headers and only verified capabilities', async () => {
-    const fetcher = vi.fn(async () => json({ 'config-version': 8, port: 8317 }, 200, { 'x-cpa-version': 'v8.0.11' }))
+    const fetcher = vi.fn(async () => json({ 'config-version': 8, port: 8317 }, 200, { 'x-cpa-version': 'v8.0.15' }))
     const status = await createCpaClient({ baseUrl: 'http://cpa:8317', managementKey: KEY, fetch: fetcher }).status()
-    expect(status).toMatchObject({ configured: true, connected: true, version: 'v8.0.11', capabilities: ['configuration'], error: null })
+    expect(status).toMatchObject({ configured: true, connected: true, version: 'v8.0.15', capabilities: ['configuration'], error: null })
     expect(fetcher).toHaveBeenCalledTimes(1)
     expect((fetcher.mock.calls[0] as unknown as [URL])[0].pathname).toBe('/v8/management/config')
   })

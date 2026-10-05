@@ -25,9 +25,9 @@ function headersKey(value: unknown): string {
   return Object.keys(headers).sort().map(key => key + '\0' + headers[key] + '\0').join('')
 }
 
-/** Matches v8.0.11 config synthesis and Auth.EnsureIndex. Secrets never leave this module.
- * https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/internal/watcher/synthesizer/config.go
- * https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/cliproxy/auth/types.go
+/** Matches v8.0.15 config synthesis and Auth.EnsureIndex. Secrets never leave this module.
+ * https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/internal/watcher/synthesizer/config.go
+ * https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/sdk/cliproxy/auth/types.go
  */
 function entries(config: JsonObject): Entry[] {
   const result: Entry[] = []

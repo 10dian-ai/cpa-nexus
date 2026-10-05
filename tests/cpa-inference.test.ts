@@ -53,7 +53,7 @@ describe('public CPA and original CCM inference routing', () => {
         res.once('close', () => { cancelled = true }); return
       }
       let decoded: unknown; try { decoded = JSON.parse(raw || '{}') } catch { /* Native multipart uploads stay opaque. */ }
-      res.writeHead(200, { 'content-type': 'application/json', 'x-cpa-version': 'v8.0.11' }); res.end(JSON.stringify({ raw, body: decoded }))
+      res.writeHead(200, { 'content-type': 'application/json', 'x-cpa-version': 'v8.0.15' }); res.end(JSON.stringify({ raw, body: decoded }))
     })
     await new Promise<void>(resolve => core.listen(0, '127.0.0.1', resolve))
     vi.stubEnv('CPA_URL', 'http://127.0.0.1:' + (core.address() as AddressInfo).port)
@@ -103,7 +103,7 @@ describe('public CPA and original CCM inference routing', () => {
   it('keeps native body bytes, protocol headers and core authentication untouched when disabled', async () => {
     const raw = '{ "model": "fixture", "messages": [{"role":"user","content":"hello"}], "tools": [] }'
     const response = await fetch(url + '/chat/completions?test=1', { method: 'POST', headers: { authorization: 'Bearer native-key', 'content-type': 'application/json', 'anthropic-beta': 'fixture' }, body: raw })
-    expect(response.status).toBe(200); expect(response.headers.get('x-cpa-version')).toBe('v8.0.11')
+    expect(response.status).toBe(200); expect(response.headers.get('x-cpa-version')).toBe('v8.0.15')
     expect((await response.json()).raw).toBe(raw)
     expect(received[0]).toMatchObject({ path: '/v1/chat/completions?test=1', headers: { authorization: 'Bearer native-key', 'anthropic-beta': 'fixture' } })
     expect(fixture.route).not.toHaveBeenCalled()

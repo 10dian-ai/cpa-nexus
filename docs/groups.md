@@ -27,7 +27,7 @@
 
 ## CPA 来源与原生功能
 
-CPA 使用完整官方 v8.0.11，OAuth、刷新、配额、协议转换、模型别名和流式响应继续由内核执行。分组按实际来源隔离：OAuth 凭据文件、原生配置中的每个上游 Key 都有稳定来源身份。Google 一个文件中的多个虚拟项目账号共享该来源的分组；项目模型目录取实际运行时账号模型的并集。
+CPA 使用完整官方 v8.0.15，OAuth、刷新、配额、协议转换、模型别名和流式响应继续由内核执行。分组按实际来源隔离：OAuth 凭据文件、原生配置中的每个上游 Key 都有稳定来源身份。Google 一个文件中的多个虚拟项目账号共享该来源的分组；项目模型目录取实际运行时账号模型的并集。
 
 完整插件内核通过请求内授权集合限制真实账号与独立插件执行器。模型名保持原样交给原版路由/转换/调度插件；每次选号、重试和嵌套插件调用都继承同一集合，不再用单个预选来源前缀限制插件，也不按插件名称或版本白名单拒绝插件。OAuth 文件、配置 Key、运行时插件账号和无凭据独立插件执行器均可作为来源绑定分组。同文件的虚拟项目共享来源分组。
 
@@ -55,4 +55,4 @@ CPA 使用完整官方 v8.0.11，OAuth、刷新、配额、协议转换、模型
 
 模型 Key 创建接口支持 `groupIds`，不传时选择 CPA、CommandCode 两个模块默认组；编辑时不传则保留原分组。`groupIds` 至少一个，重复 ID 去重；停用组可保留绑定但不会赋予调用能力。原生配置及凭据内容不在分组库存响应中暴露。
 
-官方行为依据：[CPA v8.0.11 来源模型选择](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/cliproxy/auth/conductor_selection.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/sdk/pluginapi/types.go)。分组的多来源授权行为参考 [New API 分组文档](https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/group)、[渠道选择源码](https://github.com/QuantumNous/new-api/blob/main/service/channel_select.go)，实现使用本项目的 Postgres 数据和内核请求上下文中的来源授权集合。
+官方行为依据：[CPA v8.0.15 来源模型选择](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/sdk/cliproxy/auth/conductor_selection.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/sdk/pluginapi/types.go)。分组的多来源授权行为参考 [New API 分组文档](https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/group)、[渠道选择源码](https://github.com/QuantumNous/new-api/blob/main/service/channel_select.go)，实现使用本项目的 Postgres 数据和内核请求上下文中的来源授权集合。

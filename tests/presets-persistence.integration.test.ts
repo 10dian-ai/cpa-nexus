@@ -197,7 +197,9 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
       expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([first.id, second.id])
       expect((await getGroupPreset(groupA, first.id)).variables).toEqual({ char: 'A only' })
       expect((await listPresets(groupB)).find(item => item.id === second.id)).toMatchObject({ enabled: true, inherited: false })
-      await reorderGroupPresets(groupB, [second.id, first.id])
+      const groupLibrary = await listPresets()
+      const groupOrder = [second.id, first.id, ...groupLibrary.map(item => item.id).filter(id => id !== first.id && id !== second.id)]
+      await reorderGroupPresets(groupB, groupOrder)
       expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([first.id, second.id])
     } finally {
       await sql`DELETE FROM nexus_group_preset_bindings WHERE group_id IN (${groupA},${groupB})`

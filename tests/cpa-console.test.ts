@@ -26,7 +26,7 @@ describe('complete CPA console through authenticated real local HTTP', () => {
     upstream = createServer(async (request, response) => {
       const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk))
       calls.push({ path: request.url || '', method: request.method || 'GET', headers: request.headers, body: Buffer.concat(chunks).toString() })
-      response.setHeader('x-cpa-version', '8.0.11')
+      response.setHeader('x-cpa-version', '8.0.15')
       if (request.url === '/management.html') { response.setHeader('content-type', 'text/html'); response.end(HTML); return }
       if (request.url === '/v1/models') { response.setHeader('content-type', 'application/json'); response.end('{"data":[{"id":"mock-model"}]}'); return }
       if (request.url === '/v8/management/config/access/api-keys') {

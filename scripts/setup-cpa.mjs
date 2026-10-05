@@ -4,10 +4,10 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseEnv } from 'node:util'
 
-export const CPA_VERSION = 'v8.0.11'
-export const CPA_IMAGE = 'cpa-nexus-core:v8.0.11-nexus1'
-export const CPA_UPSTREAM_REF = 'e2bff0107bb307337aaa19018ccddd55f64253d5'
-export const CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9'
+export const CPA_VERSION = 'v8.0.15'
+export const CPA_IMAGE = 'cpa-nexus-core:v8.0.15-nexus1'
+export const CPA_UPSTREAM_REF = 'a4acc9f752bd46571f737a10c04bf413656ab06b'
+export const CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.15@sha256:ebc2ffc189cf241ff589cd9237c63ca9feba3c9b87fe6213ab9a0b642df132ae'
 
 async function readOptional(path) {
   try { return await readFile(path, 'utf8') }

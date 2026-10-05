@@ -112,7 +112,7 @@ describe('CommandCode bridge against a real CPA management HTTP service', () => 
       requests.push(request.method + ' ' + request.url)
       expect(request.headers.authorization).toBe('Bearer management-secret-for-tests')
       response.setHeader('content-type', 'application/json')
-      response.setHeader('X-CPA-VERSION', 'v8.0.11')
+      response.setHeader('X-CPA-VERSION', 'v8.0.15')
       if (request.url === '/v8/management/config') {
         response.statusCode = statusCode
         response.end(statusCode === 200 ? '{"config-version":8}' : '{"error":"invalid management key"}')

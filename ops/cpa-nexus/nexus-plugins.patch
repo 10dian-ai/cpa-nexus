@@ -1488,3 +1488,111 @@ new file mode 100644
 +		}
 +	}
 +}
+diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
+--- a/internal/runtime/executor/helps/devin_wire.go
++++ b/internal/runtime/executor/helps/devin_wire.go
+@@ -1001,6 +1001,11 @@
+ 	case "permission_denied":
+ 		if strings.Contains(msgLower, "high demand") {
+ 			httpCode = http.StatusTooManyRequests
++		} else if strings.Contains(msgLower, "internal error") {
++			// Devin occasionally reports a transient backend failure with the
++			// permission_denied Connect code. Keep it on the retryable upstream
++			// error path instead of treating it as a credential entitlement failure.
++			httpCode = http.StatusBadGateway
+ 		} else {
+ 			httpCode = http.StatusForbidden
+ 		}
+--- a/internal/runtime/executor/helps/devin_wire_test.go
++++ b/internal/runtime/executor/helps/devin_wire_test.go
+@@ -274,6 +274,18 @@
+ 		t.Errorf("status code = %d, want 502 for upstream internal error", code)
+ 	}
+ 
++	// Devin can encode a transient backend failure as permission_denied. It
++	// must remain retryable instead of poisoning the credential with a 30-minute
++	// permission cooldown.
++	transientPermissionJSON := []byte(`{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: 2aa189bbb4289b6561488609a39ecdc7)"}}`)
++	code, err = ParseDevinTrailerError(transientPermissionJSON)
++	if err == nil {
++		t.Fatal("expected error, got nil")
++	}
++	if code != 502 {
++		t.Errorf("status code = %d, want 502 for transient permission_denied internal error", code)
++	}
++
+ 	unknownErrJSON := []byte(`{"error":{"code":"unknown_future_error","message":"something unusual"}}`)
+ 	code, err = ParseDevinTrailerError(unknownErrJSON)
+ 	if code != 502 {
+diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
+--- a/internal/runtime/executor/helps/devin_wire.go
++++ b/internal/runtime/executor/helps/devin_wire.go
+@@ -50,7 +50,23 @@
+ 
+ 	maxConnectFrameSize      = 16 * 1024 * 1024
+ 	maxDecompressedFrameSize = 64 * 1024 * 1024
++
++	// Devin rejects long Claude Code tool descriptions with a misleading
++	// permission_denied/MCP error. Keep the wire field below the observed limit.
++	devinToolDescriptionMaxBytes = 480
+ )
++
++// truncateDevinToolDescription caps the UTF-8 byte length without splitting a rune.
++func truncateDevinToolDescription(description string) string {
++	if len(description) <= devinToolDescriptionMaxBytes {
++		return description
++	}
++	cut := devinToolDescriptionMaxBytes
++	for cut > 0 && !utf8.ValidString(description[:cut]) {
++		cut--
++	}
++	return description[:cut]
++}
+ 
+ // DevinTool represents a tool definition in GetChatMessageRequest.
+ type DevinTool struct {
+@@ -461,6 +477,7 @@
+ 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
+ 		}
+ 		desc = translatorcommon.SanitizeDevinToolDescription(tool.Name, desc)
++		desc = truncateDevinToolDescription(desc)
+ 		if desc != "" {
+ 			tBytes = protowire.AppendTag(tBytes, 2, protowire.BytesType)
+ 			tBytes = protowire.AppendString(tBytes, desc)
+@@ -1176,6 +1193,7 @@
+ 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
+ 		}
+ 		desc = translatorcommon.SanitizeDevinToolDescription(t.Name, desc)
++		desc = truncateDevinToolDescription(desc)
+ 		var params json.RawMessage
+ 		if len(t.Parameters) > 0 && json.Valid(t.Parameters) {
+ 			params = json.RawMessage(t.Parameters)
+diff --git a/internal/runtime/executor/helps/devin_wire_test.go b/internal/runtime/executor/helps/devin_wire_test.go
+--- a/internal/runtime/executor/helps/devin_wire_test.go
++++ b/internal/runtime/executor/helps/devin_wire_test.go
+@@ -5,6 +5,7 @@
+ 	"math"
+ 	"strings"
+ 	"testing"
++	"unicode/utf8"
+ 
+ 	"github.com/google/uuid"
+ 	"google.golang.org/protobuf/encoding/protowire"
+@@ -990,3 +991,17 @@
+ 		t.Errorf("tc.IsCustomToolCall = %v, want true", tc.IsCustomToolCall)
+ 	}
+ }
++
++func TestTruncateDevinToolDescription(t *testing.T) {
++	description := strings.Repeat("a", 479) + "界" + strings.Repeat("b", 200)
++	trimmed := truncateDevinToolDescription(description)
++	if len(trimmed) > devinToolDescriptionMaxBytes {
++		t.Fatalf("description length = %d, want <= %d", len(trimmed), devinToolDescriptionMaxBytes)
++	}
++	if !utf8.ValidString(trimmed) {
++		t.Fatal("description was truncated at an invalid UTF-8 boundary")
++	}
++	if !strings.HasPrefix(trimmed, strings.Repeat("a", 479)) {
++		t.Fatal("description prefix was not preserved")
++	}
++}

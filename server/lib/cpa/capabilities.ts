@@ -28,7 +28,7 @@ function parse(response: CpaResponse): Record<string, unknown> | null {
   try { const value: unknown = JSON.parse(new TextDecoder().decode(response.body)); return record(value) ? value : null } catch { return null }
 }
 
-/** Exact v8.0.11 built-ins plus capabilities advertised by the running plugin host. No OAuth is initiated here. */
+/** Exact v8.0.15 built-ins plus capabilities advertised by the running plugin host. No OAuth is initiated here. */
 export async function getCpaCapabilities(client: CpaCapabilitiesClient = createCpaClient()): Promise<CpaCapabilities> {
   const errors: string[] = []
   let discovery: Record<string, unknown> | null = null

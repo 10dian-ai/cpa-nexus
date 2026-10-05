@@ -34,7 +34,7 @@ describe('CPA management integration over real authenticated HTTP', () => {
       const chunks: Buffer[] = []
       for await (const chunk of req) chunks.push(Buffer.from(chunk))
       calls.push({ path: req.url || '', method: req.method || 'GET', headers: req.headers, body: Buffer.concat(chunks) })
-      res.setHeader('X-CPA-VERSION', 'v8.0.11')
+      res.setHeader('X-CPA-VERSION', 'v8.0.15')
       res.setHeader('content-type', 'application/json')
       if (req.url === '/v8/management/config/access/api-keys') {
         if (req.method === 'GET') res.end(JSON.stringify(accessKeys))
@@ -97,7 +97,7 @@ describe('CPA management integration over real authenticated HTTP', () => {
     const response = await fetch(base + '/api/cpa/status', { headers: ADMIN_HEADERS })
     expect(response.status).toBe(200)
     const result = await response.json()
-    expect(result).toMatchObject({ connected: true, configured: true, version: 'v8.0.11' })
+    expect(result).toMatchObject({ connected: true, configured: true, version: 'v8.0.15' })
     expect(JSON.stringify(result)).not.toContain('private-server-key')
     expect(calls[0]!.headers.authorization).toBe('Bearer private-server-key')
     expect(calls[0]!.headers.cookie).toBeUndefined()

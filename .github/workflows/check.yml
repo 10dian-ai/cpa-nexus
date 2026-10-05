@@ -37,7 +37,7 @@ jobs:
         with: { go-version: '1.26.x', cache: false }
       - name: Build and verify the complete CPA kernel
         env:
-          CPA_UPSTREAM_REF: e2bff0107bb307337aaa19018ccddd55f64253d5
+          CPA_UPSTREAM_REF: a4acc9f752bd46571f737a10c04bf413656ab06b
         run: |
           set -euo pipefail
           core_source="$RUNNER_TEMP/cpa-nexus-core"
@@ -49,8 +49,8 @@ jobs:
           git -C "$core_source" apply --check "$GITHUB_WORKSPACE/ops/cpa-nexus/nexus-plugins.patch"
           git -C "$core_source" apply "$GITHUB_WORKSPACE/ops/cpa-nexus/nexus-plugins.patch"
           cd "$core_source"
-          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./internal/pluginhost ./internal/api -count=1
-          CGO_ENABLED=1 go build -buildvcs=false -ldflags="-X main.Version=8.0.11 -X main.Commit=${CPA_UPSTREAM_REF}+nexus -X main.BuildDate=source-pinned" -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
+          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./internal/pluginhost ./internal/api ./internal/runtime/executor/helps -count=1
+          CGO_ENABLED=1 go build -buildvcs=false -ldflags="-X main.Version=8.0.15 -X main.Commit=${CPA_UPSTREAM_REF}+nexus -X main.BuildDate=source-pinned" -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
           echo "TEST_CPA_BINARY=$RUNNER_TEMP/cli-proxy-api-nexus" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run db:migrate

@@ -124,10 +124,10 @@ describe('persistent module state and real HTTP gating', () => {
     let modules = await listModules()
     expect(modules.find(module => module.id === 'cpa')).toMatchObject({ status: 'unconfigured', runtimeVersion: null })
     expect(modules.find(module => module.id === 'commandcode')).toMatchObject({ status: 'ready' })
-    fixture.cpa = { ...fixture.cpa, configured: true, connected: true, version: 'v8.0.11', error: null }
+    fixture.cpa = { ...fixture.cpa, configured: true, connected: true, version: 'v8.0.15', error: null }
     fixture.states.set('commandcode', false)
     modules = await listModules()
-    expect(modules.find(module => module.id === 'cpa')).toMatchObject({ status: 'ready', runtimeVersion: 'v8.0.11' })
+    expect(modules.find(module => module.id === 'cpa')).toMatchObject({ status: 'ready', runtimeVersion: 'v8.0.15' })
     expect(modules.find(module => module.id === 'commandcode')).toMatchObject({ status: 'disabled', enabled: false })
     expect(modules.find(module => module.id === 'platform')).toMatchObject({ status: 'ready', enabled: true })
   })

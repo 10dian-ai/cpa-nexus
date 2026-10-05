@@ -224,12 +224,12 @@ docker compose --env-file .env --env-file .env.cpa -f compose.yml -f compose.dev
 
 本机 Nuxt 加载两份 env 文件。CPA 访问宿主 Nuxt 时，把 `.env.cpa` 的桥接地址改为 `http://host.docker.internal:3000/v1`，监听容器可达的接口，重启后刷新桥接。Linux 开发需配置 `host-gateway`。不要同时启动生产 app/edge 占用开发端口；生产会覆盖为容器内部地址。
 
-Nexus 完整插件内核使用官方 v8.0.11 源码与运行镜像，保留原始 C ABI、全部路由和插件执行能力；`Dockerfile.cpa` 在固定提交上应用 `ops/cpa-nexus/nexus-plugins.patch`。适配增加真实插件能力发现和请求内分组校验，插件仍能改模型别名、调度或嵌套调用，最终账号选择始终限制在服务器授权集合内。成品镜像为 `cpa-nexus-core:v8.0.11-nexus1`。
+Nexus 完整插件内核使用官方 v8.0.15 源码与运行镜像，保留原始 C ABI、全部路由和插件执行能力；`Dockerfile.cpa` 在固定提交上应用 `ops/cpa-nexus/nexus-plugins.patch`。适配增加真实插件能力发现和请求内分组校验，插件仍能改模型别名、调度或嵌套调用，最终账号选择始终限制在服务器授权集合内。成品镜像为 `cpa-nexus-core:v8.0.15-nexus1`。
 
 官方运行镜像的固定多架构摘要：
 
 ```text
-eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9
+eceasy/cli-proxy-api:v8.0.15@sha256:ebc2ffc189cf241ff589cd9237c63ca9feba3c9b87fe6213ab9a0b642df132ae
 ```
 
 CPA 升级先在独立候选环境使用数据库、配置和凭证副本验证，不能让候选 Worker 消费生产队列。核对管理 API、配置、插件 ABI、渠道/OAuth、工具多轮、流式、WebSocket、取消释放及账号池后，更新 `.env.cpa` 中 `CPA_UPSTREAM_REF`（完整提交 SHA）、`CPA_UPSTREAM_IMAGE`（官方运行镜像摘要）、`CPA_VERSION` 并核对适配补丁可应用；验证完成后设置对应 `CPA_IMAGE` 成品名称，重建 CPA：
@@ -242,9 +242,9 @@ edge 自动重新解析服务名。回退需要旧镜像以及匹配的配置、
 
 ## 官方依据
 
-- [CPA 固定版本配置](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/config.example.yaml)
-- [CPA 固定版本 HTTP 路由](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/internal/api/server_routes.go)
-- [CPA 镜像发布流程](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.11/.github/workflows/docker-image.yml)
+- [CPA 固定版本配置](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/config.example.yaml)
+- [CPA 固定版本 HTTP 路由](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/internal/api/server_routes.go)
+- [CPA 镜像发布流程](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/.github/workflows/docker-image.yml)
 - [CommandCode 官方](https://commandcode.ai/)
 - [GOAT 官方套餐说明](https://commandcode.ai/docs/plans/goat)
 - [CommandCode 官方 Provider API](https://commandcode.ai/docs/provider)
