@@ -7,7 +7,8 @@ const fixture = vi.hoisted(() => ({ sql: undefined as Sql | undefined }))
 vi.mock('../server/lib/db', () => ({ getDb: () => fixture.sql }))
 vi.mock('../server/lib/modules', () => ({ isModuleEnabled: async (id: string) => (await fixture.sql!`SELECT enabled FROM platform_modules WHERE id=${id}`)[0]?.enabled === true }))
 vi.mock('../server/lib/cpa/preset-routing', () => ({ ensureCpaPresetAccountRoute: async () => { throw new Error('Native CPA account mutations are outside this database test') } }))
-import { createPreset, deletePreset, getPreset, listKeyPresetBindings, listPresetBindings, listPresets, reorderPresets, resetPresetRouteCache, resolveKeyPresetRoute, resolveKeyPresetStack, resolvePresetRoute, saveKeyPresetMode, setKeyPresetBinding, setPresetBinding, updatePreset } from '../server/lib/presets'
+import { createPreset, deletePreset, getGroupPreset, getPreset, listKeyPresetBindings, listPresetBindings, listPresets, reorderGroupPresets, reorderPresets, resetPresetRouteCache, resolveKeyPresetRoute, resolveKeyPresetStack, resolvePresetRoute, saveKeyPresetMode, setGroupPresetBinding, setKeyPresetBinding, setPresetBinding, updatePreset } from '../server/lib/presets'
+import { setKeyGroups } from '../server/lib/groups'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const schema = 'nexus_presets_test_' + randomUUID().replaceAll('-', '')
@@ -176,6 +177,34 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
     } finally {
       await sql`DELETE FROM gateway_keys WHERE id IN (${keyId},${directKeyId})`
       await deletePreset(preset.id)
+    }
+  })
+
+  it('resolves independent group stacks and preserves group-specific prompt variables', async () => {
+    const groupA = randomUUID(), groupB = randomUUID(), keyId = randomUUID()
+    const first = await createPreset({ name: 'Group A preset', sourceJson: document, variables: { char: 'global' }, enabled: true })
+    const second = await createPreset({ name: 'Group B preset', sourceJson: document, variables: { char: 'global-b' }, enabled: false })
+    try {
+      await sql`INSERT INTO nexus_groups(id,name) VALUES(${groupA},${'Group A ' + groupA.slice(0, 8)}),(${groupB},${'Group B ' + groupB.slice(0, 8)})`
+      await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${keyId},'Group stack key','ccm_test',${randomUUID()},'cpa')`
+      await sql.begin(async tx => setKeyGroups(tx, keyId, [groupA, groupB]))
+      await setKeyPresetBinding({ keyId, mode: 'stack' })
+      await sql`UPDATE platform_modules SET enabled=true WHERE id='presets'`
+      await setGroupPresetBinding({ groupId: groupA, presetId: first.id, enabled: true, sortOrder: 0, variables: { char: 'A only' } })
+      await setGroupPresetBinding({ groupId: groupB, presetId: first.id, enabled: false, sortOrder: 0 })
+      await setGroupPresetBinding({ groupId: groupB, presetId: second.id, enabled: true, sortOrder: 1, variables: { char: 'B only' } })
+      resetPresetRouteCache()
+      expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([first.id, second.id])
+      expect((await getGroupPreset(groupA, first.id)).variables).toEqual({ char: 'A only' })
+      expect((await listPresets(groupB)).find(item => item.id === second.id)).toMatchObject({ enabled: true, inherited: false })
+      await reorderGroupPresets(groupB, [second.id, first.id])
+      expect((await resolveKeyPresetStack(keyId)).map(item => item.id)).toEqual([first.id, second.id])
+    } finally {
+      await sql`DELETE FROM nexus_group_preset_bindings WHERE group_id IN (${groupA},${groupB})`
+      await sql`DELETE FROM gateway_keys WHERE id=${keyId}`
+      await sql`DELETE FROM nexus_groups WHERE id IN (${groupA},${groupB})`
+      await deletePreset(first.id); await deletePreset(second.id)
+      resetPresetRouteCache()
     }
   })
 })

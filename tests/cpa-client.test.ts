@@ -44,7 +44,7 @@ describe('CPA management route contract', () => {
   })
 
   it.each([
-    ['config', 'PATCH'], ['config.yaml', 'PUT'], ['config/access/api-keys', 'DELETE'],
+    ['config', 'PATCH'], ['config.yaml', 'PUT'], ['config/access/api-keys', 'DELETE'], ['config/upstream/openai', 'PATCH'], ['config/observability/logs/request-log', 'GET'], ['config/observability/logs/request-log', 'PUT'],
     ['credentials', 'POST'], ['credentials/status', 'PATCH'], ['credentials/fields', 'PATCH'], ['credentials/refresh', 'POST'],
     ['oauth/auth-url', 'GET'], ['oauth/status', 'GET'], ['oauth/session', 'DELETE'], ['oauth/import', 'POST'], ['oauth/callback', 'POST'],
     ['plugins/store/test/install', 'POST'], ['plugins/test/quota', 'DELETE'], ['plugins/test', 'DELETE'],

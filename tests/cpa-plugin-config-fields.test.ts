@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parsePluginField, pluginConfigFields, pluginExternalLink, pluginFieldText, pluginMenuHref } from '../app/utils/cpa-plugins'
+import { parsePluginField, pluginConfigFields, pluginExternalLink, pluginFieldText, pluginMenuHref, pluginMenuRoute } from '../app/utils/cpa-plugins'
 
 const field = (type: string) => ({ name: 'custom', type, enumValues: ['first', 'second'], description: 'Plugin declared field' })
 describe('native CPA plugin metadata configuration', () => {
@@ -35,5 +35,7 @@ describe('native CPA plugin metadata configuration', () => {
     expect(pluginMenuHref('new-provider', { path: '/v0/resource/plugins/new-provider/pages/editor.html?mode=custom#details' })).toBe('/api/cpa/console/v0/resource/plugins/new-provider/pages/editor.html?mode=custom#details')
     expect(pluginMenuHref('new-provider', { path: '/v0/resource/plugins/other-plugin/page' })).toBe('')
     expect(pluginMenuHref('new-provider', { path: '/v0/resource/plugins/new-provider/../../management/api-call' })).toBe('')
+    expect(pluginMenuRoute('new-provider', 2)).toBe('/cpa/plugin-pages/new-provider/2')
+    expect(pluginMenuRoute('new-provider', -1)).toBe('')
   })
 })
