@@ -1,8 +1,19 @@
 <script setup lang="ts">
-import { PRESET_CONTEXT_KEYS, type PresetView } from '#shared/presets'
+import { PRESET_CONTEXT_KEYS, type GroupPresetView, type PresetView } from '#shared/presets'
+import type { GroupListView } from '#shared/groups'
 definePageMeta({ key: route => route.params.id as string })
-const route = useRoute(), api = useRequestFetch(), id = String(route.params.id)
-const { data, pending, error, refresh } = await useFetch<PresetView>('/api/presets/' + encodeURIComponent(id), { key: 'nexus-preset-' + id })
+const route = useRoute(), router = useRouter(), api = useRequestFetch(), id = String(route.params.id)
+const { data: groupsData, pending: groupsPending, error: groupsError } = await useFetch<GroupListView>('/api/groups', { key: 'nexus-routing-groups' })
+const requestedGroupId = String(route.query.group || '')
+const initialGroupId = groupsData.value?.items.find(group => group.id === requestedGroupId)?.id
+  || groupsData.value?.items.find(group => group.id === groupsData.value?.moduleDefaultGroupIds?.cpa)?.id
+  || groupsData.value?.items[0]?.id || ''
+const selectedGroupId = ref(initialGroupId)
+const { data, pending, error, refresh } = await useFetch<PresetView | GroupPresetView>('/api/presets/' + encodeURIComponent(id), {
+  query: computed(() => (selectedGroupId.value ? { groupId: selectedGroupId.value } : {})),
+  key: computed(() => `nexus-preset-${id}-${selectedGroupId.value || 'global'}`),
+  watch: [selectedGroupId],
+})
 const { busy, run } = useApiAction()
 const source = shallowRef<Record<string, unknown>>({}), variables = shallowRef<Record<string, string>>({})
 const name = ref(''), description = ref(''), dirty = ref(false), validation = ref('')
@@ -13,6 +24,21 @@ function load(preset: PresetView) {
   name.value = preset.name; description.value = preset.description; dirty.value = false; checked.value = null; validation.value = ''
 }
 watch(data, value => { if (value) load(value) }, { immediate: true })
+const groups = computed(() => groupsData.value?.items || [])
+const selectedGroup = computed(() => groups.value.find(group => group.id === selectedGroupId.value))
+const hasGroupOverride = computed(() => Boolean(selectedGroupId.value && data.value && 'inherited' in data.value && !data.value.inherited))
+watch(selectedGroupId, groupId => {
+  if (String(route.query.group || '') === groupId) return
+  router.replace({ query: groupId ? { ...route.query, group: groupId } : { ...route.query, group: undefined } })
+})
+watch(groups, items => {
+  if (selectedGroupId.value && items.some(group => group.id === selectedGroupId.value)) return
+  // Keep direct links usable while making the active group visible before editing.
+  const requested = String(route.query.group || '')
+  const defaultId = groupsData.value?.moduleDefaultGroupIds?.cpa || ''
+  const fallback = items.find(group => group.id === requested)?.id || items.find(group => group.id === defaultId)?.id || items[0]?.id || ''
+  if (fallback) selectedGroupId.value = fallback
+}, { immediate: true })
 function touch() { triggerRef(source); dirty.value = true; checked.value = null; validation.value = '' }
 const tab = ref<'prompts' | 'sampling' | 'variables'>('prompts'), search = ref(''), filter = ref<'all' | 'enabled' | 'disabled'>('all')
 const ambiguousOrder = computed(() => presetPromptOrderAmbiguous(source.value))
@@ -84,18 +110,35 @@ function payload() { return { name: name.value, description: description.value, 
 const compatibility = computed(() => checked.value || data.value?.compatibility)
 async function validate() { const result = await run(() => api<{ compatibility: PresetView['compatibility'] }>('/api/presets/validate', { method: 'POST', body: payload() })); if (result.ok) checked.value = result.value.compatibility }
 async function save() {
-  const result = await run(() => api<PresetView>('/api/presets/' + encodeURIComponent(id), { method: 'PATCH', body: payload() }), '预设已保存')
-  if (result.ok) { data.value = result.value; load(result.value); await refreshNuxtData(['nexus-preset-summaries', 'nexus-preset-list']) }
+  let result: { ok: boolean; value?: PresetView }
+  if (selectedGroupId.value) {
+    // Name and description remain global metadata. Prompt, sampling and variable
+    // edits are stored as an override for the selected group only.
+    if (name.value !== data.value?.name || description.value !== data.value?.description) {
+      const metadata = await run(() => api<PresetView>('/api/presets/' + encodeURIComponent(id), { method: 'PATCH', body: { name: name.value, description: description.value } }), '预设信息已保存')
+      if (!metadata.ok) return false
+    }
+    result = await run(() => api<PresetView>('/api/presets/' + encodeURIComponent(id) + '/group-bindings', { method: 'PATCH', body: { groupId: selectedGroupId.value, sourceJson: source.value, variables: variables.value } }), '分组预设已保存')
+  } else {
+    result = await run(() => api<PresetView>('/api/presets/' + encodeURIComponent(id), { method: 'PATCH', body: payload() }), '预设已保存')
+  }
+  if (result.ok) { await refresh(); if (data.value) load(data.value); await refreshNuxtData([`nexus-preset-summaries-${selectedGroupId.value || 'global'}`, 'nexus-preset-list']) }
   return result.ok
+}
+async function resetGroupOverride() {
+  if (!selectedGroupId.value || !hasGroupOverride.value) return
+  const result = await run(() => api('/api/presets/' + encodeURIComponent(id) + '/group-bindings', { method: 'PATCH', body: { groupId: selectedGroupId.value, reset: true } }), '已恢复全局配置')
+  if (result.ok) { await refresh(); if (data.value) load(data.value); await refreshNuxtData([`nexus-preset-summaries-${selectedGroupId.value || 'global'}`, 'nexus-preset-list']) }
 }
 async function download() {
   await run(async () => {
-    const body = await api<Record<string, unknown>>('/api/presets/' + encodeURIComponent(id) + '/export'), url = URL.createObjectURL(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }))
+    const query = selectedGroupId.value ? `?groupId=${encodeURIComponent(selectedGroupId.value)}` : ''
+    const body = await api<Record<string, unknown>>('/api/presets/' + encodeURIComponent(id) + '/export' + query), url = URL.createObjectURL(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }))
     const link = document.createElement('a'); link.href = url; link.download = name.value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') + '.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
   })
 }
 const deleteOpen = ref(false), allowLeave = ref(false)
-async function remove() { const result = await run(() => api('/api/presets/' + encodeURIComponent(id), { method: 'DELETE' }), '预设已删除'); if (result.ok) { allowLeave.value = true; deleteOpen.value = false; await refreshNuxtData('nexus-preset-summaries'); await navigateTo('/presets') } }
+async function remove() { const result = await run(() => api('/api/presets/' + encodeURIComponent(id), { method: 'DELETE' }), '预设已删除'); if (result.ok) { allowLeave.value = true; deleteOpen.value = false; await refreshNuxtData([`nexus-preset-summaries-${selectedGroupId.value || 'global'}`, 'nexus-preset-summaries']); await navigateTo('/presets') } }
 const leaveOpen = ref(false)
 let resolveLeave: ((leave: boolean) => void) | undefined
 function finishLeave(leave: boolean) { resolveLeave?.(leave); resolveLeave = undefined; leaveOpen.value = false }
@@ -110,9 +153,11 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload)
 <template>
   <div class="preset-detail">
     <NuxtLink to="/presets" class="preset-back"><UIcon name="i-ph-arrow-left-bold" />返回预设库</NuxtLink>
+    <section v-if="groupsData" class="panel group-picker"><div class="group-picker-copy"><strong>编辑所属分组</strong><span class="small-text muted">先选择分组，再编辑该分组的预设开关与详细配置；不同分组可分别覆盖同一预设。</span></div><label class="field group-picker-select"><span class="sr-only">调用分组</span><select v-model="selectedGroupId" :disabled="groupsPending || busy"><option value="" disabled>请选择分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}{{ group.enabled ? '' : '（已停用）' }}</option></select></label><NuxtLink to="/groups" class="text-link">管理分组</NuxtLink></section>
+    <p v-if="groupsError" class="inline-error" role="alert">分组读取失败：{{ apiErrorMessage(groupsError) }}</p>
     <AppState v-if="error && !data" :error="error" @retry="refresh()" /><AppState v-else-if="!data" :loading="pending" />
     <template v-else>
-      <AppPageHeader :title="name" :description="description || '按名称查找条目，使用开关启停，点击笔图标编辑。'"><button class="icon-button" aria-label="编辑预设名称和说明" :disabled="busy" @click="editMetadata"><UIcon name="i-ph-pencil-simple-bold" /></button><button class="button" :disabled="busy" @click="download"><UIcon name="i-ph-download-simple-bold" />导出</button><button class="button" :disabled="busy" @click="editRaw">原始 JSON</button><button class="icon-button danger" aria-label="删除预设" :disabled="busy" @click="deleteOpen = true"><UIcon name="i-ph-trash-bold" /></button></AppPageHeader>
+      <AppPageHeader :title="name" :description="(selectedGroup ? selectedGroup.name + ' · ' : '') + (description || '按名称查找条目，使用开关启停，点击笔图标编辑。')"><button class="icon-button" aria-label="编辑预设名称和说明" :disabled="busy" @click="editMetadata"><UIcon name="i-ph-pencil-simple-bold" /></button><button class="button" :disabled="busy" @click="download"><UIcon name="i-ph-download-simple-bold" />导出</button><button class="button" :disabled="busy" @click="editRaw">原始 JSON</button><button class="icon-button danger" aria-label="删除预设" :disabled="busy" @click="deleteOpen = true"><UIcon name="i-ph-trash-bold" /></button></AppPageHeader>
       <div class="nexus-tabs detail-tabs" role="tablist" aria-label="预设内容"><button role="tab" :aria-selected="tab === 'prompts'" @click="tab = 'prompts'">提示词条目 <span>{{ rows.length }}</span></button><button role="tab" :aria-selected="tab === 'sampling'" @click="tab = 'sampling'">采样参数</button><button role="tab" :aria-selected="tab === 'variables'" @click="tab = 'variables'">上下文变量 <span>{{ Object.keys(variables).length }}</span></button></div>
       <section class="panel entries-panel">
         <template v-if="tab === 'prompts'">
@@ -124,7 +169,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload)
         <template v-else><div class="entry-tools"><p class="muted small-text">变量按预设保存，可在条目内容中使用对应宏。</p><button class="button small" :disabled="busy" @click="editVariable()"><UIcon name="i-ph-plus-bold" />添加变量</button></div><article v-for="(_, key) in variables" :key="key" class="entry-row"><span class="entry-name mono">{{ key }}</span><div class="entry-actions"><button class="icon-button" :aria-label="'编辑变量 ' + key" :disabled="busy" @click="editVariable(String(key))"><UIcon name="i-ph-pencil-simple-bold" /></button><button class="icon-button danger" :aria-label="'删除变量 ' + key" :disabled="busy" @click="removeVariable(String(key))"><UIcon name="i-ph-trash-bold" /></button></div></article><AppState v-if="!Object.keys(variables).length" compact title="还没有上下文变量" description="按需添加 user、char、scenario 等实际内容。" /></template>
       </section>
       <details v-if="compatibility" class="compatibility-note"><summary><UIcon :name="!dirty && compatibility.supported ? 'i-ph-check-circle-bold' : 'i-ph-info-bold'" />{{ dirty && !checked ? '内容已修改，可检查兼容性后保存' : compatibility.supported ? '兼容检查通过' : '需要处理兼容问题' }}<span v-if="compatibility.issues.length">{{ compatibility.issues.length }} 条说明</span></summary><ul><li v-for="(issue, index) in compatibility.issues" :key="index" :class="issue.severity">{{ issue.message }}<code v-if="issue.path">{{ issue.path }}</code></li></ul></details>
-      <div class="detail-save-bar"><span :class="dirty ? 'pending-label' : 'muted'">{{ dirty ? '有未保存修改' : '已保存' }}</span><div class="inline-actions"><button class="button" :disabled="busy" @click="validate">检查兼容性</button><button class="button" :disabled="busy || !dirty" @click="data && load(data)">还原</button><button class="button primary" :disabled="busy || !dirty" @click="save"><UIcon v-if="busy" name="i-ph-circle-notch-bold" class="spinning" />保存预设</button></div></div>
+      <div class="detail-save-bar"><span :class="dirty ? 'pending-label' : 'muted'">{{ dirty ? '有未保存修改' : '已保存' }}</span><div class="inline-actions"><button v-if="selectedGroupId" class="button" :disabled="busy || !hasGroupOverride || dirty" @click="resetGroupOverride">恢复全局配置</button><button class="button" :disabled="busy" @click="validate">检查兼容性</button><button class="button" :disabled="busy || !dirty" @click="data && load(data)">还原</button><button class="button primary" :disabled="busy || !dirty" @click="save"><UIcon v-if="busy" name="i-ph-circle-notch-bold" class="spinning" />保存预设</button></div></div>
     </template>
     <AppDialog v-model="promptOpen" :title="'编辑条目 · ' + (editing?.name || '')" wide><form id="edit-prompt-form" class="form-stack" @submit.prevent="applyPrompt"><template v-if="editing && editing.index >= 0"><div class="form-row"><label class="field"><span>条目名称</span><input v-model="promptName" required></label><label class="field"><span>消息角色</span><select v-model="promptRole"><option value="system">System</option><option value="user">User</option><option value="assistant">Assistant</option></select></label></div><template v-if="!editing.marker"><label class="field"><span>条目内容</span><textarea ref="contentInput" v-model="promptContent" rows="14" spellcheck="false" class="nexus-code-editor" /></label><div class="macro-buttons"><span class="muted small-text">插入变量</span><button v-for="key in ['user', 'char', 'scenario', 'description', 'persona']" :key="key" type="button" class="button small mono" @click="insertMacro(key)">{{ '\{\{' + key + '\}\}' }}</button><button type="button" class="text-link" @click="promptOpen = false; tab = 'variables'">管理变量</button></div></template><p v-else class="muted small-text">此项为上下文标记，内容来自实际聊天或本预设的上下文变量。</p><details class="advanced-prompt"><summary>注入设置与生成触发器</summary><div class="form-stack"><label class="field"><span>注入位置</span><select v-model="promptPosition"><option value="0">按列表顺序</option><option value="1">插入聊天历史</option></select></label><div class="form-row"><label class="field"><span>距历史末尾的深度</span><input v-model="promptDepth" type="number" min="0" step="1"></label><label class="field"><span>注入优先级</span><input v-model="promptOrder" type="number" step="1"></label></div><span class="small-text muted">生成触发器（不选表示全部）</span><div class="trigger-list"><label v-for="trigger in generationTypes" :key="trigger"><input v-model="promptTriggers" type="checkbox" :value="trigger">{{ trigger }}</label></div></div></details></template><p v-else class="muted">聊天历史由客户端请求提供，可以在列表中控制是否开启。</p><p v-if="validation" class="inline-error" role="alert">{{ validation }}</p></form><template #footer><button class="button" @click="promptOpen = false">取消</button><button class="button primary" form="edit-prompt-form">{{ editing?.index === -1 ? '完成' : '应用修改' }}</button></template></AppDialog>
     <AppDialog v-model="samplingOpen" :title="'编辑参数 · ' + (sampleField?.name || '')"><form id="edit-sampling-form" class="form-stack" @submit.prevent="applySampling"><label class="field"><span>参数值</span><input v-model="sampleValue" type="number" :min="sampleField?.min" :max="sampleField?.max" :step="sampleField?.step" placeholder="留空表示不指定"><small>{{ sampleField?.key }}</small></label><p v-if="sampleError" class="inline-error" role="alert">{{ sampleError }}</p></form><template #footer><button class="button" @click="samplingOpen = false">取消</button><button form="edit-sampling-form" class="button primary">应用修改</button></template></AppDialog>
@@ -138,5 +183,6 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload)
 
 <style scoped>
 .preset-back { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); margin-bottom: 20px; font-size: 13px; }.preset-back:hover { color: var(--ink); }.detail-tabs { margin-bottom: 20px; }.detail-tabs span { font-size: 11px; margin-left: 4px; color: var(--muted); }.entries-panel { padding: 0; }.entry-tools { display: flex; align-items: center; gap: 16px; padding: 20px; border-bottom: 1px solid var(--border); }.entry-tools .search-field { flex: 1; min-width: 0; max-width: 520px; }.entry-tools input { width: 100%; min-width: 0; }.entry-tools select { padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: 13px; }.entry-tools > .button { margin-left: auto; }.entry-row { display: flex; align-items: center; gap: 16px; justify-content: space-between; min-height: 64px; padding: 14px 20px; border-bottom: 1px solid var(--border); }.entry-row:last-child { border-bottom: 0; }.entry-name { font-size: 14px; overflow-wrap: anywhere; min-width: 0; }.entry-name small { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; }.entry-row.inactive .entry-name { color: var(--muted); }.entry-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }.entry-switch { position: relative; display: inline-flex; align-items: center; padding: 6px 0; cursor: pointer; }.entry-switch input { position: absolute; opacity: 0; width: 36px; height: 28px; margin: 0; }.entry-switch > span { width: 32px; height: 19px; border-radius: 20px; background: #ccd0ca; transition: background .15s; }.entry-switch > span::after { content: ''; display: block; width: 13px; height: 13px; margin: 3px; background: white; border-radius: 50%; transition: transform .15s; }.entry-switch input:checked + span { background: var(--green); }.entry-switch input:checked + span::after { transform: translateX(13px); }.entry-switch input:focus-visible + span { outline: 2px solid var(--green); outline-offset: 3px; }.entry-switch input:disabled + span { opacity: .5; }.entry-menu { position: relative; }.entry-menu summary { list-style: none; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; cursor: pointer; color: var(--muted); }.entry-menu summary::-webkit-details-marker { display: none; }.entry-menu > div { position: absolute; right: 0; top: 32px; z-index: 3; min-width: 130px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 4px 16px #0000000c; }.entry-menu button { display: flex; gap: 8px; width: 100%; padding: 8px; white-space: nowrap; font-size: 12px; }.entry-menu button:hover { background: var(--green-bg); }.entry-menu button:disabled { opacity: .4; }.section-description { color: var(--muted); font-size: 13px; padding: 20px; border-bottom: 1px solid var(--border); }.compatibility-note { margin: 20px 0; color: var(--muted); font-size: 12px; }.compatibility-note summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }.compatibility-note summary span { margin-left: auto; }.compatibility-note ul { padding: 12px 24px; line-height: 1.9; }.compatibility-note code { display: block; overflow-wrap: anywhere; }.compatibility-note .error { color: var(--red); }.detail-save-bar { position: sticky; bottom: 16px; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin-top: 20px; font-size: 12px; }.pending-label { color: var(--amber); }.macro-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }.advanced-prompt summary { cursor: pointer; color: var(--muted); font-size: 12px; }.advanced-prompt > div { margin-top: 16px; }.trigger-list { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; }.trigger-list label { display: flex; gap: 6px; align-items: center; }
-@media(max-width:600px) { .entry-tools { flex-wrap: wrap; padding: 16px; gap: 12px; }.entry-tools .search-field { flex-basis: 100%; max-width: none; }.entry-row { padding: 12px 16px; gap: 10px; }.entry-actions { gap: 4px; }.detail-save-bar { flex-wrap: wrap; bottom: 8px; padding: 12px; }.detail-save-bar .inline-actions { flex-wrap: wrap; }.detail-save-bar .button { font-size: 12px; padding: 8px 10px; } }
+.group-picker { display: flex; align-items: center; gap: 18px; margin-bottom: 20px; padding: 16px 20px; }.group-picker-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }.group-picker-copy strong { font-size: 14px; }.group-picker-select { width: min(320px, 100%); margin: 0; }.group-picker-select select { width: 100%; }.group-picker > .text-link { white-space: nowrap; }
+@media(max-width:600px) { .group-picker { align-items: stretch; flex-direction: column; gap: 10px; padding: 16px; }.group-picker-select { width: 100%; }.group-picker > .text-link { align-self: flex-start; }.entry-tools { flex-wrap: wrap; padding: 16px; gap: 12px; }.entry-tools .search-field { flex-basis: 100%; max-width: none; }.entry-row { padding: 12px 16px; gap: 10px; }.entry-actions { gap: 4px; }.detail-save-bar { flex-wrap: wrap; bottom: 8px; padding: 12px; }.detail-save-bar .inline-actions { flex-wrap: wrap; }.detail-save-bar .button { font-size: 12px; padding: 8px 10px; } }
 </style>
