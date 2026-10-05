@@ -39,7 +39,8 @@ function choose(plugin?: Record<string, unknown>) {
 }
 async function install() {
   if (!id.value.trim()) return
-  const result = await run(() => api(cpaManagementUrl(`plugins/store/${encodeURIComponent(id.value.trim())}/install`), { method: 'POST', query: source.value.trim() ? { source: source.value.trim() } : undefined, body: version.value.trim() ? { version: version.value.trim() } : {}, timeout: 120_000 }), '插件安装请求已完成')
+  const query = { ...(source.value.trim() ? { source: source.value.trim() } : {}), ...(version.value.trim() ? { version: version.value.trim() } : {}) }
+  const result = await run(() => api(cpaManagementUrl(`plugins/store/${encodeURIComponent(id.value.trim())}/install`), { method: 'POST', query: Object.keys(query).length ? query : undefined, timeout: 120_000 }), '插件安装请求已完成')
   if (result.ok) { resultData.value = result.value; installOpen.value = false; await Promise.all([refresh(), refreshNuxtData(['cpa-installed-plugins', 'cpa-management-capabilities'])]) }
 }
 function installationLabel(plugin: Record<string, unknown>) {

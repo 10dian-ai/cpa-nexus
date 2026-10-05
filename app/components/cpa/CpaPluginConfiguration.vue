@@ -10,6 +10,7 @@ const source = shallowRef<Record<string, unknown>>({})
 const baseline = ref('')
 const draft = ref('')
 const rawOpen = ref(false)
+const resetOpen = ref(false)
 const editing = ref<PluginConfigField | null>(null)
 const fieldValue = ref('')
 const validation = ref('')
@@ -59,6 +60,10 @@ async function save() {
     await refreshNuxtData(['cpa-installed-plugins', 'cpa-management-capabilities'])
   }
 }
+async function reset() {
+  const result = await run(() => $fetch(endpoint.value, { method: 'DELETE' }), '插件配置已重置')
+  if (result.ok) { resetOpen.value = false; source.value = {}; baseline.value = JSON.stringify({}); await refresh(); await refreshNuxtData(['cpa-installed-plugins', 'cpa-management-capabilities']) }
+}
 function restore() { source.value = JSON.parse(baseline.value); validation.value = '' }
 function fieldLabel(field: PluginConfigField) {
   const value = source.value[field.name]
@@ -72,7 +77,7 @@ function fieldLabel(field: PluginConfigField) {
 
 <template>
   <section class="panel plugin-configuration">
-    <div class="panel-heading"><h2>{{ cpaDisplay((plugin.metadata as Record<string, unknown> | undefined)?.name || plugin.id) }} 配置</h2><div class="inline-actions"><button class="button small" :disabled="pending || busy || dirty" @click="refresh()">重新读取</button><button class="button small" :disabled="busy" @click="openRaw">编辑完整 JSON</button></div></div>
+    <div class="panel-heading"><h2>{{ cpaDisplay((plugin.metadata as Record<string, unknown> | undefined)?.name || plugin.id) }} 配置</h2><div class="inline-actions"><button class="button small" :disabled="pending || busy || dirty" @click="refresh()">重新读取</button><button class="button small" :disabled="busy" @click="openRaw">编辑完整 JSON</button><button class="button small danger" :disabled="busy || !baseline" @click="resetOpen = true">重置配置</button></div></div>
     <AppState v-if="error && !missing" :error="error" compact @retry="refresh()" />
     <AppState v-else-if="pending && !baseline" compact loading />
     <template v-else>
@@ -87,6 +92,7 @@ function fieldLabel(field: PluginConfigField) {
     <template #footer><button class="button" @click="editing = null">取消</button><button class="button primary" form="plugin-field-form">应用修改</button></template>
   </AppDialog>
   <AppDialog v-model="rawOpen" title="编辑完整插件配置" description="全部插件原生字段均可在这里编辑。应用后仍需点击保存插件配置。" wide :close-disabled="busy"><textarea v-model="draft" class="nexus-code-editor" rows="18" spellcheck="false" aria-label="插件完整配置 JSON" /><p v-if="validation" class="inline-error" role="alert">{{ validation }}</p><template #footer><button class="button" @click="rawOpen = false">取消</button><button class="button primary" @click="applyRaw">应用 JSON</button></template></AppDialog>
+  <AppDialog v-model="resetOpen" title="重置插件配置" description="恢复插件默认配置" :close-disabled="busy"><p class="nexus-description">这会删除该插件在 CPA 配置中的自定义节点，插件将恢复默认值。确定要继续吗？</p><template #footer><button class="button" :disabled="busy" @click="resetOpen = false">取消</button><button class="button danger-solid" :disabled="busy" @click="reset">确认重置</button></template></AppDialog>
 </template>
 
 <style scoped>
