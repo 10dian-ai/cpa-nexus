@@ -19,6 +19,27 @@ export interface PresetView {
   updatedAt: string
 }
 export type PresetSummary = Pick<PresetView, 'id' | 'name' | 'enabled' | 'sortOrder' | 'createdAt' | 'updatedAt'>
+/** Effective values for one preset inside a routing group. Null overrides inherit
+ * the corresponding value from the global preset library. */
+export interface GroupPresetBinding {
+  groupId: string
+  presetId: string
+  enabled: boolean | null
+  sortOrder: number | null
+  sourceJson: Record<string, unknown> | null
+  variables: Record<string, string> | null
+  updatedAt: string
+}
+export interface GroupPresetView extends PresetView {
+  groupId: string
+  inherited: boolean
+  overrides: Pick<GroupPresetBinding, 'enabled' | 'sortOrder' | 'sourceJson' | 'variables'>
+}
+export interface GroupPresetSummary extends PresetSummary {
+  groupId: string
+  inherited: boolean
+  overrides: Pick<GroupPresetBinding, 'enabled' | 'sortOrder'>
+}
 export interface PresetBinding {
   moduleId: string
   accountId: string | null
