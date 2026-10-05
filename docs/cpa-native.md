@@ -9,7 +9,8 @@ CPA Nexus 使用完整官方 CLIProxyAPI v8.0.11。原版能力以官方内核�
 | `/cpa/quota` | 实际额度观察、供应商主动查询、窗口与重置时间、插件及声明式探针 |
 | `/cpa/native` | 官方完整控制台，含供应商专用配额和恢复操作、高级配置、统计、日志与完整插件页面 |
 | `/cpa/keys` | 原生客户端密钥，和统一 API Key 页面分别保留 |
-| `/cpa/config`、`/cpa/channels`、`/cpa/requests`、`/cpa/logs`、`/cpa/plugins` | 完整配置、路由、上游检查、日志用量、插件与商店 |
+| `/cpa/config`、`/cpa/channels`、`/cpa/requests`、`/cpa/logs`、`/cpa/plugins` | 完整配置、路由、共享上游设置、单渠道分组编辑、上游检查、可筛选实时日志、插件与商店 |
+| `/cpa/quick-start`、`/cpa/system`、`/cpa/plugin-pages/*` | 官方快速开始、内核版本与模型目录、已启用插件的原生管理页；`/cpa/native` 继续提供官方管理中心完整备用入口 |
 
 ## OAuth
 
@@ -24,6 +25,8 @@ Codex、Anthropic、Antigravity、Kimi、Devin、Meta、xAI 的查询通过 CPA 
 默认显示内核的凭据／模型额度观察，点击查询后才访问上游。使用短缓存、相同请求合并和并发上限。Codex 查询不会自动消耗恢复额度，xAI 不自动发送推理健康测试；官方完整控制台保留这些原生用户操作。
 
 通用插件／声明式配额继续使用官方保留的 v0 `quota/providers`、`quota/fetch`、`quota/reset`。供应商配额重置、请求冷却重置和凭据 Token 刷新是不同操作，页面分别标明。
+
+Nexus 侧栏按官方管理中心的导航组织 CPA 能力。API 渠道支持完整 provider JSON、官方渠道族和共享上游节点编辑；凭证页直接提供 OAuth 模型别名与禁用模型映射；配置节点及插件配置支持显式删除／重置；日志页支持级别与全文筛选、实时跟随、请求日志开关、请求日志预览和下载。插件菜单从内核动态发现，并在 CPA 侧栏中以同一管理员会话嵌入插件原生页面，只有有效启用且路径通过校验的插件才会出现；插件页也保留独立打开入口。
 
 ## 插件市场与原生插件页面
 
