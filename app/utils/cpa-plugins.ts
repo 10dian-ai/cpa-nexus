@@ -69,3 +69,10 @@ export function pluginMenuHref(id: string, menu: Record<string, unknown>): strin
     return '/api/cpa/console' + url.pathname + url.search + url.hash
   } catch { return '' }
 }
+
+/** Route an installed plugin menu through the Nexus shell. The native resource
+ * URL remains available from the plugin page's "独立打开" action. */
+export function pluginMenuRoute(id: string, index: number): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || !Number.isInteger(index) || index < 0) return ''
+  return `/cpa/plugin-pages/${encodeURIComponent(id)}/${index}`
+}
