@@ -1,8 +1,20 @@
 <script setup lang="ts">
 useHead({ title: 'CPA 原版完整控制台 · CPA Nexus' })
 const revision = ref(0)
-const section = ref('/')
-const sections = [{ id: '/', name: '原版首页' }, { id: '/auth-files', name: '凭证与 OAuth' }, { id: '/quota', name: '配额管理' }, { id: '/plugins', name: '原生插件' }, { id: '/config', name: '原生配置' }, { id: '/logs', name: '日志' }]
+const section = ref('/dashboard')
+const sections = [
+  { id: '/dashboard', name: '运行总览' },
+  { id: '/quick-start', name: '快速开始' },
+  { id: '/ai-providers', name: 'AI 提供商' },
+  { id: '/auth-files', name: '认证文件' },
+  { id: '/oauth', name: 'OAuth 登录' },
+  { id: '/quota', name: '配额管理' },
+  { id: '/logs', name: '日志查看' },
+  { id: '/config', name: '配置面板' },
+  { id: '/plugins', name: '插件管理' },
+  { id: '/plugin-store', name: '插件商店' },
+  { id: '/system', name: '中心信息' },
+]
 const source = computed(() => `/api/cpa/native-panel?revision=${revision.value}#${section.value}`)
 </script>
 <template>
