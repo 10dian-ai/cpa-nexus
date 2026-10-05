@@ -68,7 +68,7 @@ export async function keyGroupBindings(keyIds?: string[], sql: Database = getDb(
 }
 export async function resolveEnabledKeyGroupIds(keyId: string): Promise<string[]> {
   const rows = await getDb()`SELECT g.id FROM nexus_key_groups kg JOIN nexus_groups g ON g.id=kg.group_id
-    JOIN gateway_keys k ON k.id=kg.key_id WHERE kg.key_id=${keyId} AND k.enabled=true AND g.enabled=true ORDER BY g.id`
+    JOIN gateway_keys k ON k.id=kg.key_id WHERE kg.key_id=${keyId} AND k.enabled=true AND g.enabled=true ORDER BY g.created_at,g.id`
   return rows.map(row => row.id)
 }
 export async function listGroups(): Promise<GroupView[]> {

@@ -6,7 +6,7 @@ import { findModule } from '../../shared/modules'
 import { ensureCpaPresetAccountRoute } from './cpa/preset-routing'
 import { platformError } from './platform-error'
 import { inspectPreset, parsePresetJson, validatePresetVariables } from './presets/engine'
-import type { KeyPresetBinding, KeyPresetRouteInput, PresetBinding, PresetRouteInput, PresetView, PresetSummary } from '../../shared/presets'
+import type { GroupPresetBinding, GroupPresetSummary, GroupPresetView, KeyPresetBinding, KeyPresetRouteInput, PresetBinding, PresetRouteInput, PresetView, PresetSummary } from '../../shared/presets'
 
 type PresetRow = Record<string, any>
 export interface PresetWriteInput { name: string; description?: string; sourceJson: unknown; variables?: unknown; enabled?: boolean; sortOrder?: number }
@@ -15,14 +15,39 @@ const missing = () => platformError({ statusCode: 404, message: '预设不存在
 const iso = (value: unknown) => new Date(value as string).toISOString()
 const summary = (row: PresetRow): PresetSummary => ({ id: row.id, name: row.name, enabled: row.enabled === true, sortOrder: Number(row.sort_order || 0), createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) })
 const view = (row: PresetRow): PresetView => ({ ...summary(row), description: row.description, sourceJson: row.source_json, variables: row.variables, compatibility: inspectPreset(row.source_json, row.variables) })
+const groupBindingView = (row: PresetRow): GroupPresetBinding => ({
+  groupId: row.group_id, presetId: row.preset_id,
+  enabled: row.enabled === null || row.enabled === undefined ? null : row.enabled === true,
+  sortOrder: row.sort_order === null || row.sort_order === undefined ? null : Number(row.sort_order),
+  sourceJson: row.source_json ?? null, variables: row.variables ?? null, updatedAt: iso(row.updated_at),
+})
+const groupView = (row: PresetRow): GroupPresetView => {
+  const inherited = row.group_binding_id === null || row.group_binding_id === undefined
+  const sourceJson = row.group_source_json ?? row.source_json
+  const variables = row.group_variables ?? row.variables
+  const enabled = row.group_enabled === null || row.group_enabled === undefined ? row.enabled : row.group_enabled
+  const sortOrder = row.group_sort_order === null || row.group_sort_order === undefined ? row.sort_order : row.group_sort_order
+  return {
+    ...view({ ...row, enabled, sort_order: sortOrder, source_json: sourceJson, variables }),
+    groupId: row.group_context_id ?? row.group_id ?? row.group_binding_id,
+    inherited,
+    overrides: {
+      enabled: row.group_enabled === null || row.group_enabled === undefined ? null : row.group_enabled === true,
+      sortOrder: row.group_sort_order === null || row.group_sort_order === undefined ? null : Number(row.group_sort_order),
+      sourceJson: row.group_source_json ?? null,
+      variables: row.group_variables ?? null,
+    },
+  }
+}
 const bindingView = (row: PresetRow): PresetBinding => ({ moduleId: row.module_id, accountId: row.account_id || null, mode: row.mode, presetId: row.preset_id || null, updatedAt: iso(row.updated_at) })
 const keyBindingView = (row: PresetRow): KeyPresetBinding => ({ keyId: row.key_id, moduleId: row.module_id, mode: row.mode, presetId: row.preset_id || null, updatedAt: iso(row.updated_at) })
 const routeCache = new Map<string, { value: PresetView | null; until: number }>()
-const stackKeyCache = new Map<string, { mode: 'stack' | 'preset' | 'bypass' | null; presetId: string | null; until: number }>()
+const stackKeyCache = new Map<string, { mode: 'stack' | 'preset' | 'bypass' | null; presetId: string | null; groupIds: string[]; hasGroupOverride: boolean; until: number }>()
+const groupStackCache = new Map<string, { value: PresetView[]; until: number }>()
 let enabledStackCache: { value: PresetView[]; until: number } | undefined
 let enabledStackLoading: { generation: number; promise: Promise<PresetView[]> } | undefined
 let routeCacheGeneration = 0
-export function resetPresetRouteCache() { routeCache.clear(); stackKeyCache.clear(); enabledStackCache = undefined; enabledStackLoading = undefined; routeCacheGeneration++ }
+export function resetPresetRouteCache() { routeCache.clear(); stackKeyCache.clear(); groupStackCache.clear(); enabledStackCache = undefined; enabledStackLoading = undefined; routeCacheGeneration++ }
 function writeInput(input: PresetWriteInput) {
   const name = input.name?.trim()
   if (!name) throw platformError({ statusCode: 400, message: '请填写预设名称' })
@@ -36,12 +61,37 @@ function writeInput(input: PresetWriteInput) {
 export const validatePreset = writeInput
 async function presetIsBound(sql: TransactionSql, id: string) {
   if ((await sql`SELECT 1 FROM nexus_preset_bindings WHERE preset_id=${id} LIMIT 1`).length) return true
-  return (await sql`SELECT 1 FROM nexus_key_preset_bindings WHERE preset_id=${id} LIMIT 1`).length > 0
+  const rows = await sql`SELECT 1 FROM nexus_key_preset_bindings WHERE preset_id=${id}
+    UNION ALL SELECT 1 FROM nexus_group_preset_bindings WHERE preset_id=${id} LIMIT 1`
+  return rows.length > 0
 }
-export async function listPresets(): Promise<PresetView[]> {
-  return (await getDb()`SELECT * FROM nexus_presets ORDER BY sort_order,id`).map(view)
+export async function listPresets(groupId?: string): Promise<Array<PresetView | GroupPresetView>> {
+  if (!groupId) return (await getDb()`SELECT * FROM nexus_presets ORDER BY sort_order,id`).map(view)
+  if (!idValid(groupId)) throw platformError({ statusCode: 400, message: '请选择有效分组' })
+  const group = (await getDb()`SELECT id FROM nexus_groups WHERE id=${groupId}`)[0]
+  if (!group) throw platformError({ statusCode: 404, message: '分组不存在' })
+  const rows = await getDb()`SELECT p.*,${groupId} AS group_context_id,b.group_id AS group_binding_id,b.enabled AS group_enabled,b.sort_order AS group_sort_order,
+      b.source_json AS group_source_json,b.variables AS group_variables
+    FROM nexus_presets p LEFT JOIN nexus_group_preset_bindings b ON b.preset_id=p.id AND b.group_id=${groupId}
+    ORDER BY COALESCE(b.sort_order,p.sort_order),p.id`
+  return rows.map(groupView)
 }
-export async function listPresetSummaries(): Promise<PresetSummary[]> {
+export async function listPresetSummaries(groupId?: string): Promise<Array<PresetSummary | GroupPresetSummary>> {
+  if (groupId) {
+    if (!idValid(groupId)) throw platformError({ statusCode: 400, message: '请选择有效分组' })
+    if (!(await getDb()`SELECT id FROM nexus_groups WHERE id=${groupId}`)[0]) throw platformError({ statusCode: 404, message: '分组不存在' })
+    const rows = await getDb()`SELECT p.id,p.name,p.enabled,p.sort_order,p.created_at,p.updated_at,${groupId} AS group_context_id,
+        b.group_id AS group_binding_id,b.enabled AS group_enabled,b.sort_order AS group_sort_order
+      FROM nexus_presets p LEFT JOIN nexus_group_preset_bindings b ON b.preset_id=p.id AND b.group_id=${groupId}
+      ORDER BY COALESCE(b.sort_order,p.sort_order),p.id`
+    return rows.map(row => ({
+      ...summary({ ...row, enabled: row.group_enabled === null || row.group_enabled === undefined ? row.enabled : row.group_enabled,
+        sort_order: row.group_sort_order === null || row.group_sort_order === undefined ? row.sort_order : row.group_sort_order }),
+      groupId, inherited: row.group_binding_id === null || row.group_binding_id === undefined,
+      overrides: { enabled: row.group_enabled === null || row.group_enabled === undefined ? null : row.group_enabled === true,
+        sortOrder: row.group_sort_order === null || row.group_sort_order === undefined ? null : Number(row.group_sort_order) },
+    }))
+  }
   const rows = await getDb()`SELECT id,name,enabled,sort_order,created_at,updated_at FROM nexus_presets ORDER BY sort_order,id`
   return rows.map(summary)
 }
@@ -71,7 +121,7 @@ export async function updatePreset(id: string, input: Partial<PresetWriteInput>)
     if (!current) throw missing()
     const enabled = input.enabled ?? current.enabled === true, sortOrder = input.sortOrder ?? Number(current.sort_order || 0)
     const value = writeInput({ name: input.name ?? current.name, description: input.description ?? current.description, sourceJson: input.sourceJson ?? current.source_json, variables: input.variables ?? current.variables, enabled, sortOrder })
-    if (!value.compatibility.supported && (enabled || await presetIsBound(tx, id))) throw platformError({ statusCode: 409, message: '这个预设正在启用或被旧路由使用，不能保存会导致调用失败的内容；请先关闭预设或解除旧绑定', data: { issues: value.compatibility.issues } })
+    if (!value.compatibility.supported && (enabled || await presetIsBound(tx, id))) throw platformError({ statusCode: 409, message: '这个预设正在启用、被分组使用或被旧路由使用，不能保存会导致调用失败的内容；请先关闭预设或解除绑定', data: { issues: value.compatibility.issues } })
     const rows = await tx`UPDATE nexus_presets SET name=${value.name},description=${value.description},source_json=${tx.json(value.sourceJson as any)},variables=${tx.json(value.variables)},enabled=${enabled},sort_order=${sortOrder},updated_at=now() WHERE id=${id} RETURNING *`
     return view(rows[0]!)
   }) as unknown as PresetView
@@ -96,11 +146,116 @@ export async function reorderPresets(ids: string[]): Promise<PresetSummary[]> {
   resetPresetRouteCache()
   return result
 }
+
+export interface GroupPresetWriteInput {
+  groupId: string
+  presetId: string
+  enabled?: boolean | null
+  sortOrder?: number | null
+  sourceJson?: unknown | null
+  variables?: unknown | null
+  reset?: boolean
+}
+
+function validateGroupPresetIds(groupId: string, presetId: string) {
+  if (!idValid(groupId)) throw platformError({ statusCode: 400, message: '请选择有效分组' })
+  if (!idValid(presetId)) throw missing()
+}
+
+/** Return one preset's effective configuration for a routing group. */
+export async function getGroupPreset(groupId: string, presetId: string): Promise<GroupPresetView> {
+  validateGroupPresetIds(groupId, presetId)
+  const rows = await getDb()`SELECT p.*,${groupId} AS group_context_id,b.group_id AS group_binding_id,b.enabled AS group_enabled,b.sort_order AS group_sort_order,
+      b.source_json AS group_source_json,b.variables AS group_variables
+    FROM nexus_presets p LEFT JOIN nexus_group_preset_bindings b ON b.preset_id=p.id AND b.group_id=${groupId}
+    WHERE p.id=${presetId}`
+  if (!rows[0]) throw missing()
+  if (!(await getDb()`SELECT id FROM nexus_groups WHERE id=${groupId}`)[0]) throw platformError({ statusCode: 404, message: '分组不存在' })
+  return groupView(rows[0])
+}
+
+/** List persisted overrides only; useful to distinguish inherited values in management UIs. */
+export async function listGroupPresetBindings(groupId: string): Promise<GroupPresetBinding[]> {
+  if (!idValid(groupId)) throw platformError({ statusCode: 400, message: '请选择有效分组' })
+  if (!(await getDb()`SELECT id FROM nexus_groups WHERE id=${groupId}`)[0]) throw platformError({ statusCode: 404, message: '分组不存在' })
+  return (await getDb()`SELECT group_id,preset_id,enabled,sort_order,source_json,variables,updated_at
+    FROM nexus_group_preset_bindings WHERE group_id=${groupId} ORDER BY sort_order NULLS LAST,preset_id`).map(groupBindingView)
+}
+
+/**
+ * Upsert partial group overrides. Null fields explicitly reset that field to
+ * the global library value; omitted fields retain their current override.
+ */
+export async function setGroupPresetBinding(input: GroupPresetWriteInput): Promise<GroupPresetView> {
+  validateGroupPresetIds(input.groupId, input.presetId)
+  if (input.enabled !== undefined && input.enabled !== null && typeof input.enabled !== 'boolean') throw platformError({ statusCode: 400, message: '预设启用状态无效' })
+  if (input.sortOrder !== undefined && input.sortOrder !== null && (!Number.isSafeInteger(input.sortOrder) || input.sortOrder < 0)) throw platformError({ statusCode: 400, message: '预设顺序必须是非负整数' })
+  const sql = getDb()
+  const result = await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended('nexus:presets:write',0))`
+    const group = (await tx`SELECT id FROM nexus_groups WHERE id=${input.groupId} FOR KEY SHARE`)[0]
+    if (!group) throw platformError({ statusCode: 404, message: '分组不存在' })
+    const preset = (await tx`SELECT * FROM nexus_presets WHERE id=${input.presetId} FOR KEY SHARE`)[0]
+    if (!preset) throw missing()
+    if (input.reset) {
+      await tx`DELETE FROM nexus_group_preset_bindings WHERE group_id=${input.groupId} AND preset_id=${input.presetId}`
+    } else {
+      const current = (await tx`SELECT enabled,sort_order,source_json,variables FROM nexus_group_preset_bindings WHERE group_id=${input.groupId} AND preset_id=${input.presetId} FOR UPDATE`)[0]
+      const sourceOverride = input.sourceJson !== undefined
+        ? (input.sourceJson === null ? null : parsePresetJson(input.sourceJson))
+        : current?.source_json ?? null
+      const variablesOverride = input.variables !== undefined
+        ? (input.variables === null ? null : validatePresetVariables(input.variables))
+        : current?.variables ?? null
+      const effectiveSource = sourceOverride ?? preset.source_json
+      const effectiveVariables = variablesOverride ?? preset.variables
+      const enabled = input.enabled !== undefined ? input.enabled : current?.enabled ?? null
+      const effectiveEnabled = enabled === null ? preset.enabled === true : enabled === true
+      const compatibility = inspectPreset(effectiveSource, effectiveVariables)
+      if (effectiveEnabled && !compatibility.supported) throw platformError({ statusCode: 422, message: '预设尚未兼容，请修复提示词或填写变量后再启用', data: { issues: compatibility.issues } })
+      const sortOrder = input.sortOrder !== undefined ? input.sortOrder : current?.sort_order ?? null
+      // A completely empty row has exactly the inherited semantics; remove it
+      // so that runtime can keep using the global stack fast path.
+      if (enabled === null && sortOrder === null && sourceOverride === null && variablesOverride === null) {
+        await tx`DELETE FROM nexus_group_preset_bindings WHERE group_id=${input.groupId} AND preset_id=${input.presetId}`
+      } else {
+        await tx`INSERT INTO nexus_group_preset_bindings(group_id,preset_id,enabled,sort_order,source_json,variables,updated_at)
+          VALUES(${input.groupId},${input.presetId},${enabled},${sortOrder},${sourceOverride === null ? null : tx.json(sourceOverride as any)},${variablesOverride === null ? null : tx.json(variablesOverride)},now())
+          ON CONFLICT(group_id,preset_id) DO UPDATE SET enabled=EXCLUDED.enabled,sort_order=EXCLUDED.sort_order,
+            source_json=EXCLUDED.source_json,variables=EXCLUDED.variables,updated_at=now()`
+      }
+    }
+    return true
+  })
+  void result
+  resetPresetRouteCache()
+  return getGroupPreset(input.groupId, input.presetId)
+}
+
+/** Reorder every preset for one group, preserving inherited enabled/content values. */
+export async function reorderGroupPresets(groupId: string, ids: string[]): Promise<GroupPresetView[]> {
+  if (!idValid(groupId)) throw platformError({ statusCode: 400, message: '请选择有效分组' })
+  if (!Array.isArray(ids) || ids.some(id => !idValid(id)) || new Set(ids).size !== ids.length) throw platformError({ statusCode: 400, message: '预设顺序包含无效或重复项目' })
+  await getDb().begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended('nexus:presets:write',0))`
+    if (!(await tx`SELECT id FROM nexus_groups WHERE id=${groupId} FOR KEY SHARE`).length) throw platformError({ statusCode: 404, message: '分组不存在' })
+    const rows = await tx`SELECT id FROM nexus_presets ORDER BY sort_order,id FOR UPDATE`
+    const existing = new Set(rows.map(row => row.id))
+    if (rows.length !== ids.length || ids.some(id => !existing.has(id))) throw platformError({ statusCode: 409, message: '预设列表已经变化，请刷新后重新排序' })
+    for (let order = 0; order < ids.length; order++) {
+      await tx`INSERT INTO nexus_group_preset_bindings(group_id,preset_id,sort_order)
+        VALUES(${groupId},${ids[order]!},${order})
+        ON CONFLICT(group_id,preset_id) DO UPDATE SET sort_order=EXCLUDED.sort_order,updated_at=now()`
+    }
+  })
+  resetPresetRouteCache()
+  return (await listPresets(groupId)) as GroupPresetView[]
+}
 export async function deletePreset(id: string) {
   if (!idValid(id)) throw missing()
   const result = await getDb().begin(async tx => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended('nexus:presets:write',0))`
-    if (await presetIsBound(tx, id)) throw platformError({ statusCode: 409, message: '预设仍被 API key 或旧路由使用，请先解除绑定' })
+    if (await presetIsBound(tx, id)) throw platformError({ statusCode: 409, message: '预设仍被 API key、分组或旧路由使用，请先解除绑定' })
     if (!(await tx`DELETE FROM nexus_presets WHERE id=${id} RETURNING id`).length) throw missing()
     return { deleted: true }
   })
@@ -143,13 +298,27 @@ export async function saveKeyPresetMode(tx: TransactionSql, keyId: string, enabl
 }
 
 /** Stack-enabled keys share all enabled presets, ordered by the library. */
-export async function resolveKeyPresetStack(keyId: string): Promise<PresetView[]> {
+export async function resolveKeyPresetStack(keyId: string, enabledGroupIds?: string[]): Promise<PresetView[]> {
   if (!await isModuleEnabled('presets')) return []
   const generation = routeCacheGeneration
   let choice = stackKeyCache.get(keyId)
   if (!choice || choice.until <= Date.now()) {
-    const row = (await getDb()`SELECT b.mode,b.preset_id FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id WHERE b.key_id=${keyId} AND left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa','auto') LIMIT 1`)[0]
-    choice = { mode: row?.mode || null, presetId: row?.preset_id || null, until: Date.now() + 2000 }
+    // Keep this query's leading columns stable for older integrations while
+    // exposing the enabled routing groups used by group-specific stacks.
+    const row = (await getDb()`SELECT b.mode,b.preset_id,
+      COALESCE((SELECT array_agg(g2.id ORDER BY g2.created_at,g2.id)
+        FROM nexus_key_groups kg2 JOIN nexus_groups g2 ON g2.id=kg2.group_id
+        WHERE kg2.key_id=b.key_id AND g2.enabled=true), ARRAY[]::uuid[]) AS group_ids,
+      EXISTS(SELECT 1 FROM nexus_key_groups kg3 JOIN nexus_groups g3 ON g3.id=kg3.group_id
+        JOIN nexus_group_preset_bindings gp3 ON gp3.group_id=g3.id
+        WHERE kg3.key_id=b.key_id AND g3.enabled=true) AS has_group_override
+      FROM nexus_key_preset_bindings b JOIN gateway_keys k ON k.id=b.key_id
+      WHERE b.key_id=${keyId} AND left(k.prefix,10)<>'ccm_nexus_' AND k.module_id IN ('commandcode','cpa','auto') LIMIT 1`)[0]
+    choice = { mode: row?.mode || null, presetId: row?.preset_id || null,
+      // Cache the database-derived groups only. A caller-provided scope is a
+      // per-request view and must never poison the key cache for later calls.
+      groupIds: Array.isArray(row?.group_ids) ? row.group_ids.map(String) : [],
+      hasGroupOverride: row?.has_group_override === true, until: Date.now() + 2000 }
     if (generation === routeCacheGeneration) {
       if (stackKeyCache.size >= 128) stackKeyCache.delete(stackKeyCache.keys().next().value!)
       stackKeyCache.set(keyId, choice)
@@ -170,6 +339,30 @@ export async function resolveKeyPresetStack(keyId: string): Promise<PresetView[]
       routeCache.set(cacheKey, { value: preset, until: Date.now() + 2000 })
     }
     return [preset]
+  }
+  const groupIds = enabledGroupIds ?? choice.groupIds
+  const hasGroupOverride = enabledGroupIds
+    ? (groupIds.length > 0 && (await getDb()`SELECT 1 FROM nexus_group_preset_bindings WHERE group_id IN ${getDb()(groupIds)} LIMIT 1`).length > 0)
+    : choice.hasGroupOverride
+  if (hasGroupOverride && groupIds.length) {
+    const cacheKey = `group-stack\0${groupIds.join(',')}`
+    const cached = groupStackCache.get(cacheKey)
+    if (cached && cached.until > Date.now()) return cached.value
+    const promiseRows = await Promise.all(groupIds.map(groupId => getDb()`SELECT p.*,${groupId} AS group_context_id,b.group_id AS group_binding_id,b.enabled AS group_enabled,
+        b.sort_order AS group_sort_order,b.source_json AS group_source_json,b.variables AS group_variables
+      FROM nexus_presets p LEFT JOIN nexus_group_preset_bindings b ON b.group_id=${groupId} AND b.preset_id=p.id
+      WHERE COALESCE(b.enabled,p.enabled)=true ORDER BY COALESCE(b.sort_order,p.sort_order),p.id`))
+    const merged: PresetView[] = [], seen = new Set<string>()
+    for (const rows of promiseRows) for (const row of rows) {
+      if (seen.has(row.id)) continue
+      seen.add(row.id)
+      merged.push(groupView(row))
+    }
+    if (generation === routeCacheGeneration) {
+      if (groupStackCache.size >= 128) groupStackCache.delete(groupStackCache.keys().next().value!)
+      groupStackCache.set(cacheKey, { value: merged, until: Date.now() + 2000 })
+    }
+    return merged
   }
   if (enabledStackCache && enabledStackCache.until > Date.now()) return enabledStackCache.value
   if (enabledStackLoading?.generation === generation) return enabledStackLoading.promise
