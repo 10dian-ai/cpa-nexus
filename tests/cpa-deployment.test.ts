@@ -79,6 +79,32 @@ describe('CPA Nexus deployment initialization', () => {
     expect(parse(await readFile(path, 'utf8')).CPA_IMAGE).toBe('operator/custom-kernel:chosen')
   })
 
+  for (const legacyImage of [
+    'cpa-nexus-core:v8.0.11-nexus1',
+    'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9',
+  ]) {
+    it(`migrates an existing v8.0.11 pinned deployment (${legacyImage}) to the current kernel`, async () => {
+      const oldEnvironment = [
+        'CPA_VERSION=v8.0.11',
+        'CPA_IMAGE=' + legacyImage,
+        'CPA_UPSTREAM_REF=e2bff0107bb307337aaa19018ccddd55f64253d5',
+        'CPA_UPSTREAM_IMAGE=eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9',
+        'CPA_MANAGEMENT_KEY=legacy-management-key-123456789',
+        'CPA_CLIENT_KEY=legacy-client-key-123456789',
+        '',
+      ].join('\n')
+      await writeFile(join(directory, '.env.cpa'), oldEnvironment)
+      await setupCpa(directory, () => {})
+      const updated = parse(await readFile(join(directory, '.env.cpa'), 'utf8'))
+      expect(updated.CPA_VERSION).toBe(CPA_VERSION)
+      expect(updated.CPA_IMAGE).toBe(CPA_IMAGE)
+      expect(updated.CPA_UPSTREAM_REF).toBe(CPA_UPSTREAM_REF)
+      expect(updated.CPA_UPSTREAM_IMAGE).toBe(CPA_UPSTREAM_IMAGE)
+      expect(updated.CPA_MANAGEMENT_KEY).toBe('legacy-management-key-123456789')
+      expect(updated.CPA_CLIENT_KEY).toBe('legacy-client-key-123456789')
+    })
+  }
+
   it('refuses to rotate lost keys when existing core state has already been created', async () => {
     await mkdir(join(directory, '.runtime/cpa/config'), { recursive: true })
     const configPath = join(directory, '.runtime/cpa/config/config.yaml')

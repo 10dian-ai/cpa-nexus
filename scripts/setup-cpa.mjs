@@ -9,6 +9,18 @@ export const CPA_IMAGE = 'cpa-nexus-core:v8.0.15-nexus1'
 export const CPA_UPSTREAM_REF = 'a4acc9f752bd46571f737a10c04bf413656ab06b'
 export const CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.15@sha256:ebc2ffc189cf241ff589cd9237c63ca9feba3c9b87fe6213ab9a0b642df132ae'
 
+// Values used by the previous published CPA Nexus core. Existing deployments
+// keep their .env.cpa across updates, so the migration must recognize the old
+// pinned tuple before applying the new defaults. Without this, update rebuilds
+// the application while silently retaining the old CPA binary.
+const LEGACY_CPA_VERSION = 'v8.0.11'
+const LEGACY_CPA_UPSTREAM_REF = 'e2bff0107bb307337aaa19018ccddd55f64253d5'
+const LEGACY_CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9'
+const LEGACY_CPA_IMAGES = new Set([
+  'cpa-nexus-core:v8.0.11-nexus1',
+  LEGACY_CPA_UPSTREAM_IMAGE,
+])
+
 async function readOptional(path) {
   try { return await readFile(path, 'utf8') }
   catch (error) { if (error.code === 'ENOENT') return null; throw error }
@@ -31,10 +43,26 @@ export async function setupCpa(directory = process.cwd(), log = console.log) {
       throw new Error(`${key} in .env.cpa must contain at least 24 characters. Existing files were preserved.`)
     }
   }
-  // Upgrade only the project's former pinned default after validating its keys.
-  if (environment.CPA_IMAGE === CPA_UPSTREAM_IMAGE && environment.CPA_VERSION === CPA_VERSION) {
-    environmentText = environmentText.replace(/^(?:export\s+)?CPA_IMAGE\s*=.*$/m, 'CPA_IMAGE=' + CPA_IMAGE)
-    environment.CPA_IMAGE = CPA_IMAGE
+  // Upgrade only the project's former pinned defaults after validating its keys.
+  // Leave an operator-selected image/source untouched.
+  const isLegacyPinnedDeployment = environment.CPA_VERSION === LEGACY_CPA_VERSION &&
+    LEGACY_CPA_IMAGES.has(environment.CPA_IMAGE) &&
+    environment.CPA_UPSTREAM_REF === LEGACY_CPA_UPSTREAM_REF &&
+    environment.CPA_UPSTREAM_IMAGE === LEGACY_CPA_UPSTREAM_IMAGE
+  const isFormerUnbuiltPinnedImage = environment.CPA_VERSION === CPA_VERSION &&
+    environment.CPA_IMAGE === CPA_UPSTREAM_IMAGE
+  if (isLegacyPinnedDeployment || isFormerUnbuiltPinnedImage) {
+    const replacements = isLegacyPinnedDeployment ? {
+      CPA_VERSION,
+      CPA_IMAGE,
+      CPA_UPSTREAM_REF,
+      CPA_UPSTREAM_IMAGE,
+    } : { CPA_IMAGE }
+    for (const [key, value] of Object.entries(replacements)) {
+      const line = new RegExp(`^(?:export\\s+)?${key}\\s*=.*$`, 'm')
+      environmentText = environmentText.replace(line, `${key}=${value}`)
+      environment[key] = value
+    }
     await writeFile(environmentPath, environmentText, { mode: 0o600 })
   }
 
