@@ -1527,7 +1527,7 @@ diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/ex
 diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
 --- a/internal/runtime/executor/helps/devin_wire.go
 +++ b/internal/runtime/executor/helps/devin_wire.go
-@@ -50,7 +50,23 @@
+@@ -50,7 +50,40 @@
  
  	maxConnectFrameSize      = 16 * 1024 * 1024
  	maxDecompressedFrameSize = 64 * 1024 * 1024
@@ -1548,6 +1548,23 @@ diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/ex
 +	}
 +	return description[:cut]
 +}
++
++const devinApplyPatchDescription = "Use the Codex apply_patch format. Start with *** Begin Patch and end with *** End Patch. Operations: *** Add File: path, *** Delete File: path, *** Update File: path, and *** Move to: path. Every added-file content line starts with +. For updates, use @@; context lines start with one space, removed lines with -, and added lines with +. Use *** End of File when required. Original patch grammar: start: patch."
++
++func isDevinApplyPatchTool(name string) bool {
++	name = strings.ToLower(strings.TrimSpace(name))
++	return name == "apply_patch" || strings.HasSuffix(name, "__apply_patch")
++}
++
++func prepareDevinToolDescription(name, description string) string {
++	if isDevinApplyPatchTool(name) {
++		// The apply_patch grammar is executable protocol, so truncating it can
++		// silently remove required markers and make the tool unusable. Keep a
++		// compact, complete form below Devin's wire limit instead.
++		return devinApplyPatchDescription
++	}
++	return truncateDevinToolDescription(description)
++}
  
  // DevinTool represents a tool definition in GetChatMessageRequest.
  type DevinTool struct {
@@ -1555,7 +1572,7 @@ diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/ex
  			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
  		}
  		desc = translatorcommon.SanitizeDevinToolDescription(tool.Name, desc)
-+		desc = truncateDevinToolDescription(desc)
++		desc = prepareDevinToolDescription(tool.Name, desc)
  		if desc != "" {
  			tBytes = protowire.AppendTag(tBytes, 2, protowire.BytesType)
  			tBytes = protowire.AppendString(tBytes, desc)
@@ -1563,7 +1580,7 @@ diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/ex
  			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
  		}
  		desc = translatorcommon.SanitizeDevinToolDescription(t.Name, desc)
-+		desc = truncateDevinToolDescription(desc)
++		desc = prepareDevinToolDescription(t.Name, desc)
  		var params json.RawMessage
  		if len(t.Parameters) > 0 && json.Valid(t.Parameters) {
  			params = json.RawMessage(t.Parameters)
@@ -1594,6 +1611,22 @@ diff --git a/internal/runtime/executor/helps/devin_wire_test.go b/internal/runti
 +	}
 +	if !strings.HasPrefix(trimmed, strings.Repeat("a", 479)) {
 +		t.Fatal("description prefix was not preserved")
++	}
++}
++
++func TestPrepareDevinToolDescriptionPreservesApplyPatchGrammar(t *testing.T) {
++	description := prepareDevinToolDescription("functions__apply_patch", strings.Repeat("x", 2000))
++	for _, marker := range []string{"*** Begin Patch", "*** End Patch", "*** Add File", "*** Delete File", "*** Update File", "*** Move to", "*** End of File", "@@", "start: patch"} {
++		if !strings.Contains(description, marker) {
++			t.Fatalf("apply_patch description missing %q: %s", marker, description)
++		}
++	}
++	if len(description) > devinToolDescriptionMaxBytes {
++		t.Fatalf("apply_patch description length = %d, want <= %d", len(description), devinToolDescriptionMaxBytes)
++	}
++	ordinary := prepareDevinToolDescription("functions__ordinary", strings.Repeat("x", 2000))
++	if len(ordinary) > devinToolDescriptionMaxBytes {
++		t.Fatalf("ordinary description length = %d, want <= %d", len(ordinary), devinToolDescriptionMaxBytes)
 +	}
 +}
 diff --git a/internal/runtime/executor/devin_executor.go b/internal/runtime/executor/devin_executor.go
