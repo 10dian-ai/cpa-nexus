@@ -1,11 +1,21 @@
 <script setup lang="ts">
 import type { ModuleView } from '#shared/modules'
+import { pluginMenuHref } from '~/utils/cpa-plugins'
 const route = useRoute()
 const { session } = useAuth()
 const { connection } = useLiveUpdates()
 const mobileOpen = ref(false)
 const { data: moduleData } = await useFetch<{ modules: ModuleView[] }>('/api/modules', { key: 'nexus-modules' })
+// Discover plugin pages after hydration so a temporarily unavailable CPA does
+// not block every Nexus route during server rendering.
+const { data: cpaCapabilities } = await useFetch<{ plugins?: { id: string; name: string; effectiveEnabled: boolean; menus?: { path: string; name: string; description?: string }[] }[] }>('/api/cpa/capabilities', { key: 'cpa-management-capabilities', server: false })
 const commandcodeEnabled = computed(() => moduleData.value?.modules.find(module => module.id === 'commandcode')?.enabled !== false)
+const cpaPluginNavigation = computed(() => (cpaCapabilities.value?.plugins || []).filter(plugin => plugin.effectiveEnabled).flatMap(plugin => (plugin.menus || []).map((menu, index) => ({ menu, index, plugin })).filter(({ menu }) => !!pluginMenuHref(plugin.id, menu)).map(({ menu, index, plugin }) => ({
+  to: `/cpa/plugin-pages/${encodeURIComponent(plugin.id)}/${index}`,
+  label: menu.name || `${plugin.name} 页面 ${index + 1}`,
+  icon: 'i-ph-puzzle-piece-bold',
+  description: menu.description,
+}))))
 const groups = computed(() => [
   { label: '平台', links: [
     { to: '/', label: '平台概览', icon: 'i-ph-squares-four-bold' },
@@ -16,6 +26,7 @@ const groups = computed(() => [
   ] },
   { label: 'CPA 内核', links: [
     { to: '/cpa', label: '内核运行', icon: 'i-ph-cpu-bold' },
+    { to: '/cpa/quick-start', label: '快速开始', icon: 'i-ph-rocket-launch-bold' },
     { to: '/cpa/config', label: '内核配置', icon: 'i-ph-sliders-horizontal-bold' },
     { to: '/cpa/credentials', label: '凭证管理', icon: 'i-ph-identification-card-bold' },
     { to: '/groups/accounts?module=cpa', label: 'CPA 凭证分组', icon: 'i-ph-users-four-bold' },
@@ -26,8 +37,11 @@ const groups = computed(() => [
     { to: '/cpa/keys', label: '原生访问密钥', icon: 'i-ph-key-bold' },
     { to: '/cpa/logs', label: '日志与用量', icon: 'i-ph-list-bullets-bold' },
     { to: '/cpa/plugins', label: '原生插件', icon: 'i-ph-plugs-connected-bold' },
+    { to: '/cpa/plugins?tab=store', label: '插件商店', icon: 'i-ph-storefront-bold' },
+    { to: '/cpa/system', label: '系统信息', icon: 'i-ph-info-bold' },
     { to: '/cpa/native', label: '原版完整控制台', icon: 'i-ph-browser-bold' },
   ] },
+  ...(cpaPluginNavigation.value.length ? [{ label: 'CPA 插件页面', links: cpaPluginNavigation.value }] : []),
   ...(commandcodeEnabled.value ? [{ label: 'CommandCode', links: [
     { to: '/commandcode', label: '账号池概览', icon: 'i-ph-chart-bar-bold' },
     { to: '/accounts', label: '账号管理', icon: 'i-ph-users-three-bold' },
