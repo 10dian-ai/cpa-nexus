@@ -6,7 +6,9 @@
 
 1. 打开「酒馆预设」，上传 SillyTavern Chat Completion 预设 JSON，或粘贴 JSON 文本。预设、上下文变量和提示词展开不设置人为大小上限。
 2. `/presets` 预设库先显示名称、开关和上下移动顺序。点击名称进入 `/presets/:id` 详情，只显示各条目的名称、开关、笔图标和顺序菜单。按名称或标识搜索，并用「全部／已开启／已关闭」筛选；点击笔图标才展开单条内容编辑，支持宏插入与折叠注入设置。采样参数和上下文变量有独立页签，完整原始 JSON 按需打开。
-3. 查看兼容检查，保存后在预设库开启需要参与运行的预设，通过上下移动调整叠加顺序。导出保留原始文档中的未知字段，运行时只向模型发送支持的参数。
+3. 先在页面顶部选择调用分组，再查看兼容检查。保存后的开关、叠加顺序、提示词 JSON 和上下文变量都只作用于当前分组；没有覆盖的字段继承全局预设库。导出按钮也导出当前分组最终生效的 JSON。导出保留原始文档中的未知字段，运行时只向模型发送支持的参数。
+
+全局预设库仍是模板和回退值。每个分组可以单独关闭或开启同一预设、调整顺序，并覆盖提示词和变量；点击「恢复全局配置」会删除当前分组的覆盖。预设导入先创建一份全局模板，再绑定到当前选中的分组，默认保持关闭，避免新导入的配置立即影响调用。
 
 编辑对话框的「应用修改」写入页面草稿，点击「保存预设」后生效。离开未保存的详情页时可以保存、放弃修改或继续编辑。
 
@@ -20,7 +22,7 @@ Claude Messages 按酒馆的转换规则：开头的 system 进入独立 system 
 
 在统一「API key」页面选择 key 类型：模型调用 key 用于调用模型，CommandCode 外调服务 key 用于账号管理等外部接口；CommandCode 模块未启用时只提供模型调用类型。模型 key 选择一个或多个调用分组，可跨 CPA 和 CommandCode 来源调用，再选择「经过酒馆预设模块」或「普通调用」。外调服务密钥和内部桥接密钥不能绑定预设。
 
-例如创建 KA、KB 两个模型 key，只让 KB 经过酒馆模块，在库里同时开启预设 A、B、C。KA 保留客户端消息直接调用；KB 每次调用按照库中的顺序叠加 A、B、C。库中新启用、关闭、排序和保存的改动自动用于全部选择经过酒馆模块的 key，无需逐个改绑。分组约束可选账号，模型模块仍负责额度与并发控制，修改 key 分组保留酒馆选择，撤销 key 会同步清除选择。
+例如创建 KA、KB 两个模型 key，只让 KB 经过酒馆模块。先在 KB 所选的分组中开启预设 A、B、C，并按该分组的顺序叠加；KA 保留客户端消息直接调用。不同分组可以为同一预设设置不同开关、顺序、提示词和变量。一个 key 选择多个启用分组时，按分组创建时间和 ID 合并各组预设，同一预设只取第一个分组的配置；没有任何分组覆盖时才使用全局启用列表。模块开关仍是总开关，模型模块继续负责额度与并发控制，修改 key 分组保留酒馆选择，撤销 key 会同步清除选择。
 
 模块关闭时可以提前保存 key 选择，启用后生效。模块关闭或没有启用的预设时调用保持原样。启用中的预设不能保存不兼容内容，需要先关闭或修复；单个预设的开关与整个模块的开关分别控制。System One 等非聊天接口继续沿用原生调用。
 
@@ -44,17 +46,18 @@ CPA 模型 key 由平台认证，再使用配置好的 CPA 客户端密钥调用
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| GET / POST | `/api/presets` | 列表（含 moduleEnabled）/ 导入新预设 |
-| GET | `/api/presets?view=summary` | 名称、enabled、sortOrder 与时间，不读取完整预设、变量或说明 |
-| GET / PATCH / DELETE | `/api/presets/:id` | 查看/编辑/删除 |
-| PUT | `/api/presets/order` | `{ "ids": ["完整预设库的 ID，按新顺序排列"] }`，缺项、重复或过期列表会拒绝 |
-| GET | `/api/presets/:id/export` | 导出原始 JSON |
+| GET / POST | `/api/presets` | 列表（含 moduleEnabled）/ 导入新预设；传 `groupId` 返回该分组的最终生效值 |
+| GET | `/api/presets?view=summary&groupId=:groupId` | 返回该分组的名称、有效 enabled、有效 sortOrder 与继承/覆盖标记 |
+| GET / PATCH / DELETE | `/api/presets/:id` | 查看/编辑/删除全局预设；详情传 `groupId` 查看该分组最终值 |
+| GET / PATCH | `/api/presets/:id/group-bindings` | 传 `groupId` 读取分组预设；PATCH 可设置 `enabled`、`sortOrder`、`sourceJson`、`variables`，传 `reset:true` 恢复全局值 |
+| PUT | `/api/presets/order` | `{ "ids": ["完整预设库的 ID，按新顺序排列"], "groupId": "可选分组 ID" }`，缺项、重复或过期列表会拒绝 |
+| GET | `/api/presets/:id/export?groupId=:groupId` | 导出全局或当前分组最终生效的 JSON |
 | POST | `/api/presets/validate` | 检查名称、JSON 与变量 |
 | GET / PUT | `/api/presets/routes` | 读取/设置 API key 选择；PUT 使用 keyId，mode 为 stack（全部启用预设）、bypass（直连）、inherit（移除选择，默认为直连）或兼容旧接口的 preset（需要 presetId） |
 | PATCH | `/api/modules` | `{ "id": "presets", "enabled": true }` |
 
 预设、上传和请求体不设置人为大小上限；旧 `maxRequestBodyMb` 字段保留兼容并固定为 0（不限制）。预设转换使用 JSON，不接受压缩请求体。CPA 原生旧密钥请求继续流式透传；平台模型 key 经过认证与请求校验，响应仍流式传递。CPA 保留协议转换和执行，原生非聊天能力继续走完整内核入口。`x-nexus-preset-id` 响应头标记实际使用的预设，流式响应不缓冲，客户端断开会取消上游。
 
-预设、开关、顺序和 key 选择持久化在 PostgreSQL（迁移 008、010、012），进程短缓存减少重复读取，修改立即使当前进程缓存失效；多应用实例最迟在短缓存过期后更新，不增加服务或部署依赖。
+预设、分组覆盖、开关、顺序和 key 选择持久化在 PostgreSQL（迁移 008、010、012、016），分组覆盖表使用 `(group_id,preset_id)` 复合主键；空覆盖字段继承全局值。进程短缓存减少重复读取，修改立即使当前进程缓存失效；多应用实例最迟在短缓存过期后更新，不增加服务或部署依赖。
 
 格式及行为依据：[SillyTavern Prompt Manager](https://docs.sillytavern.app/usage/prompts/prompt-manager/)、[官方消息转换源码](https://github.com/SillyTavern/SillyTavern/blob/release/src/prompt-converters.js)。CPA 账号路由依据项目固定的官方 [v8.0.11 源码](https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.11)。本模块独立实现 JSON 兼容处理。
