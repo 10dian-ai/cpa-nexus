@@ -70,7 +70,7 @@ export async function getCpaCapabilities(client: CpaCapabilitiesClient = createC
       ...(providerId(plugin.oauth_provider) ? { oauthProvider: providerId(plugin.oauth_provider) } : {}),
       ...(providerId(plugin.quota_provider) ? { quotaProvider: providerId(plugin.quota_provider) } : {}),
       ...(text(plugin.executor_model_scope ?? plugin.executorModelScope) ? { executorModelScope: text(plugin.executor_model_scope ?? plugin.executorModelScope) } : {}),
-      menus: menus.map(menu => ({ path: typeof menu.path === 'string' ? menu.path : '', name: text(menu.menu), description: text(menu.description) })),
+      menus: menus.map(menu => ({ path: typeof menu.path === 'string' ? menu.path : '', name: text(menu.menu ?? menu.name ?? menu.title ?? menu.label), description: text(menu.description) })),
       configFields: fields.map(field => ({ name: text(field.name), type: text(field.type), description: text(field.description), enumValues: Array.isArray(field.enum_values) ? field.enum_values.filter((value): value is string => typeof value === 'string') : [] })),
     }
   })
