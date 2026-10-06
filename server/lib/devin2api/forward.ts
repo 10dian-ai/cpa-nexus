@@ -51,7 +51,15 @@ export async function forwardDevin2Api(event: H3Event, protocolPath: string, opt
     throw failStatus('Invalid DEVIN2API_URL configuration', 500)
   const url = new URL(rawPath, parsed)
   const headers = copyHeaders(event.node.req.headers)
-  for (const name of Object.keys(headers)) if (/^(authorization|x-api-key|content-length|content-encoding)$/i.test(name)) delete headers[name]
+  // The caller's credentials and Nexus-internal metadata must never cross the
+  // sidecar boundary.  In particular, cookies and proxy credentials can carry
+  // unrelated administrator sessions, while x-nexus-* headers expose routing
+  // details that are only meaningful inside this process.  The sidecar gets
+  // its own credential below and should receive only the request payload.
+  for (const name of Object.keys(headers)) {
+    if (/^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-goog-api-key|content-length|content-encoding)$/i.test(name) ||
+        /^x-nexus-/i.test(name)) delete headers[name]
+  }
   const key = options.apiKey === undefined ? runtime.apiKey : options.apiKey?.trim()
   if (key) headers['x-api-key'] = key
   let transformed: Buffer | undefined
@@ -65,7 +73,12 @@ export async function forwardDevin2Api(event: H3Event, protocolPath: string, opt
     const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, { method: event.method, headers } as RequestOptions, response => {
       reply = response
       event.node.res.statusCode = response.statusCode || 502
-      for (const [name, value] of Object.entries(copyHeaders(response.headers))) if (value !== undefined) event.node.res.setHeader(name, value)
+      for (const [name, value] of Object.entries(copyHeaders(response.headers))) {
+        // Do not let an internal adapter establish a browser session or echo
+        // credentials back through the public model gateway.
+        if (/^(set-cookie|authorization|proxy-authenticate|x-api-key|x-goog-api-key)$/i.test(name) || /^x-nexus-/i.test(name)) continue
+        if (value !== undefined) event.node.res.setHeader(name, value)
+      }
       event.node.res.setHeader('x-accel-buffering', 'no')
       response.on('error', reject)
       response.on('aborted', () => reject(new Error('Devin sidecar response interrupted')))

@@ -18,11 +18,18 @@ describe('Devin 2API sidecar contract', () => {
   it('removes public credentials before adding the internal sidecar key', async () => {
     const fetcher = vi.fn(async () => new Response('{"ok":true}', { status: 200 }))
     const client = createDevin2ApiClient({ baseUrl: 'http://devin2api:8080', apiKey: 'internal-secret', fetch: fetcher })
-    await client.request({ path: '/v1/models', headers: { authorization: 'Bearer public-key', 'x-api-key': 'public-key' } })
+    await client.request({ path: '/v1/models', headers: {
+      authorization: 'Bearer public-key', 'x-api-key': 'public-key', cookie: 'admin=session',
+      'proxy-authorization': 'Basic leaked', 'x-goog-api-key': 'provider-key', 'x-nexus-source-id': 'internal-id',
+    } })
     const [, init] = fetcher.mock.calls[0] as unknown as [URL, RequestInit]
     const headers = new Headers(init.headers)
     expect(headers.get('authorization')).toBeNull()
     expect(headers.get('x-api-key')).toBe('internal-secret')
+    expect(headers.get('cookie')).toBeNull()
+    expect(headers.get('proxy-authorization')).toBeNull()
+    expect(headers.get('x-goog-api-key')).toBeNull()
+    expect(headers.get('x-nexus-source-id')).toBeNull()
   })
 
   it.each(['ftp://devin', 'http://user:password@devin', 'http://devin?query=1'])('rejects unsafe sidecar URL %s', baseUrl => {

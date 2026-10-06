@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import type { ModuleView } from '#shared/modules'
+// Components under `components/layout` are path-prefixed by Nuxt 4 and are
+// auto-registered as `LayoutAppSidebar`/`LayoutAppTopbar`. Keep the shorter
+// names used by this shell explicit so a missing auto-import cannot silently
+// render an empty comment node and remove the navigation from every page.
+import AppSidebar from '~/components/layout/AppSidebar.vue'
+import AppTopbar from '~/components/layout/AppTopbar.vue'
 const route = useRoute()
 const { session } = useAuth()
 const { connection } = useLiveUpdates()

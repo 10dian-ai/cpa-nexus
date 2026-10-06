@@ -66,7 +66,10 @@ const source = (account: Devin2ApiAccount, binding: { groupIds: string[]; groupN
 function validateBaseUrl(value: string | undefined): string | null {
   const text = value?.trim() || ''
   if (!text) return null
-  const parsed = new URL(text)
+  let parsed: URL
+  try { parsed = new URL(text) } catch {
+    throw createError({ statusCode: 400, message: 'Devin 地址必须是无凭据的 http 或 https URL' })
+  }
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash)
     throw createError({ statusCode: 400, message: 'Devin 地址必须是无凭据的 http 或 https URL' })
   return text.replace(/\/$/, '')

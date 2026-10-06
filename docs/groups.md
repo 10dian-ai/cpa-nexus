@@ -1,6 +1,6 @@
 # 账号与 API Key 分组
 
-在「账号分组」创建分组，为账号和模型 API Key 各选择一个或多个分组。模型 Key 不需要选择来源模块：它可以调用这些分组中已启用账号提供的模型。CommandCode 外调管理 Key 继续使用原来的外调接口。
+在「账号分组」创建分组，为账号和模型 API Key 各选择一个或多个分组。模型 Key 不需要选择来源模块：它可以调用这些分组中已启用账号提供的模型。Devin 账号必须加入 Devin 分组后才会参与 `devin/` 模型路由。CommandCode 外调管理 Key 继续使用原来的外调接口。
 
 例如，CommandCode 账号 A 只属于「工作」，账号 B 只属于「个人」。Key A 只选「工作」，Key B 只选「个人」，即使两个账号提供同名模型，两个 Key 也分别使用自己的账号。Key 选择两个分组时，可用来源取这两个分组的并集；账号加入多个分组时，可供这些分组的 Key 使用。
 
@@ -8,16 +8,16 @@
 
 1. 在「调用分组」点击「创建分组」，也可在 CPA 凭证的分组编辑弹窗中直接新建。
 2. 在「CPA 内核 → 凭证管理」的「调用分组」列点击「编辑分组」，选择一个或多个组并保存；同一文件展开的虚拟凭证共享来源分组。
-3. 「CPA 凭证分组」和「CommandCode 账号分组」分别显示所属模块的来源。
+3. 「CPA 凭证分组」「CommandCode 账号分组」和「Devin 账号分组」分别显示所属模块的来源。
 4. 在 API Key 页面选择相同组：只选 CommandCode 调用该组账号，只选 CPA 调用该组凭证；同时选择可跨模块调用。
 
 使用 Basis Points 等独立执行器时，插件来源和它需要读取的底层账号凭证应加入该 Key 所选分组。账号凭证内容不会因修改分组而改变。
 
 ## 设置与迁移
 
-- CommandCode 和 CPA 分别使用「CommandCode」「CPA」两个默认调用组；新 CommandCode 账号和首次发现的 CPA 来源默认加入各自模块的组。
-- 升级时，只把原「默认分组」的账号绑定替换为对应模块组，保留其他自定义组。原模型 Key 的「默认分组」替换为两个模块组的并集，保留升级前的调用范围和其他自定义组；私有桥接 Key 不调整。
-- 为需要隔离的来源改选专用分组，并让对应 Key 只选择所需分组。模型 Key 同时选择两个模块组时，可跨模块调用；只选 CommandCode 或 CPA 时使用对应组的来源。
+- CommandCode、CPA 和 Devin 分别使用「CommandCode」「CPA」「Devin」三个模块默认调用组；新账号和首次发现的来源默认加入各自模块的组。
+- 升级时，只把原「默认分组」的账号绑定替换为对应模块组，保留其他自定义组。原模型 Key 的「默认分组」替换为 CPA 与 CommandCode 两个模块组的并集，保留升级前的调用范围和其他自定义组；Devin 组不会自动加入已有或新建 Key，必须显式选择；私有桥接 Key 不调整。
+- 为需要隔离的来源改选专用分组，并让对应 Key 只选择所需分组。模型 Key 同时选择两个模块组时，可跨模块调用；只选 CommandCode 或 CPA 时使用对应组的来源。需要调用 Devin 时，把 Devin 分组显式加入模型 Key。
 - 模块默认组记录按 ID 持久保存，可以改名，不因名称变化重新创建；模块默认组不能删除。其他自定义分组可以跨模块复用。
 - 分组停用后，其授权不参与模型目录或调用。账号、Key 自身停用同样不参与调度。
 - 模型目录只显示当前 Key 的分组可用模型。Key 手动请求其他组的来源前缀也会被拒绝，不因同名模型自动越过分组。
@@ -45,11 +45,11 @@ CPA 使用完整官方 v8.0.15，OAuth、刷新、配额、协议转换、模型
 
 | 方法与路径 | 功能 |
 | --- | --- |
-| `GET /api/groups` | 分组名称、状态及账号／Key 数量；`moduleDefaultGroupIds` 为模块默认组 ID，`defaultGroupIds` 为新模型 Key 的默认组并集 |
+| `GET /api/groups` | 分组名称、状态及账号／Key 数量；`moduleDefaultGroupIds` 为 CPA、CommandCode、Devin 各模块默认组 ID，`defaultGroupIds` 为兼容历史行为的新模型 Key 默认组（仅 CPA 与 CommandCode） |
 | `POST /api/groups` | 创建：`name`、可选 `description`、`enabled` |
 | `PATCH /api/groups/:id` | 编辑分组名称、描述或开关 |
 | `DELETE /api/groups/:id` | 删除未绑定的非默认分组 |
-| `GET /api/groups/accounts?moduleId=cpa` | 来源与已绑定分组；也可选 `commandcode` 或不传 |
+| `GET /api/groups/accounts?moduleId=cpa` | 来源与已绑定分组；也可选 `commandcode`、`devin2api` 或不传 |
 | `PATCH /api/groups/accounts` | 设置来源组：`moduleId`、`sourceType`、`sourceId`、`groupIds` |
 | `DELETE /api/groups/accounts` | 清理已确认不存在的来源绑定，参数同来源标识 |
 

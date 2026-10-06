@@ -53,6 +53,11 @@ function pathName(path: string): string {
 
 function combineSignals(signal: AbortSignal | undefined, timeoutMs: number | undefined): AbortSignal | undefined {
   if (timeoutMs === undefined) return signal
+  // Options are also used by tests and internal callers, so apply the same
+  // bounded timeout policy as environment configuration instead of allowing a
+  // NaN/negative value to throw a low-level RangeError from AbortSignal.
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return signal
+  timeoutMs = Math.min(Math.floor(timeoutMs), 120_000)
   if (!signal) return AbortSignal.timeout(timeoutMs)
   if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
   const controller = new AbortController()
@@ -65,9 +70,12 @@ function combineSignals(signal: AbortSignal | undefined, timeoutMs: number | und
 
 function headersWithAuth(headers: HeadersInit | undefined, apiKey: string | undefined): Headers {
   const result = new Headers(headers)
-  // Never forward the caller's model key to the sidecar. Its credential is an internal secret.
-  result.delete('authorization')
-  result.delete('x-api-key')
+  // Never forward caller credentials or Nexus-internal metadata to the
+  // sidecar. Its credential is an internal secret and must be the only auth
+  // header crossing this boundary.
+  for (const name of [...result.keys()]) {
+    if (/^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-goog-api-key)$/i.test(name) || /^x-nexus-/i.test(name)) result.delete(name)
+  }
   if (apiKey) result.set('x-api-key', apiKey)
   result.delete('host')
   return result
