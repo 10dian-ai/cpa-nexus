@@ -372,10 +372,12 @@ describe('CommandCode bridge against a real CPA management HTTP service', () => 
 
   it('selects native formats from exact official endpoint metadata instead of model name prefixes', () => {
     const chat = { id: 'claude-looking-name', supported_endpoints: ['/v1/chat/completions', '/v1/responses'] }
+    const dual = { id: 'dual-format', supported_endpoints: ['/v1/chat/completions', '/v1/messages'] }
+    const responsesOnly = { id: 'responses-only', supported_endpoints: ['/v1/responses'] }
     const messages = { id: 'gpt-looking-name', supported_endpoints: ['/v1/messages'] }
     const decision = { id: 'typesafe/jev', supported_endpoints: ['/v1/systemone'] }
     const unknown = { id: 'claude-unknown', supported_endpoints: [] }
-    expect(splitCommandcodeModels([chat, messages, decision, unknown])).toEqual({ chat: [chat], messages: [messages] })
+    expect(splitCommandcodeModels([chat, dual, responsesOnly, messages, decision, unknown])).toEqual({ chat: [chat, dual, responsesOnly], messages: [dual, messages] })
   })
 
   it('preserves native Claude channels added after the first bridge read', async () => {

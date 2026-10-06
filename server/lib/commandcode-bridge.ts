@@ -56,7 +56,17 @@ export function buildCommandcodeMessagesChannel(secret: string, models: { id: st
 }
 export function splitCommandcodeModels(models: { id: string; supported_endpoints?: string[] }[]) {
   return {
-    chat: models.filter(model => {const endpoints=normalizeSupportedEndpoints(model.supported_endpoints);return endpoints.includes('chat/completions')&&!endpoints.includes('messages')}),
+    // A provider model may advertise more than one native format. Register it
+    // in every matching CPA family so callers can use each endpoint reported
+    // by the official catalog (for example, both Chat Completions and
+    // Messages). Responses uses the same OpenAI-compatible CPA family as
+    // Chat Completions, so a Responses-only model must enter that channel too.
+    // The previous messages exclusion and responses omission silently made
+    // dual-format or Responses-only models unavailable after bridge setup.
+    chat: models.filter(model => {
+      const endpoints = normalizeSupportedEndpoints(model.supported_endpoints)
+      return endpoints.includes('chat/completions') || endpoints.includes('responses')
+    }),
     messages: models.filter(model => normalizeSupportedEndpoints(model.supported_endpoints).includes('messages')),
   }
 }

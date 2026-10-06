@@ -7,6 +7,8 @@ const sections = [
   { id: '/quick-start', name: '快速开始' },
   { id: '/ai-providers', name: 'AI 提供商' },
   { id: '/auth-files', name: '认证文件' },
+  { id: '/auth-files/oauth-excluded', name: 'OAuth 禁用模型' },
+  { id: '/auth-files/oauth-model-alias', name: 'OAuth 模型别名' },
   { id: '/oauth', name: 'OAuth 登录' },
   { id: '/quota', name: '配额管理' },
   { id: '/logs', name: '日志查看' },

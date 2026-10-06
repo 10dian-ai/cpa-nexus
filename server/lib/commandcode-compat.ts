@@ -45,7 +45,18 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
   if (!key) { error(event, path, 401, 'authentication_error', 'A valid manager API key is required'); return }
   if (key.moduleId !== 'auto' && (key.moduleId || 'commandcode') !== 'commandcode') { error(event, path, 403, 'module_binding_error', 'This API key is not bound to Command Code'); return }
   if (secret.startsWith('ccm_nexus_')) { error(event, path, 401, 'authentication_error', 'Use a client model key instead of the internal bridge key'); return }
-  if (path === 'models') return listGatewayModels(key.id)
+  if (path === 'models') {
+    try {
+      return await listGatewayModels(key.id)
+    } catch (failure) {
+      // The official directory is an external prerequisite for the compatibility
+      // catalog. Keep a temporary catalog outage in the API contract instead of
+      // letting H3 turn it into an opaque 500 response.
+      const status = Number((failure as { statusCode?: number }).statusCode)
+      error(event, path, status >= 500 && status < 600 ? status : 503, 'model_catalog_unavailable', 'The official Provider model catalog is unavailable; refresh it before calling models')
+      return
+    }
+  }
   let body: Record<string, unknown>
   try { body = options?.body ?? await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024) }
   catch (failure) {

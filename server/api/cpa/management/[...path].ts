@@ -2,14 +2,14 @@ import { createError, defineEventHandler, getHeader, readRawBody, send, setHeade
 import { CpaClientError, cpaPathSegments, createCpaClient } from '../../../lib/cpa/client'
 import { cpaDownstreamAbort } from '../../../lib/cpa/http'
 import { applyCpaPrivacyAfterResponse } from '../../../lib/cpa/privacy-hooks'
+import { parseClientKeyList, parseJsonAccessKeyPayload, withReservedClientKey } from '../../../lib/cpa/access-keys'
 
 const PREFIX = '/api/cpa/management/'
 const ACCESS_KEYS_PATH = 'config/access/api-keys'
 
 function parseAccessKeys(body: Uint8Array): string[] {
-  let keys: unknown
-  try { keys = JSON.parse(new TextDecoder().decode(body)) } catch { /* Return one bounded validation error below. */ }
-  if (!Array.isArray(keys) || keys.some(key => typeof key !== 'string' || !key.trim() || /[\r\n]/.test(key))) {
+  const keys = parseClientKeyList(parseJsonAccessKeyPayload(body), 'v8')
+  if (!keys) {
     throw createError({ statusCode: 400, message: 'CPA 客户端密钥必须是非空字符串数组', data: { code: 'invalid_body', message: 'CPA 客户端密钥必须是非空字符串数组' } })
   }
   return keys
@@ -33,7 +33,7 @@ export default defineEventHandler(async event => {
     let method = event.method
     if (protectAccessKeys && ['PUT', 'PATCH', 'DELETE'].includes(method)) {
       const keys = method === 'DELETE' ? [] : parseAccessKeys(rawBody || new Uint8Array())
-      body = new TextEncoder().encode(JSON.stringify([...new Set([...keys, reservedKey])])).buffer
+      body = new TextEncoder().encode(JSON.stringify(withReservedClientKey(keys, reservedKey))).buffer
       // Deleting the client node revokes historical keys but retains the private
       // credential used by unified model keys and CommandCode protocol conversion.
       method = 'PUT'

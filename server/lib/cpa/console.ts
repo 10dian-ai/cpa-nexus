@@ -3,6 +3,7 @@ import { CpaClientError, cpaPathSegments, createCpaClient } from './client'
 import { cpaDownstreamAbort } from './http'
 import { requireAdmin } from '../auth'
 import { applyCpaPrivacyAfterResponse } from './privacy-hooks'
+import { parseClientKeyList, parseJsonAccessKeyPayload, withReservedClientKey } from './access-keys'
 
 const PREFIX = '/api/cpa/console/'
 /** The official UI keeps its own preferences and never receives the actual management key. */
@@ -58,12 +59,13 @@ export async function proxyCpaConsole(event: H3Event) {
     if (path === 'v0/management/api-keys' && reserved && ['PUT', 'PATCH', 'DELETE'].includes(method)) {
       let input: unknown
       if (method !== 'DELETE') {
-        try { input = JSON.parse(raw?.toString('utf8') || '') } catch { throw createError({ statusCode: 400, message: 'CPA 客户端密钥格式无效' }) }
+        input = parseJsonAccessKeyPayload(raw ? new Uint8Array(raw) : undefined)
+        if (input === undefined) throw createError({ statusCode: 400, message: 'CPA 客户端密钥格式无效' })
       }
       if (method === 'PUT') {
-        const keys = Array.isArray(input) ? input : input && typeof input === 'object' ? (input as { items?: unknown }).items : undefined
-        if (!Array.isArray(keys) || keys.some(key => typeof key !== 'string')) throw createError({ statusCode: 400, message: 'CPA 客户端密钥格式无效' })
-        body = new TextEncoder().encode(JSON.stringify([...new Set([...keys, reserved])])).buffer
+        const keys = parseClientKeyList(input, 'v0')
+        if (!keys) throw createError({ statusCode: 400, message: 'CPA 客户端密钥格式无效' })
+        body = new TextEncoder().encode(JSON.stringify(withReservedClientKey(keys, reserved))).buffer
       } else {
         const patch = input && typeof input === 'object' ? input as Record<string, unknown> : {}
         const query = new URLSearchParams(question < 0 ? '' : target.slice(question + 1))
@@ -80,12 +82,13 @@ export async function proxyCpaConsole(event: H3Event) {
       }
     }
     if (path === 'v8/management/config/access/api-keys' && reserved && ['PUT', 'PATCH', 'DELETE'].includes(method)) {
-      let keys: unknown = []
+      let keys: string[] = []
       if (method !== 'DELETE') {
-        try { keys = JSON.parse(raw?.toString('utf8') || '') } catch { /* Reject malformed input below. */ }
-        if (!Array.isArray(keys) || keys.some(key => typeof key !== 'string' || !key.trim() || /[\r\n]/.test(key))) throw createError({ statusCode: 400, message: 'CPA 客户端密钥格式无效' })
+        const parsed = parseClientKeyList(parseJsonAccessKeyPayload(raw ? new Uint8Array(raw) : undefined), 'v8')
+        if (!parsed) throw createError({ statusCode: 400, message: 'CPA 客户端密钥格式无效' })
+        keys = parsed
       }
-      body = new TextEncoder().encode(JSON.stringify([...new Set([...(keys as string[]), reserved])])).buffer
+      body = new TextEncoder().encode(JSON.stringify(withReservedClientKey(keys, reserved))).buffer
       method = 'PUT'
     }
     const response = await createCpaClient().consoleRequest({ path, method, query: new URLSearchParams(question < 0 ? '' : target.slice(question + 1)), body, headers: { 'content-type': getHeader(event, 'content-type') || 'application/json', accept: getHeader(event, 'accept') || '*/*' }, signal: downstream.signal })

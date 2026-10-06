@@ -110,6 +110,13 @@ describe('public CPA and original CCM inference routing', () => {
     const denied = await post({ model: 'fixture' }, 'invalid'); expect(denied.status).toBe(401); await denied.text()
   })
 
+  it('rejects a missing model key before contacting the native core', async () => {
+    const response = await fetch(url + '/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'fixture', messages: [] }) })
+    expect(response.status).toBe(401)
+    expect((await response.json()).error.message).toBe('A valid model API key is required')
+    expect(received).toHaveLength(0)
+  })
+
   it('normalizes the original client identity before every CPA model request', async () => {
     for (const client of ['claude-code/private-device', 'opencode/private-project', 'codex/private-device']) {
       const response = await fetch(url + '/messages', { method: 'POST', headers: {

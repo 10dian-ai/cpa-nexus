@@ -5,13 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../server/lib/cpa/group-routing', () => ({ assertCpaGroupRoutingSafe: async () => {}, resolveCommandcodeBridgePolicy: async () => ({ allowedAuthIDs: ['internal-only-bridge'], allowedPluginIDs: [] }) }))
 vi.mock('../server/lib/cpa/group-policy', () => ({ CPA_GROUP_POLICY_HEADER: 'x-nexus-group-policy', registerCpaGroupPolicy: async () => 'signed-internal-bridge-policy' }))
 
-const fixture = vi.hoisted(() => ({ authenticate: vi.fn(), module: vi.fn(), direct: vi.fn(), upstream: vi.fn(), maxBody: 1 }))
+const fixture = vi.hoisted(() => ({ authenticate: vi.fn(), module: vi.fn(), direct: vi.fn(), upstream: vi.fn(), models: vi.fn(), maxBody: 1 }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
 vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module }))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: Buffer.alloc(32, 9).toString('base64') }) }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.maxBody }) }))
 vi.mock('../server/lib/gateway/handler', () => ({ handleGateway: fixture.direct }))
-vi.mock('../server/lib/gateway/accounts', () => ({ listGatewayModels: async () => ({ object: 'list', data: [{ id: 'claude-test', supported_endpoints: ['/v1/messages'] }] }) }))
+vi.mock('../server/lib/gateway/accounts', () => ({ listGatewayModels: fixture.models }))
 import { handleCommandcodeCompatibility } from '../server/lib/commandcode-compat'
 import { ORIGINAL_KEY_ID_HEADER, ORIGINAL_KEY_SIGNATURE_HEADER, signOriginalGatewayKey, verifyOriginalGatewayKey } from '../server/lib/commandcode-identity'
 
@@ -22,6 +22,7 @@ describe('legacy manager ingress via local CPA', () => {
   beforeEach(async () => {
     vi.resetAllMocks()
     fixture.maxBody = 1
+    fixture.models.mockResolvedValue({ object: 'list', data: [{ id: 'claude-test', supported_endpoints: ['/v1/messages'] }] })
     fixture.authenticate.mockResolvedValue({ id: 'original-key', name: 'legacy client' })
     fixture.module.mockResolvedValue(undefined)
     fixture.upstream.mockResolvedValue(new Response('{"choices":[{"message":{"content":"answer"}}]}', { headers: { 'content-type': 'application/json', 'x-request-id': 'inner-request' } }))
@@ -66,6 +67,13 @@ describe('legacy manager ingress via local CPA', () => {
   it('retains raw model IDs and official endpoint metadata on the legacy models route', async () => {
     const response = await actualFetch(url + '/models', { headers: { authorization: 'Bearer ccm_original-client-key' } })
     expect(await response.json()).toEqual({ object: 'list', data: [{ id: 'claude-test', supported_endpoints: ['/v1/messages'] }] })
+    expect(fixture.upstream).not.toHaveBeenCalled()
+  })
+  it('returns a structured 503 when the official catalog is temporarily unavailable', async () => {
+    fixture.models.mockRejectedValueOnce(new Error('official catalog unavailable'))
+    const response = await actualFetch(url + '/models', { headers: { authorization: 'Bearer ccm_original-client-key' } })
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ error: { code: 'model_catalog_unavailable' } })
     expect(fixture.upstream).not.toHaveBeenCalled()
   })
   it('rejects a CPA-bound client key on every Command Code compatibility route', async () => {

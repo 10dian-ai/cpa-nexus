@@ -352,17 +352,28 @@ export async function resolveKeyPresetStack(keyId: string, enabledGroupIds?: str
         b.sort_order AS group_sort_order,b.source_json AS group_source_json,b.variables AS group_variables
       FROM nexus_presets p LEFT JOIN nexus_group_preset_bindings b ON b.group_id=${groupId} AND b.preset_id=p.id
       WHERE COALESCE(b.enabled,p.enabled)=true ORDER BY COALESCE(b.sort_order,p.sort_order),p.id`))
-    const merged: PresetView[] = [], seen = new Set<string>()
+    // A key may span several groups.  Each group's query is ordered by its
+    // effective order, but concatenating those result sets would make the
+    // final stack depend on the UUID/creation order of the groups.  Keep the
+    // first group's effective content for duplicate presets, then merge with
+    // a deterministic order: group override order, global library order, ID.
+    const merged: Array<{ preset: PresetView; order: number; globalOrder: number }> = [], seen = new Set<string>()
     for (const rows of promiseRows) for (const row of rows) {
       if (seen.has(row.id)) continue
       seen.add(row.id)
-      merged.push(groupView(row))
+      merged.push({
+        preset: groupView(row),
+        order: Number(row.group_sort_order ?? row.sort_order ?? 0),
+        globalOrder: Number(row.sort_order ?? 0),
+      })
     }
+    merged.sort((a, b) => a.order - b.order || a.globalOrder - b.globalOrder || a.preset.id.localeCompare(b.preset.id))
+    const ordered = merged.map(item => item.preset)
     if (generation === routeCacheGeneration) {
       if (groupStackCache.size >= 128) groupStackCache.delete(groupStackCache.keys().next().value!)
-      groupStackCache.set(cacheKey, { value: merged, until: Date.now() + 2000 })
+      groupStackCache.set(cacheKey, { value: ordered, until: Date.now() + 2000 })
     }
-    return merged
+    return ordered
   }
   if (enabledStackCache && enabledStackCache.until > Date.now()) return enabledStackCache.value
   if (enabledStackLoading?.generation === generation) return enabledStackLoading.promise

@@ -1,9 +1,9 @@
-import { applyCpaPrivacyPolicy } from '../../../scripts/cpa-privacy-policy.mjs'
+import { applyCpaPrivacyPolicy } from './privacy-policy.mjs'
 import { createCpaClient } from './client'
 import { getDb } from '../db'
 import { platformError } from '../platform-error'
 
-export { CPA_PRIVACY_USER_AGENT } from '../../../scripts/cpa-privacy-policy.mjs'
+export { CPA_PRIVACY_USER_AGENT } from './privacy-policy.mjs'
 export async function ensureNativeCpaPrivacy(options: { fileNames?: string[]; locked?: boolean } = {}) {
   const apply = () => applyCpaPrivacyPolicy(createCpaClient(), { fileNames: options.fileNames })
   try {

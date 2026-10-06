@@ -182,6 +182,16 @@ describe('complete CPA console through authenticated real local HTTP', () => {
     }
   })
 
+  it('rejects malformed v0 key lists before touching the core configuration', async () => {
+    const initialCalls = calls.length
+    for (const body of [[''], ['bad\nkey'], ['   '], { items: ['bad\rkey'] }, { items: [''] }]) {
+      const result = await read('/api/cpa/console/v0/management/api-keys', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      expect(result.status).toBe(400); await result.arrayBuffer()
+    }
+    expect(calls.length).toBe(initialCalls)
+    expect(keys).toEqual(['historical-model-key', CLIENT_KEY])
+  })
+
   it('rejects raw traversal before any upstream call and bounds the namespace to the fixed core', async () => {
     for (const path of ['/api/cpa/console/v8/management/%2e%2e/config', '/api/cpa/console/v8/management/%252e%252e/config', '/api/cpa/console/v0/resource/plugins/example/assets%2f..%2fconfig']) {
       const result = await new Promise<{ status: number }>((resolve, reject) => {

@@ -128,6 +128,10 @@ export async function handleNexusInference(event: H3Event) {
   const secret = typeof authorization === 'string' && /^Bearer\s+/i.test(authorization)
     ? authorization.replace(/^Bearer\s+/i, '').trim() : typeof apiKey === 'string' ? apiKey.trim() : ''
   try {
+    // Native CPA keys may use any non-empty value, but an absent credential
+    // must be rejected at the platform boundary instead of being proxied to
+    // the core and exposed as a misleading upstream 502.
+    if (!secret) { fail(event, path, 401, 'A valid model API key is required'); return }
     // Existing native core keys retain their original protocol and authentication.
     if (!secret.startsWith('ccm_')) return await forwardNativeCpa(event, '/v1/' + path + requested.search)
     // CPA installations before the private app callback was split may still point

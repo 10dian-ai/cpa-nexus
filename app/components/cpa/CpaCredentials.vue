@@ -75,6 +75,14 @@ function togglePage() {
   selectedNames.value = allPageSelected.value ? selectedNames.value.filter(name => !names.includes(name)) : [...new Set([...selectedNames.value, ...names])]
 }
 function toggleSelected(row: Record<string, unknown>) { const name = cpaCredentialName(row); selectedNames.value = selectedNames.value.includes(name) ? selectedNames.value.filter(item => item !== name) : [...selectedNames.value, name] }
+function credentialAuthIndex(row: Record<string, unknown>) {
+  const value = row.auth_index
+  return value === undefined || value === null || String(value).trim() === '' ? undefined : String(value)
+}
+function credentialIdentity(row: Record<string, unknown>) {
+  const authIndex = credentialAuthIndex(row)
+  return { name: cpaCredentialName(row), ...(authIndex ? { auth_index: authIndex } : {}) }
+}
 async function perform(action: string, targets: { name: string; run: () => Promise<unknown> }[]) {
   if (!targets.length) return
   progress.value = { total: targets.length, completed: 0 }
@@ -99,10 +107,10 @@ async function upload(event: Event) {
 async function batch(action: 'enable' | 'disable' | 'refresh' | 'download') {
   const targets = action === 'enable' || action === 'disable' ? selection.value : refreshableSelection.value
   const labels = { enable: '启用凭证', disable: '停用凭证', refresh: '刷新凭证', download: '下载凭证' }
-  await perform(labels[action], targets.map(row => ({ name: cpaCredentialName(row), run: () => action === 'download' ? cpaDownload(`credentials/download?name=${encodeURIComponent(cpaCredentialName(row))}`, cpaCredentialName(row)) : api(cpaManagementUrl(action === 'refresh' ? 'credentials/refresh' : 'credentials/status'), { method: action === 'refresh' ? 'POST' : 'PATCH', body: action === 'refresh' ? { name: cpaCredentialName(row), ...(row.auth_index ? { auth_index: row.auth_index } : {}) } : { name: cpaCredentialName(row), disabled: action === 'disable' } }) })))
+  await perform(labels[action], targets.map(row => ({ name: cpaCredentialName(row), run: () => action === 'download' ? cpaDownload(`credentials/download?name=${encodeURIComponent(cpaCredentialName(row))}`, cpaCredentialName(row)) : api(cpaManagementUrl(action === 'refresh' ? 'credentials/refresh' : 'credentials/status'), { method: action === 'refresh' ? 'POST' : 'PATCH', body: action === 'refresh' ? credentialIdentity(row) : { ...credentialIdentity(row), disabled: action === 'disable' } }) })))
 }
-async function toggle(row: Record<string, unknown>) { const result = await run(() => api(cpaManagementUrl('credentials/status'), { method: 'PATCH', body: { name: cpaCredentialName(row), disabled: !row.disabled } }), '凭证状态已更新'); if (result.ok) await refreshCredentials() }
-async function refreshCredential(row: Record<string, unknown>) { const result = await run(() => api(cpaManagementUrl('credentials/refresh'), { method: 'POST', body: { name: cpaCredentialName(row), ...(row.auth_index ? { auth_index: row.auth_index } : {}) } }), '凭证刷新已处理'); if (result.ok) { details.value = result.value; await refreshCredentials() } }
+async function toggle(row: Record<string, unknown>) { const result = await run(() => api(cpaManagementUrl('credentials/status'), { method: 'PATCH', body: { ...credentialIdentity(row), disabled: !row.disabled } }), '凭证状态已更新'); if (result.ok) await refreshCredentials() }
+async function refreshCredential(row: Record<string, unknown>) { const result = await run(() => api(cpaManagementUrl('credentials/refresh'), { method: 'POST', body: credentialIdentity(row) }), '凭证刷新已处理'); if (result.ok) { details.value = result.value; await refreshCredentials() } }
 async function inspect(row: Record<string, unknown>) {
   selected.value = row; fields.value = '{}'; fieldError.value = ''; details.value = null
   const result = await run(() => api(cpaManagementUrl('credentials/models'), { query: { name: cpaCredentialName(row) } }))
@@ -116,8 +124,22 @@ async function saveFields() {
   if (result.ok) { fieldError.value = ''; await refreshCredentials() }
 }
 async function resetCooldown() { const index = selected.value?.auth_index; if (!index) return; const result = await run(() => api(cpaManagementUrl('routing/cooldown/reset'), { method: 'POST', body: { auth_index: index } }), '内核冷却状态已重置'); if (result.ok) { details.value = result.value; await refresh() } }
-async function remove() { const targets = [...deleteTargets.value]; await perform('删除凭证', targets.map(row => ({ name: cpaCredentialName(row), run: () => api(cpaManagementUrl('credentials'), { method: 'DELETE', query: { name: cpaCredentialName(row) } }) }))); deleteTargets.value = [] }
-function quotaLink(row: Record<string, unknown>) { return { path: '/cpa/quota', query: { auth_index: String(row.auth_index || ''), provider: cpaDisplay(row.provider, '') } } }
+async function remove() {
+  const targets = [...deleteTargets.value]
+  if (!targets.length) return
+  // CPA's native DELETE contract accepts one JSON body with a `names` array.
+  // Sending the names as a query parameter appears to succeed on some older
+  // cores but silently leaves the credential files in place on v8.
+  await perform('删除凭证', [{
+    name: targets.length === 1 ? cpaCredentialName(targets[0]!) : `${targets.length} 个凭证`,
+    run: () => api(cpaManagementUrl('credentials'), {
+      method: 'DELETE',
+      body: { names: targets.map(cpaCredentialName) },
+    }),
+  }])
+  deleteTargets.value = []
+}
+function quotaLink(row: Record<string, unknown>) { return { path: '/cpa/quota', query: { auth_index: credentialAuthIndex(row) || '', provider: cpaDisplay(row.provider, '') } } }
 </script>
 <template>
   <section class="table-panel cpa-credential-table">
