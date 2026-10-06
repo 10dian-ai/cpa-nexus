@@ -1,0 +1,210 @@
+/* highlight.js 主题：GitHub Light/Dark 双套调色板。
+   暗色判定只认 html[data-resolved-theme="dark"]（theme-init.js 首帧解析并维护），
+   亮色是无条件基座，不设媒体查询——主题解析改这里一处即全局生效。 */
+
+pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 1em;
+}
+code.hljs {
+  padding: 3px 5px;
+}
+
+/* GitHub Light（基座，未解析出暗色时即此套） */
+.hljs {
+  color: #24292e;
+  background: #fff;
+}
+.hljs-doctag,
+.hljs-keyword,
+.hljs-meta .hljs-keyword,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable.language_ {
+  color: #d73a49;
+}
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-title.function_ {
+  color: #6f42c1;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-variable {
+  color: #005cc5;
+}
+.hljs-meta .hljs-string,
+.hljs-regexp,
+.hljs-string {
+  color: #032f62;
+}
+.hljs-built_in,
+.hljs-symbol {
+  color: #e36209;
+}
+.hljs-code,
+.hljs-comment,
+.hljs-formula {
+  color: #6a737d;
+}
+.hljs-name,
+.hljs-quote,
+.hljs-selector-pseudo,
+.hljs-selector-tag {
+  color: #22863a;
+}
+.hljs-subst {
+  color: #24292e;
+}
+.hljs-section {
+  color: #005cc5;
+  font-weight: 700;
+}
+.hljs-bullet {
+  color: #735c0f;
+}
+.hljs-emphasis {
+  color: #24292e;
+  font-style: italic;
+}
+.hljs-strong {
+  color: #24292e;
+  font-weight: 700;
+}
+.hljs-addition {
+  color: #22863a;
+  background-color: #f0fff4;
+}
+.hljs-deletion {
+  color: #b31d28;
+  background-color: #ffeef0;
+}
+
+/* GitHub Dark */
+html[data-resolved-theme="dark"] .hljs {
+  color: #c9d1d9;
+  background: #0d1117;
+}
+html[data-resolved-theme="dark"] .hljs-doctag,
+html[data-resolved-theme="dark"] .hljs-keyword,
+html[data-resolved-theme="dark"] .hljs-meta .hljs-keyword,
+html[data-resolved-theme="dark"] .hljs-template-tag,
+html[data-resolved-theme="dark"] .hljs-template-variable,
+html[data-resolved-theme="dark"] .hljs-type,
+html[data-resolved-theme="dark"] .hljs-variable.language_ {
+  color: #ff7b72;
+}
+html[data-resolved-theme="dark"] .hljs-title,
+html[data-resolved-theme="dark"] .hljs-title.class_,
+html[data-resolved-theme="dark"] .hljs-title.class_.inherited__,
+html[data-resolved-theme="dark"] .hljs-title.function_ {
+  color: #d2a8ff;
+}
+html[data-resolved-theme="dark"] .hljs-attr,
+html[data-resolved-theme="dark"] .hljs-attribute,
+html[data-resolved-theme="dark"] .hljs-literal,
+html[data-resolved-theme="dark"] .hljs-meta,
+html[data-resolved-theme="dark"] .hljs-number,
+html[data-resolved-theme="dark"] .hljs-operator,
+html[data-resolved-theme="dark"] .hljs-selector-attr,
+html[data-resolved-theme="dark"] .hljs-selector-class,
+html[data-resolved-theme="dark"] .hljs-selector-id,
+html[data-resolved-theme="dark"] .hljs-variable {
+  color: #79c0ff;
+}
+html[data-resolved-theme="dark"] .hljs-meta .hljs-string,
+html[data-resolved-theme="dark"] .hljs-regexp,
+html[data-resolved-theme="dark"] .hljs-string {
+  color: #a5d6ff;
+}
+html[data-resolved-theme="dark"] .hljs-built_in,
+html[data-resolved-theme="dark"] .hljs-symbol {
+  color: #ffa657;
+}
+html[data-resolved-theme="dark"] .hljs-code,
+html[data-resolved-theme="dark"] .hljs-comment,
+html[data-resolved-theme="dark"] .hljs-formula {
+  color: #8b949e;
+}
+html[data-resolved-theme="dark"] .hljs-name,
+html[data-resolved-theme="dark"] .hljs-quote,
+html[data-resolved-theme="dark"] .hljs-selector-pseudo,
+html[data-resolved-theme="dark"] .hljs-selector-tag {
+  color: #7ee787;
+}
+html[data-resolved-theme="dark"] .hljs-subst {
+  color: #c9d1d9;
+}
+html[data-resolved-theme="dark"] .hljs-section {
+  color: #1f6feb;
+  font-weight: 700;
+}
+html[data-resolved-theme="dark"] .hljs-bullet {
+  color: #f2cc60;
+}
+html[data-resolved-theme="dark"] .hljs-emphasis {
+  color: #c9d1d9;
+  font-style: italic;
+}
+html[data-resolved-theme="dark"] .hljs-strong {
+  color: #c9d1d9;
+  font-weight: 700;
+}
+html[data-resolved-theme="dark"] .hljs-addition {
+  color: #aff5b4;
+  background-color: #033a16;
+}
+html[data-resolved-theme="dark"] .hljs-deletion {
+  color: #ffdcd7;
+  background-color: #67060c;
+}
+
+/* Upstream/debug code viewer: calmer diagnostic palette than generic code blocks. */
+pre.upstream-pre .hljs {
+  background: transparent;
+  color: var(--code-fg);
+}
+
+pre.upstream-pre .hljs-attr,
+pre.upstream-pre .hljs-attribute,
+pre.upstream-pre .hljs-meta,
+pre.upstream-pre .hljs-variable {
+  color: var(--code-key);
+}
+
+pre.upstream-pre .hljs-string,
+pre.upstream-pre .hljs-meta .hljs-string,
+pre.upstream-pre .hljs-regexp {
+  color: var(--code-string);
+}
+
+pre.upstream-pre .hljs-number {
+  color: var(--code-number);
+}
+
+pre.upstream-pre .hljs-literal {
+  color: var(--code-literal);
+}
+
+pre.upstream-pre .hljs-keyword {
+  color: var(--code-literal);
+}
+
+pre.upstream-pre .hljs-punctuation,
+pre.upstream-pre .hljs-operator {
+  color: var(--code-muted);
+}
+
+pre.upstream-pre .hljs-comment {
+  color: var(--code-gutter);
+}

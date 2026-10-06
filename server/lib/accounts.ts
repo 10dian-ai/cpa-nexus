@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
 import { getRedis } from './redis'
-import { getSettings } from './settings'
+import { readAccountConcurrencyForImport } from './settings'
 import { publishUpdate } from './events'
 import { enqueueAccountRefresh } from './queues'
 import type { AccountView, AccountSnapshot, ModelView } from '../../shared/types'
@@ -61,10 +61,11 @@ export async function patchAccount(id:string, values: {label?:string;groupName?:
   return getAccount(id)
 }
 export async function createPendingAccount(fingerprint:string,ciphertext:string,groupName?:string,groupIds?:string[]) {
-  const settings=await getSettings(), sql=getDb(), id=randomUUID()
+  const sql=getDb(), id=randomUUID()
   const rows=await sql.begin(async tx => {
+    const maxConcurrency = await readAccountConcurrencyForImport(tx)
     const inserted=await tx`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext,group_name,max_concurrency)
-      VALUES(${id},${fingerprint},${ciphertext},${groupName??''},${settings.defaultAccountConcurrency})
+      VALUES(${id},${fingerprint},${ciphertext},${groupName??''},${maxConcurrency})
       ON CONFLICT(credential_fingerprint) DO UPDATE SET updated_at=managed_accounts.updated_at RETURNING *`
     if (groupIds !== undefined) await setAccountGroups(tx, 'commandcode', inserted[0]!.id, groupIds)
     else await ensureAccountGroups(tx, 'commandcode', inserted[0]!.id)

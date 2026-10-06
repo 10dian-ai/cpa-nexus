@@ -12,11 +12,9 @@ x-app-env: &app-env
   COMMANDCODE_MANAGEMENT_URL: ${COMMANDCODE_MANAGEMENT_URL:-https://api.commandcode.ai}
   CPA_URL: http://cpa:8317
   CPA_COMMANDCODE_BASE_URL: http://app:3000/v1
-  # The sidecar is a separately deployed extension service. Set this explicitly
-  # when it is reachable from the app container; no implicit DNS target is
-  # advertised because this compose file does not build the Go sidecar.
-  DEVIN2API_URL: ${DEVIN2API_URL:-}
-  DEVIN2API_API_KEY: ${DEVIN2API_API_KEY:-}
+  # The Devin adapter is built into the CPAN app image and managed per account.
+  # No separately deployed Devin service or shared upstream API key is required.
+  DEVIN2API_BINARY: ${DEVIN2API_BINARY:-/usr/local/bin/devin-2api}
   DEVIN2API_TIMEOUT_MS: ${DEVIN2API_TIMEOUT_MS:-15000}
 services:
   postgres:

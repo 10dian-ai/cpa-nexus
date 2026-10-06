@@ -4,7 +4,8 @@ import { insertRequestLog } from '../logs'
 import { forwardDevin2Api } from './forward'
 import { listDevin2ApiGroupModels, resolveDevin2ApiModel } from './routing'
 import { resolveKeyPresetStack } from '../presets'
-import { applyPresetStack } from '../presets/engine'
+import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
+import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
 
 type Protocol = 'chat/completions' | 'messages' | 'responses'
 type JsonObject = Record<string, unknown>
@@ -34,22 +35,39 @@ export async function handleDevin2ApiInference(event: H3Event, input: { keyId: s
   if (!selected) throw fail(404, '当前 Key 的分组中没有可调用的这个 Devin 模型')
   event.node.res.setHeader('x-nexus-module', 'devin2api')
   event.node.res.setHeader('x-nexus-source-id', selected.account.id)
-  const presets = await resolveKeyPresetStack(input.keyId, input.groupIds)
+  // The selected source may overlap several key groups. Apply only the
+  // preset stack for the group that actually authorized this account, rather
+  // than merging unrelated group overrides into the same request.
+  const presets = await resolveKeyPresetStack(input.keyId, [selected.matchedGroupId])
+  // Keep the module usable with older preset engine extensions while the
+  // generation type helper is rolled out; undefined means the default stack.
+  const generationType = typeof resolvePresetGenerationType === 'function'
+    ? resolvePresetGenerationType(body, event.node.req?.headers || {})
+    : undefined
   if (presets.length) {
-    body = applyPresetStack(presets, body, { protocol: path === 'chat/completions' ? 'chat' : path as 'messages' | 'responses' }) as JsonObject
+    body = applyPresetStack(presets, body, { protocol: path === 'chat/completions' ? 'chat' : path as 'messages' | 'responses', generationType }) as JsonObject
     event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
   }
+  if (Object.hasOwn(body, 'generation_type')) { body = { ...body }; delete body.generation_type }
+  body = normalizeBillingRequest(body, path)
+  event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
   const modelForLog = typeof body.model === 'string' ? body.model : String(body.model)
   const sessionForLog = typeof body.session_id === 'string' ? body.session_id : null
   const started = Date.now()
+  const usageObserver = new BillingUsageObserver()
+  const presetIds = presets.map(preset => preset.id)
+  const usageWithMetadata = () => {
+    const usage = usageObserver.value()
+    return usage ? { ...usage, nexus: { moduleId: 'devin2api', groupIds: [...input.groupIds], presetIds } } : null
+  }
   try {
-    await forwardDevin2Api(event, `/v1/${path}`, { body, groupIds: input.groupIds })
+    await forwardDevin2Api(event, `/v1/${path}`, { body, groupIds: [selected.matchedGroupId], selection: selected, usageObserver })
     await insertRequestLog({
       keyId: input.keyId, accountId: null, moduleId: 'devin2api', sourceId: selected.account.id,
       model: modelForLog, protocol: path as Protocol, sessionId: sessionForLog,
       status: (event.node.res.statusCode || 500) >= 400 ? 'error' : 'success', httpStatus: event.node.res.statusCode || null,
-      durationMs: Date.now() - started, streaming: String(event.node.res.getHeader('content-type') || '').includes('text/event-stream'), usage: null,
-      errorMessage: (event.node.res.statusCode || 500) >= 400 ? `Devin sidecar returned HTTP ${event.node.res.statusCode}` : null,
+      durationMs: Date.now() - started, streaming: String(event.node.res.getHeader('content-type') || '').includes('text/event-stream'), usage: usageWithMetadata(),
+      errorMessage: (event.node.res.statusCode || 500) >= 400 ? `Devin embedded runtime returned HTTP ${event.node.res.statusCode}` : null,
       requestBody: body, responseBody: null, responseTruncated: false,
     })
   } catch (error) {
@@ -57,7 +75,7 @@ export async function handleDevin2ApiInference(event: H3Event, input: { keyId: s
       keyId: input.keyId, accountId: null, moduleId: 'devin2api', sourceId: selected.account.id,
       model: modelForLog, protocol: path as Protocol, sessionId: sessionForLog,
       status: 'error', httpStatus: Number((error as { statusCode?: number }).statusCode) || null, durationMs: Date.now() - started,
-      streaming: false, usage: null, errorMessage: error instanceof Error ? error.message : 'Devin request failed', requestBody: body, responseBody: null, responseTruncated: false,
+      streaming: false, usage: usageWithMetadata(), errorMessage: error instanceof Error ? error.message : 'Devin request failed', requestBody: body, responseBody: null, responseTruncated: false,
     }).catch(() => undefined)
     throw error
   }

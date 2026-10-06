@@ -2,102 +2,77 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { IncomingHttpHeaders, IncomingMessage, RequestOptions } from 'node:http'
 import type { H3Event } from 'h3'
-import { getDevin2ApiRuntimeConfig } from './client'
+import type { Devin2ApiSelection } from './routing'
 import { resolveDevin2ApiModel } from './routing'
 import { stripDevin2ApiModel } from './catalog'
+import { acquireDevin2ApiRuntimeLease } from './runtime'
+import type { BillingUsageObserver } from '../billing'
 
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
 function copyHeaders(source: IncomingHttpHeaders): IncomingHttpHeaders {
   const connectionTokens = String(source.connection || '').toLowerCase().split(',').map(token => token.trim())
   return Object.fromEntries(Object.entries(source).filter(([name]) => !HOP_HEADERS.has(name) && !connectionTokens.includes(name)))
 }
-function failStatus(message: string, statusCode: number): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode })
-}
-
+const failStatus = (message: string, statusCode: number) => Object.assign(new Error(message), { statusCode })
 export interface ForwardDevin2ApiOptions {
-  /** Caller may provide a parsed body so presets can be applied before forwarding. */
   body?: Record<string, unknown>
-  baseUrl?: string
-  apiKey?: string
-  /** If supplied, enforce a Devin account binding before the request leaves Nexus. */
   groupIds?: string[]
+  selection?: Devin2ApiSelection
+  usageObserver?: BillingUsageObserver
 }
-
-/** Stream one of the OpenAI-compatible Devin protocols through the internal sidecar. */
+/** Stream a request through the account-specific embedded runtime. */
 export async function forwardDevin2Api(event: H3Event, protocolPath: string, options: ForwardDevin2ApiOptions = {}): Promise<void> {
   const rawPath = protocolPath.startsWith('/') ? protocolPath : '/' + protocolPath
   if (!/^\/v1\/(?:chat\/completions|messages|responses)(?:\?.*)?$/.test(rawPath)) throw failStatus('Unsupported Devin protocol endpoint', 404)
   let body = options.body
-  let baseUrl = options.baseUrl
-  if (options.groupIds && body && typeof body.model === 'string') {
-    const selected = await resolveDevin2ApiModel(body.model, options.groupIds)
-    if (!selected) throw failStatus('当前 Key 的分组中没有可调用的这个 Devin 模型', 404)
-    // `base_url` belongs to the Devin upstream configuration consumed by the
-    // sidecar. Nexus always calls the sidecar endpoint itself; using the
-    // account value here would bypass the adapter and lose its auth/session
-    // handling.
-    body = { ...body, model: selected.model }
-  } else if (body && typeof body.model === 'string') {
+  let selection = options.selection
+  if (!selection && options.groupIds && body && typeof body.model === 'string') selection = await resolveDevin2ApiModel(body.model, options.groupIds) || undefined
+  if (!selection) throw failStatus('当前 Key 的分组中没有可调用的这个 Devin 模型', 404)
+  if (body && typeof body.model === 'string') {
     const model = stripDevin2ApiModel(body.model)
     if (model) body = { ...body, model }
+    else if (body.model !== selection.model) body = { ...body, model: selection.model }
   }
-
-  const runtime = getDevin2ApiRuntimeConfig()
-  const targetBaseUrl = baseUrl || runtime.baseUrl
-  if (!targetBaseUrl) throw failStatus('Missing DEVIN2API_URL configuration', 503)
-  const parsed = new URL(targetBaseUrl)
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash)
-    throw failStatus('Invalid DEVIN2API_URL configuration', 500)
-  const url = new URL(rawPath, parsed)
+  const lease = await acquireDevin2ApiRuntimeLease({
+    id: selection.account.id, baseUrl: selection.account.baseUrl, model: selection.account.model,
+    proxy: selection.account.proxy, maxConcurrency: (selection.account as any).maxConcurrency || 2,
+  })
+  const endpoint = new URL(rawPath, lease.baseUrl)
   const headers = copyHeaders(event.node.req.headers)
-  // The caller's credentials and Nexus-internal metadata must never cross the
-  // sidecar boundary.  In particular, cookies and proxy credentials can carry
-  // unrelated administrator sessions, while x-nexus-* headers expose routing
-  // details that are only meaningful inside this process.  The sidecar gets
-  // its own credential below and should receive only the request payload.
   for (const name of Object.keys(headers)) {
-    if (/^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-goog-api-key|content-length|content-encoding)$/i.test(name) ||
-        /^x-nexus-/i.test(name)) delete headers[name]
+    if (/^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-goog-api-key|content-length|content-encoding)$/i.test(name) || /^x-nexus-/i.test(name)) delete headers[name]
   }
-  const key = options.apiKey === undefined ? runtime.apiKey : options.apiKey?.trim()
-  if (key) headers['x-api-key'] = key
+  headers['x-api-key'] = lease.apiKey
   let transformed: Buffer | undefined
   if (body !== undefined) {
-    transformed = Buffer.from(JSON.stringify(body))
-    headers['content-type'] = 'application/json'
-    headers['content-length'] = String(transformed.byteLength)
+    transformed = Buffer.from(JSON.stringify(body)); headers['content-type'] = 'application/json'; headers['content-length'] = String(transformed.byteLength)
   }
   await new Promise<void>((resolve, reject) => {
-    let reply: IncomingMessage | undefined
-    const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, { method: event.method, headers } as RequestOptions, response => {
-      reply = response
-      event.node.res.statusCode = response.statusCode || 502
+    let reply: IncomingMessage | undefined; let settled = false
+    const release = () => { if (!settled) { settled = true; lease.release() } }
+    const request = (endpoint.protocol === 'https:' ? httpsRequest : httpRequest)(endpoint, { method: event.method, headers } as RequestOptions, response => {
+      reply = response; event.node.res.statusCode = response.statusCode || 502
       for (const [name, value] of Object.entries(copyHeaders(response.headers))) {
-        // Do not let an internal adapter establish a browser session or echo
-        // credentials back through the public model gateway.
         if (/^(set-cookie|authorization|proxy-authenticate|x-api-key|x-goog-api-key)$/i.test(name) || /^x-nexus-/i.test(name)) continue
         if (value !== undefined) event.node.res.setHeader(name, value)
       }
       event.node.res.setHeader('x-accel-buffering', 'no')
-      response.on('error', reject)
-      response.on('aborted', () => reject(new Error('Devin sidecar response interrupted')))
+      response.on('error', error => { release(); reject(error) })
+      response.on('aborted', () => { release(); reject(new Error('Devin embedded runtime response interrupted')) })
+      if (options.usageObserver) {
+        response.on('data', chunk => options.usageObserver!.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+        response.on('end', () => options.usageObserver!.end())
+      }
       response.pipe(event.node.res)
     })
     const cleanup = () => { event.node.res.off('close', closed); event.node.res.off('finish', finished) }
-    const finished = () => { cleanup(); resolve() }
-    const closed = () => {
-      if (!event.node.res.writableFinished) { request.destroy(); reply?.destroy() }
-      cleanup(); resolve()
-    }
-    event.node.res.once('close', closed)
-    event.node.res.once('finish', finished)
-    request.setTimeout(120_000, () => request.destroy(new Error('Devin sidecar upstream idle timeout')))
-    request.on('error', error => { cleanup(); reject(error) })
+    const finished = () => { cleanup(); release(); resolve() }
+    const closed = () => { if (!event.node.res.writableFinished) { request.destroy(); reply?.destroy() }; cleanup(); release(); resolve() }
+    event.node.res.once('close', closed); event.node.res.once('finish', finished)
+    request.setTimeout(120_000, () => request.destroy(new Error('Devin embedded runtime idle timeout')))
+    request.on('error', error => { cleanup(); release(); reject(error) })
     if (event.node.res.destroyed) { closed(); return }
-    if (transformed) request.end(transformed)
-    else event.node.req.pipe(request)
+    if (transformed) request.end(transformed); else event.node.req.pipe(request)
   })
 }
-
 export const handleDevin2ApiForward = forwardDevin2Api

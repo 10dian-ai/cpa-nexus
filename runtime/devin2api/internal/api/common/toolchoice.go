@@ -1,0 +1,129 @@
+// 本文件把 OpenAI / Anthropic 的 tool_choice 与 parallel_tool_calls 请求字段
+// 解析为中间模型的 llm.ToolChoice。
+package common
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/WncFht/devin2api/internal/llm"
+)
+
+// ParseOpenAIToolChoice 解析 OpenAI 风格的 tool_choice 字段：
+// 字符串 "auto"/"none"/"required"，或对象 {"type":"function","function":{"name":X}}
+// （Responses API 的扁平形态 {"type":"function","name":X} 同样接受）。
+// 空输入与 "auto" 返回 nil（模型自选，与缺省一致）。
+// 非 function 的对象形态（file_search/mcp/allowed_tools 等托管工具约束）
+// 上游没有对应物：记 dropped 透出并按 auto 放行——这类约束指向的工具本来
+// 就在 tools 里被丢弃，为不可满足的强制条件 400 掉整个请求没有意义。
+func ParseOpenAIToolChoice(raw json.RawMessage, dropped *[]string) (*llm.ToolChoice, error) {
+	if JSONBlank(raw) {
+		return nil, nil
+	}
+	var name string
+	if err := json.Unmarshal(raw, &name); err == nil {
+		switch name {
+		case "", "auto":
+			return nil, nil
+		case "none":
+			return &llm.ToolChoice{Mode: llm.ToolChoiceNone}, nil
+		case "required":
+			return &llm.ToolChoice{Mode: llm.ToolChoiceRequired}, nil
+		default:
+			return nil, fmt.Errorf("unsupported tool_choice %q", name)
+		}
+	}
+	var object struct {
+		Type     string `json:"type"`
+		Name     string `json:"name"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, fmt.Errorf("decode tool_choice: %w", err)
+	}
+	if object.Type != "" && object.Type != "function" {
+		*dropped = append(*dropped, "tool_choice:"+object.Type)
+		return nil, nil
+	}
+	toolName := object.Name
+	if toolName == "" {
+		toolName = object.Function.Name
+	}
+	if toolName == "" {
+		return nil, fmt.Errorf("tool_choice object requires a function name")
+	}
+	return &llm.ToolChoice{Mode: llm.ToolChoiceNamed, ToolName: toolName}, nil
+}
+
+// ParseAnthropicToolChoice 解析 Anthropic 风格的 tool_choice 对象：
+// {"type":"auto"|"any"|"tool"|"none", "name":X, "disable_parallel_tool_use":bool}。
+// Anthropic 的 "any"（任一工具必须调用）归一为 ToolChoiceRequired——
+// Devin 上游 option_name 不接受 "any"（实测 invalid_argument）。
+// 第二个返回值是 disable_parallel_tool_use；历史上本代理解析过
+// 非规范的 "disable_parallel_tool_calls" 拼写，两个键都接受（任一 true 即禁用）。
+func ParseAnthropicToolChoice(raw json.RawMessage) (*llm.ToolChoice, bool, error) {
+	if JSONBlank(raw) {
+		return nil, false, nil
+	}
+	var object struct {
+		Type                     string `json:"type"`
+		Name                     string `json:"name"`
+		DisableParallelToolUse   bool   `json:"disable_parallel_tool_use"`
+		DisableParallelToolCalls bool   `json:"disable_parallel_tool_calls"`
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, false, fmt.Errorf("decode tool_choice: %w", err)
+	}
+	var choice *llm.ToolChoice
+	switch object.Type {
+	case "", "auto":
+	case "any":
+		choice = &llm.ToolChoice{Mode: llm.ToolChoiceRequired}
+	case "tool":
+		if object.Name == "" {
+			return nil, false, fmt.Errorf("tool_choice type=tool requires a name")
+		}
+		choice = &llm.ToolChoice{Mode: llm.ToolChoiceNamed, ToolName: object.Name}
+	case "none":
+		choice = &llm.ToolChoice{Mode: llm.ToolChoiceNone}
+	default:
+		return nil, false, fmt.Errorf("unsupported tool_choice type %q", object.Type)
+	}
+	return choice, object.DisableParallelToolUse || object.DisableParallelToolCalls, nil
+}
+
+// DemoteDroppedToolChoice 把指名了「已声明但被投影丢弃」工具的 tool_choice
+// 降为 auto：名字确实在声明表出现过（不是幻觉/拼错指名），只是类型在上游
+// 没有对应物——降级让模型在幸存工具里自选，比让「指名不存在的工具」400
+// 更接近客户端本意。同名条目幸存时不降（如 web_search 诱饵与同名 function
+// 并存：名字仍可满足）。从未声明过的名字不动，留给指名校验报错。
+// droppedTools 由各面 DecodeRequest 在投影声明时按 wire 名收集；anthropic
+// 面原本把同一判定内联在解码尾，这里统一共用。
+func DemoteDroppedToolChoice(context *llm.RequestMessages, droppedTools map[string]bool) {
+	choice := context.ToolChoice
+	if choice == nil || choice.Mode != llm.ToolChoiceNamed || !droppedTools[choice.ToolName] {
+		return
+	}
+	for _, tool := range context.Tools {
+		if tool.Name == choice.ToolName {
+			return
+		}
+	}
+	context.ToolChoice = &llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+	context.Dropped = append(context.Dropped, "tool_choice:"+choice.ToolName)
+}
+
+// NormalizeToolArguments 归一回放历史里的工具调用参数体：空串/null 吞成
+// {}（上游只认 JSON 对象）；非 JSON 对象原文（畸形 JSON、标量）标记 custom
+// 走 Custom 通道保真上行——吞成 {} 会让上游看到的调用语义悄悄变空。
+func NormalizeToolArguments(raw json.RawMessage) (json.RawMessage, bool) {
+	if JSONBlank(raw) {
+		return json.RawMessage(`{}`), false
+	}
+	if !llm.IsJSONObject(raw) {
+		return raw, true
+	}
+	return raw, false
+}

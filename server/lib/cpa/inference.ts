@@ -7,7 +7,7 @@ import { handleGateway } from '../gateway/handler'
 import { verifyOriginalGatewayKey } from '../commandcode-identity'
 import { resolveKeyPresetStack } from '../presets'
 import { authenticateGatewayKey } from '../auth'
-import { applyPresetStack } from '../presets/engine'
+import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
 import { getSettings } from '../settings'
 import { readJsonBodyLimited } from '../gateway/transport'
 import { isModuleEnabled, requireModule } from '../modules'
@@ -21,6 +21,8 @@ import { getConfig } from '../config'
 import { CPA_GROUP_POLICY_HEADER, registerCpaGroupPolicy } from './group-policy'
 import { handleDevin2ApiInference } from '../devin2api/inference'
 import { listDevin2ApiGroupModels } from '../devin2api/routing'
+import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
+import { insertRequestLog } from '../logs'
 
 const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
@@ -58,7 +60,8 @@ function requestHeaders(event: H3Event, clientKey?: string): IncomingHttpHeaders
 }
 
 /** Stream native requests and replies without changing their protocol or credentials. */
-export async function forwardNativeCpa(event: H3Event, path: string, body?: Record<string, unknown>, clientKey?: string, groupPolicy?: string) {
+export async function forwardNativeCpa(event: H3Event, path: string, body?: Record<string, unknown>, clientKey?: string, groupPolicy?: string,
+  usageObserver?: BillingUsageObserver) {
   const url = destination(path)
   const headers = requestHeaders(event, clientKey)
   if (groupPolicy) headers[CPA_GROUP_POLICY_HEADER] = groupPolicy
@@ -75,10 +78,16 @@ export async function forwardNativeCpa(event: H3Event, path: string, body?: Reco
     const upstream = request(url, { method: event.method, headers }, response => {
       reply = response
       event.node.res.statusCode = response.statusCode || 502
-      for (const [name, value] of Object.entries(copyHeaders(response.headers))) if (value !== undefined) event.node.res.setHeader(name, value)
+      for (const [name, value] of Object.entries(copyHeaders(response.headers))) {
+        if (value !== undefined && name !== BILLING_USAGE_POLICY_HEADER) event.node.res.setHeader(name, value)
+      }
       event.node.res.setHeader('x-accel-buffering', 'no')
       response.on('error', reject)
       response.on('aborted', () => reject(new Error('CPA response interrupted')))
+      if (usageObserver) {
+        response.on('data', chunk => usageObserver.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+        response.on('end', () => usageObserver.end())
+      }
       response.pipe(event.node.res)
     })
     const cleanup = () => { event.node.res.off('close', closed); event.node.res.off('finish', finished) }
@@ -185,15 +194,51 @@ export async function handleNexusInference(event: H3Event) {
     const selected = await resolveCpaGroupPolicy(model, groupIds, key.id)
     if (!selected) { fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return }
     body.model = model
-    const presets = await resolveKeyPresetStack(key.id)
+    const presets = await resolveKeyPresetStack(key.id, [selected.selectedGroupId])
+    const generationType = resolvePresetGenerationType(body, event.node.req.headers)
     if (presets.length) {
-      body = applyPresetStack(presets, body, { protocol: protocol! })
+      body = applyPresetStack(presets, body, { protocol: protocol!, generationType })
       event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
     }
+    if (Object.hasOwn(body, 'generation_type')) { body = { ...body }; delete body.generation_type }
+    body = normalizeBillingRequest(body, path)
+    event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
     body.model = selected.model
     const policy = selected.legacyPrefix ? undefined : await registerCpaGroupPolicy({ keyId: key.id,
       allowedAuthIDs: selected.allowedAuthIDs, allowedPluginIDs: selected.allowedPluginIDs })
-    return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey, policy)
+    const usageObserver = new BillingUsageObserver()
+    const startedAt = Date.now()
+    const presetIds = presets.map(preset => preset.id)
+    const sessionId = typeof body.session_id === 'string' ? body.session_id : null
+    try {
+      await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey, policy, usageObserver)
+      const statusCode = event.node.res.statusCode || 500
+      const usage = usageObserver.value()
+      const usageWithMetadata = usage ? {
+        ...usage,
+        nexus: { moduleId: 'cpa', groupIds: [...groupIds], presetIds },
+      } : null
+      await insertRequestLog({
+        keyId: key.id, accountId: null, moduleId: 'cpa', sourceId: null,
+        model: typeof body.model === 'string' ? body.model : model, protocol: path as 'chat/completions' | 'messages' | 'responses', sessionId,
+        status: statusCode >= 400 ? 'error' : 'success', httpStatus: statusCode, durationMs: Date.now() - startedAt,
+        streaming: String(event.node.res.getHeader('content-type') || '').includes('text/event-stream'), usage: usageWithMetadata,
+        errorMessage: statusCode >= 400 ? `CPA core returned HTTP ${statusCode}` : null,
+        requestBody: body, responseBody: null, responseTruncated: false,
+      }).catch(error => console.error('[cpa] Request log could not be persisted', error instanceof Error ? error.message : 'Storage unavailable'))
+      return
+    } catch (error) {
+      const partialUsage = usageObserver.value()
+      await insertRequestLog({
+        keyId: key.id, accountId: null, moduleId: 'cpa', sourceId: null,
+        model: typeof body.model === 'string' ? body.model : model, protocol: path as 'chat/completions' | 'messages' | 'responses', sessionId,
+        status: 'error', httpStatus: Number((error as { statusCode?: number }).statusCode) || event.node.res.statusCode || null,
+        durationMs: Date.now() - startedAt, streaming: false,
+        usage: partialUsage ? { ...partialUsage, nexus: { moduleId: 'cpa', groupIds: [...groupIds], presetIds } } : null,
+        errorMessage: error instanceof Error ? error.message : 'CPA request failed', requestBody: body, responseBody: null, responseTruncated: false,
+      }).catch(() => undefined)
+      throw error
+    }
   } catch (error) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }
     const status = Number((error as { statusCode?: number }).statusCode) || (/timeout/i.test(String(error)) ? 504 : 502)

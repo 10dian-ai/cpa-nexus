@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
+  <link rel="icon" type="image/x-icon" href="/web/favicon.ico">
+  <link rel="apple-touch-icon" href="/web/apple-touch-icon.png">
+  <link rel="manifest" href="/web/manifest.json">
+  <meta name="theme-color" content="#5438e1">
+  <title data-i18n="index.title">概览 - Devin2API</title>
+  <script src="/web/assets/js/theme-init.js?v=__VERSION__"></script>
+  <link rel="stylesheet" href="/web/assets/css/styles.css?v=__VERSION__">
+  <link rel="stylesheet" href="/web/assets/css/index.css?v=__VERSION__">
+  <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui-api.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui-format.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui-filters.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui-notify.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui-topbar.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui-combobox.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/ui-autorefresh.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/searchable-select.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/service-health.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/index.js?v=__VERSION__"></script>
+</head>
+<body class="page-index">
+  <div class="app-container">
+
+    <!-- 主内容区域 -->
+    <main id="main" class="main-content index-main-content">
+      <div class="content-area">
+        <h1 class="visually-hidden" data-i18n="nav.overview">概览</h1>
+        <!-- 时间范围选择器 -->
+        <section class="mb-4">
+          <div class="time-range-container">
+            <div id="index-time-range" class="time-range-selector seg"></div>
+          </div>
+        </section>
+
+        <!-- 服务健康监测 -->
+        <section class="mb-6">
+          <div class="card service-health-card animate-slide-up animate-delay-1" aria-labelledby="service-health-title">
+            <div class="service-health-header">
+              <h2 id="service-health-title" class="service-health-title" data-i18n="index.health.title">服务健康监测</h2>
+              <div class="service-health-summary">
+                <span id="service-health-period" class="service-health-period" data-i18n="index.timeRange.today">本日</span>
+                <span id="service-health-rate" class="service-health-rate" data-state="unknown" aria-live="polite">--</span>
+              </div>
+            </div>
+            <div class="service-health-plot">
+              <div
+                id="service-health-grid"
+                class="service-health-grid"
+                role="img"
+                aria-busy="true"
+                data-i18n-aria-label="index.health.loading"
+                aria-label="正在加载服务健康数据"
+              ></div>
+              <div id="service-health-tooltip" class="service-health-tooltip" role="tooltip" hidden>
+                <div id="service-health-tooltip-time" class="service-health-tooltip-time"></div>
+                <div class="service-health-tooltip-stats">
+                  <span class="service-health-tooltip-success">✓ <strong id="service-health-tooltip-success">0</strong></span>
+                  <span class="service-health-tooltip-error">× <strong id="service-health-tooltip-error">0</strong></span>
+                  <span id="service-health-tooltip-rate" class="service-health-tooltip-rate">--</span>
+                </div>
+              </div>
+              <div class="service-health-footer">
+                <span id="service-health-earlier" class="service-health-edge">--</span>
+                <div class="service-health-legend" data-i18n-aria-label="index.health.legendLabel" aria-label="健康状态图例">
+                  <span class="service-health-legend-item"><i class="service-health-swatch unknown" aria-hidden="true"></i><span data-i18n="index.health.noRequests">无请求</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch critical" aria-hidden="true"></i><span data-i18n="index.health.critical">异常</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch warning" aria-hidden="true"></i><span data-i18n="index.health.warning">波动</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch healthy" aria-hidden="true"></i><span data-i18n="index.health.healthy">健康</span></span>
+                </div>
+                <span id="service-health-latest" class="service-health-edge">--</span>
+              </div>
+            </div>
+            <p id="service-health-message" class="service-health-message" role="status" hidden></p>
+          </div>
+        </section>
+
+        <!-- 四个入口端点固定展示；零流量卡由 index.js 挪入下方 chip 排，不占网格位 -->
+        <section class="mb-6">
+          <div class="grid grid-cols-2 animate-slide-up animate-delay-2 gap-space-3" id="channel-grid">
+            <!-- 渠道卡片由 index.js 按 tpl-channel-card 模板渲染 -->
+          </div>
+          <div id="channel-empty-strip" class="channel-empty-strip" hidden></div>
+        </section>
+        <!-- 用量概览：今日聚合 + 高频令牌走主网格，逐号配额单列一组（admin 专属；加载失败保持隐藏） -->
+        <section class="mb-6" id="usage-section" hidden>
+          <div class="usage-grid animate-slide-up animate-delay-3" id="usage-grid"></div>
+          <div class="usage-quota-group" id="usage-quota-group" hidden>
+            <h3 class="usage-quota-group-title" data-i18n="index.usage.laneQuotas">号池配额</h3>
+            <div class="usage-grid" id="usage-quota-grid"></div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <!-- 入口渠道卡：index.js 按 CHANNEL_CARDS 逐张渲染，
+       id 契约 type-{{type}}-* 供 updateOverviewCard 填充 -->
+  <template id="tpl-channel-card">
+    <div class="card channel-card" id="type-{{type}}-card">
+      <div class="channel-card-header">
+        <div class="channel-card-title">
+          <div class="channel-icon channel-icon--{{iconClass}}">{{{icon}}}</div>
+          <span>{{label}}</span>
+        </div>
+        <div class="channel-cost">
+          <span class="cost-label" data-i18n="common.cost">成本</span>
+          <span class="cost-value" id="type-{{type}}-cost">$0.00</span>
+        </div>
+        <span class="channel-empty-hint" data-i18n="index.channelEmpty">暂无请求</span>
+      </div>
+      <div class="channel-metrics">
+        <div class="metric-item">
+          <div class="metric-value tone-primary" id="type-{{type}}-requests">0</div>
+          <div class="metric-label" data-i18n="index.metrics.totalRequests">总请求</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-value tone-healthy" id="type-{{type}}-success">0</div>
+          <div class="metric-label" data-i18n="index.metrics.success">成功</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-value tone-critical" id="type-{{type}}-error">0</div>
+          <div class="metric-label" data-i18n="index.metrics.failed">失败</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-value" id="type-{{type}}-rate">0.0%</div>
+          <div class="metric-label" data-i18n="index.metrics.successRate">成功率</div>
+        </div>
+      </div>
+      <div class="token-stats">
+        <div class="token-item">
+          <span class="token-label" data-i18n="common.input">输入</span>
+          <span class="token-value" id="type-{{type}}-input">0</span>
+        </div>
+        <div class="token-item">
+          <span class="token-label" data-i18n="common.output">输出</span>
+          <span class="token-value" id="type-{{type}}-output">0</span>
+        </div>
+        <div class="token-item">
+          <span class="token-label" data-i18n="common.cacheRead">缓存读</span>
+          <span class="token-value" id="type-{{type}}-cache-read">0</span>
+        </div>
+        <div class="token-item">
+          <span class="token-label" data-i18n="common.cacheCreate">缓存创</span>
+          <span class="token-value" id="type-{{type}}-cache-create">0</span>
+        </div>
+      </div>
+    </div>
+  </template>
+
+</body>
+</html>

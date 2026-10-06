@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDevin2ApiClient } from '../server/lib/devin2api/client'
 import { isDevin2ApiModel, namespaceDevin2ApiModels, parseDevin2ApiModels, stripDevin2ApiModel } from '../server/lib/devin2api/catalog'
 
-describe('Devin 2API sidecar contract', () => {
+describe('Devin 2API embedded runtime client contract', () => {
   afterEach(() => { vi.restoreAllMocks() })
 
   it('normalizes and namespaces OpenAI-compatible model catalogs', () => {
@@ -15,9 +15,9 @@ describe('Devin 2API sidecar contract', () => {
     expect(stripDevin2ApiModel('devin/')).toBeNull()
   })
 
-  it('removes public credentials before adding the internal sidecar key', async () => {
+  it('removes public credentials before adding the per-runtime key', async () => {
     const fetcher = vi.fn(async () => new Response('{"ok":true}', { status: 200 }))
-    const client = createDevin2ApiClient({ baseUrl: 'http://devin2api:8080', apiKey: 'internal-secret', fetch: fetcher })
+    const client = createDevin2ApiClient({ baseUrl: 'http://127.0.0.1:8080', apiKey: 'internal-secret', fetch: fetcher })
     await client.request({ path: '/v1/models', headers: {
       authorization: 'Bearer public-key', 'x-api-key': 'public-key', cookie: 'admin=session',
       'proxy-authorization': 'Basic leaked', 'x-goog-api-key': 'provider-key', 'x-nexus-source-id': 'internal-id',
@@ -32,7 +32,7 @@ describe('Devin 2API sidecar contract', () => {
     expect(headers.get('x-nexus-source-id')).toBeNull()
   })
 
-  it.each(['ftp://devin', 'http://user:password@devin', 'http://devin?query=1'])('rejects unsafe sidecar URL %s', baseUrl => {
+  it.each(['ftp://devin', 'http://user:password@devin', 'http://devin?query=1', 'http://example.com'])('rejects unsafe runtime URL %s', baseUrl => {
     expect(() => createDevin2ApiClient({ baseUrl })).toThrow()
   })
 })

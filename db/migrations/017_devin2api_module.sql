@@ -15,12 +15,12 @@ ALTER TABLE nexus_module_group_defaults DROP CONSTRAINT IF EXISTS nexus_module_g
 ALTER TABLE nexus_module_group_defaults ADD CONSTRAINT nexus_module_group_defaults_module_id_check
   CHECK(module_id IN ('commandcode','cpa','devin2api'));
 
--- The sidecar owns the actual Devin session.  Only the encrypted token is
+-- The CPAN app owns the embedded Devin runtime. Only the encrypted token is
 -- persisted here; plaintext credentials never enter the database.
 CREATE TABLE IF NOT EXISTS devin2api_accounts (
  id UUID PRIMARY KEY,
  label TEXT NOT NULL DEFAULT '',
- -- Nullable permits a sidecar-only account that uses DEVIN2API_API_KEY;
+ -- Nullable permits an account to be created before credentials are entered;
  -- when present this value is always encrypted by the application layer.
  token_ciphertext TEXT,
  base_url TEXT DEFAULT 'https://server.codeium.com',

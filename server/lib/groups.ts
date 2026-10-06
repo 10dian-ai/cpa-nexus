@@ -76,6 +76,18 @@ export async function resolveEnabledKeyGroupIds(keyId: string): Promise<string[]
     JOIN gateway_keys k ON k.id=kg.key_id WHERE kg.key_id=${keyId} AND k.enabled=true AND g.enabled=true ORDER BY g.created_at,g.id`
   return rows.map(row => row.id)
 }
+
+/** Recheck the selected account against the current key and group membership. */
+export async function resolveAccountRoutingGroupId(moduleId: GroupModuleId, accountId: string, keyId: string): Promise<string | null> {
+  const rows = await getDb()`SELECT g.id FROM nexus_account_groups ag
+    JOIN nexus_groups g ON g.id=ag.group_id
+    JOIN nexus_key_groups kg ON kg.group_id=g.id
+    JOIN gateway_keys k ON k.id=kg.key_id
+    WHERE ag.module_id=${moduleId} AND ag.account_id=${accountId} AND kg.key_id=${keyId}
+      AND k.enabled=true AND g.enabled=true
+    ORDER BY g.created_at,g.id LIMIT 1`
+  return rows[0] ? String(rows[0].id) : null
+}
 export async function listGroups(): Promise<GroupView[]> {
   const rows = await getDb()`SELECT g.*,(SELECT count(*)::int FROM nexus_account_groups WHERE group_id=g.id) AS account_count,
     (SELECT count(*)::int FROM nexus_key_groups WHERE group_id=g.id) AS key_count FROM nexus_groups g ORDER BY g.is_default DESC,g.created_at,g.id`

@@ -1,0 +1,483 @@
+package ccpanel
+
+import (
+	"encoding/json"
+	"hash/fnv"
+	"log/slog"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/WncFht/devin2api/internal/adapter/devin"
+	"github.com/WncFht/devin2api/internal/authtoken"
+	"github.com/WncFht/devin2api/internal/debuglog"
+	"github.com/WncFht/devin2api/internal/obs"
+	"github.com/WncFht/devin2api/internal/store"
+)
+
+// activeRequest 是 ccLoad ActiveRequest 的 wire 形状收缩版；本服务无多
+// 上游，api 取 logs 表入口端点原值，upstream_protocol 留空
+// （上游恒为 devin）。
+type activeRequest struct {
+	ID               int64  `json:"id"`
+	Model            string `json:"model"`
+	ClientIP         string `json:"client_ip"`
+	StartTime        int64  `json:"start_time"`
+	Streaming        bool   `json:"is_streaming"`
+	API              string `json:"api,omitempty"`
+	UpstreamProtocol string `json:"upstream_protocol,omitempty"`
+	APIKeyUsed       string `json:"api_key_used,omitempty"`
+	// Account 是已选定服务本请求的上游账号（号池 lane 名），
+	// AccountSwitches 是至今的 failover 换号次数；与 logs 表同名同源。
+	Account             string  `json:"account,omitempty"`
+	AccountSwitches     int     `json:"account_switches,omitempty"`
+	TokenID             int64   `json:"token_id,omitempty"`
+	BaseURL             string  `json:"base_url,omitempty"`
+	BytesReceived       int64   `json:"bytes_received,omitempty"`
+	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"`
+	CostMultiplier      float64 `json:"cost_multiplier"`
+	UpstreamWebsocket   bool    `json:"upstream_websocket,omitempty"`
+	DebugLogAvailable   bool    `json:"debug_log_available,omitempty"`
+	UpstreamStatus      string  `json:"upstream_status"`
+	Abortable           bool    `json:"abortable,omitempty"`
+	// Class 是令牌声明的请求类（fg/bg）——闸门分级准入语义随请求携带。
+	Class string `json:"class,omitempty"`
+}
+
+// activeRequestID 把目录名映射成正 int64——移植前端的请求 id 是数字，
+// 我方目录名是唯一字符串，FNV-1a 取正即稳定一一对应。
+func activeRequestID(dir string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(dir))
+	return int64(h.Sum64() & (1<<63 - 1))
+}
+
+// adminActiveRequests 实现 GET /admin/active-requests：进行中请求快照，
+// 信封外加 active_request_title_enabled（本服务无标题生成能力，恒 false）。
+func (h *Handler) adminActiveRequests(w http.ResponseWriter, _ *http.Request) {
+	out := []activeRequest{}
+	for _, ar := range h.debug.ActiveRequests() {
+		model := ar.ResolvedModel
+		if model == "" {
+			model = ar.Model
+		}
+		status := "requesting"
+		switch {
+		case ar.State == debuglog.StateWaitingUpstream && ar.Retries > 0:
+			status = "retrying"
+		case ar.State == debuglog.StateReceivingUpstream || ar.State == debuglog.StateStreamingClient:
+			status = "receiving"
+		}
+		row := activeRequest{
+			ID:                activeRequestID(ar.Dir),
+			Model:             model,
+			ClientIP:          ar.Meta.ClientIP,
+			StartTime:         ar.StartedAt.UnixMilli(),
+			Streaming:         ar.Meta.Stream,
+			API:               ar.Meta.API,
+			APIKeyUsed:        ar.Meta.KeyHash,
+			Account:           ar.Account,
+			AccountSwitches:   ar.AccountSwitches,
+			BaseURL:           h.BaseURL(),
+			BytesReceived:     ar.ClientBytes,
+			CostMultiplier:    1,
+			UpstreamWebsocket: ar.Meta.API == "responses-ws",
+			DebugLogAvailable: true,
+			UpstreamStatus:    status,
+			Abortable:         ar.Abortable,
+			Class:             ar.Meta.Class,
+		}
+		if ar.FirstUpstreamMS != nil {
+			row.ClientFirstByteTime = float64(*ar.FirstUpstreamMS) / 1000
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartTime < out[j].StartTime })
+	// ccLoad 在信封外多带一个 active_request_title_enabled 顶层字段；
+	// 本服务无标题生成能力，恒 false。
+	titleEnabled := false
+	writeEnvelope(w, http.StatusOK, apiResponse{
+		Success: true, Data: out, Count: intPtr(len(out)),
+		ActiveRequestTitleEnabled: &titleEnabled,
+	})
+}
+
+// adminAbortActiveRequest 实现 POST /admin/active-requests/{id}/abort：
+// id 是目录名哈希，反查活跃目录后走 debug.Abort 取消上游 ctx。
+func (h *Handler) adminAbortActiveRequest(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		respondError(w, http.StatusBadRequest, "invalid request_id")
+		return
+	}
+	for _, ar := range h.debug.ActiveRequests() {
+		if activeRequestID(ar.Dir) == id {
+			if h.debug.Abort(ar.Dir) {
+				// abort 若落在脱钩登记与请求出 activeDirs 的窗口内，
+				// cancel 对已 WithoutCancel 的后台泵无效——把该目录落册
+				// 的条目清出完成缓存，被掐生成不得留给同键重试重放。
+				if h.pool != nil && h.pool.EvictDetached != nil {
+					h.pool.EvictDetached(ar.Dir)
+				}
+				respondOK(w, map[string]any{"aborted": true})
+				return
+			}
+			respondError(w, http.StatusNotFound, "active request not found or not abortable")
+			return
+		}
+	}
+	respondError(w, http.StatusNotFound, "active request not found or not abortable")
+}
+
+// adminListAuthTokens 实现 GET /admin/auth-tokens：令牌表 + range 时叠加
+// duration/rpm/is_today 全局统计，并用时间窗聚合同名覆盖各令牌的累计
+// 字段（ccLoad HandleListAuthTokens + GetAuthTokenStatsInRange 语义：
+// 覆盖值来自 logs 范围聚合而非令牌持久计数，范围外无数据的令牌清零）。
+func (h *Handler) adminListAuthTokens(w http.ResponseWriter, r *http.Request) {
+	var list []*authtoken.Token
+	if h.tokens != nil {
+		list = h.tokens.List()
+	}
+	tokens := make([]authtoken.View, 0, len(list))
+	for _, t := range list {
+		tokens = append(tokens, t.API())
+	}
+	data := map[string]any{
+		"tokens":   tokens,
+		"is_today": false,
+	}
+	rangeParam := strings.TrimSpace(r.URL.Query().Get("range"))
+	if rangeParam == "" || rangeParam == "all" {
+		respondOK(w, data)
+		return
+	}
+	since, until, name := resolveRange(r, time.Now())
+	isToday := name == "today"
+	duration := until.Sub(since).Seconds()
+	if duration < 1 {
+		duration = 1
+	}
+	data["duration_seconds"] = duration
+	data["is_today"] = isToday
+
+	// 时间窗覆盖：按 key_hash 聚合格子，逐令牌覆盖累计字段。
+	// 口径对齐 GetAuthTokenStatsInRange：success/failure 计数非 499，
+	// token/成本求和含 499 行，TTFB/RT 均值含全部状态（stream 取 fbt
+	// 样本、non-stream 取 duration 样本），stream/non_stream 计数非 499。
+	// 开放模式（空仓）的请求无凭据可关联，自然不落入任何令牌。
+	prices := h.CatalogPrices(r.Context())
+	type tokenAgg struct {
+		t    store.LogCellTotals
+		cost float64
+		peak int64 // 单槽非 499 峰值（peak_rpm 的分子，折算分钟速率）
+	}
+	// 同一遍扫描顺带积出全局 rpm total/peak（含空 key_hash 格——
+	// 全局口径不按令牌过滤），省掉 rpmStatsFiltered 的重扫。
+	var rpmTotal, rpmPeak int64
+	byKH := map[string]*tokenAgg{}
+	h.eachCell(r.Context(), since, until, statScope{}, func(key store.LogCellKey, c store.LogCellTotals) {
+		n := c.Requests - c.Gone
+		rpmTotal += n
+		if n > rpmPeak {
+			rpmPeak = n
+		}
+		if key.KeyHash == "" {
+			return
+		}
+		a := byKH[key.KeyHash]
+		if a == nil {
+			a = &tokenAgg{}
+			byKH[key.KeyHash] = a
+		}
+		a.t = a.t.Add(c)
+		a.cost += cellCost(key, c, prices)
+		if n := c.Requests - c.Gone; n > a.peak {
+			a.peak = n
+		}
+	})
+	data["rpm_stats"] = h.rpmStatsFiltered(r.Context(), since, until, statScope{}, isToday, "", rpmTotal, rpmPeak)
+	var recentByKH map[string]float64
+	if isToday {
+		recentByKH = h.recentRPMByKeyHash(r.Context())
+	}
+	for i, t := range list {
+		ov := &tokens[i]
+		a := byKH[t.KeyHash()]
+		if a == nil {
+			a = &tokenAgg{} // 范围内无数据：清零覆盖（ccLoad 同款语义）
+		}
+		ov.SuccessCount = a.t.OK
+		ov.FailureCount = a.t.Requests - a.t.OK - a.t.Gone
+		ov.PromptTokensTotal = a.t.InTok
+		ov.CompletionTokensTotal = a.t.OutTok
+		ov.CacheReadTokensTotal = a.t.CacheRead
+		ov.CacheCreationTokensTotal = a.t.CacheWrite
+		ov.TotalCostUSD = a.cost
+		ov.EffectiveCostUSD = a.cost
+		ov.StreamAvgTTFB = 0
+		if a.t.NFirstStream > 0 {
+			ov.StreamAvgTTFB = float64(a.t.SumFirstStreamMS) / float64(a.t.NFirstStream) / 1000
+		}
+		ov.NonStreamAvgRT = 0
+		if a.t.NNonStream > 0 {
+			ov.NonStreamAvgRT = float64(a.t.SumDurNonStreamMS) / float64(a.t.NNonStream) / 1000
+		}
+		ov.StreamCount = a.t.NStreamNG
+		ov.NonStreamCount = a.t.NNonStreamNG
+		ov.PeakRPM = float64(a.peak) / (rollupSlotSeconds / 60)
+		ov.AvgRPM = float64(ov.SuccessCount+ov.FailureCount) * 60 / duration
+		ov.RecentRPM = 0
+		if isToday {
+			ov.RecentRPM = recentByKH[t.KeyHash()]
+			if ov.PeakRPM < ov.RecentRPM {
+				ov.PeakRPM = ov.RecentRPM
+			}
+		}
+	}
+	respondOK(w, data)
+}
+
+// adminModelPricing 实现 GET /admin/model-pricing?model=：
+// 目录价投影成 ccLoad 的 pricing 形状；无目录价的模型 found=false。
+func (h *Handler) adminModelPricing(w http.ResponseWriter, r *http.Request) {
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
+	if model == "" {
+		respondError(w, http.StatusBadRequest, "missing model id")
+		return
+	}
+	prices := h.CatalogPrices(r.Context())
+	p, found := prices[model]
+	pricing := map[string]any{
+		"input_price":  p.Input,
+		"output_price": p.Output,
+	}
+	if p.Cached > 0 {
+		pricing["cache_read_price"] = p.Cached
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	respondOK(w, map[string]any{
+		"model":   model,
+		"found":   found,
+		"pricing": pricing,
+	})
+}
+
+// adminRuntimeMetrics 实现 GET /admin/runtime-metrics：把 obs 快照与
+// debuglog 自观测投影成 ccLoad 的 process/http_proxy/logs 分组形状；
+// 另投 gate/rejects/rates/trend/debuglog/usage/warm 组承接旧面板
+// stats 端点的排障口径。responses_websocket 组本服务无会话仓，给零值。
+func (h *Handler) adminRuntimeMetrics(w http.ResponseWriter, r *http.Request) {
+	var snap obs.Snapshot
+	if h.metrics != nil {
+		snap = h.metrics.Snapshot()
+	}
+	proc := snap.Process
+	// cpu_seconds 是 user+system 合计（rusage 采样不拆），全部归 user
+	// 一栏——总量正确，拆分字段留 0。
+	process := map[string]any{
+		"uptime_seconds":           int64(time.Since(h.startedAt).Seconds()),
+		"concurrency_slots_in_use": snap.ActiveRequests,
+		"max_concurrency":          h.maxConcurrency(),
+		"goroutines":               proc.Goroutines,
+		"cpu_usage_percent":        proc.CPUPercent,
+		"cpu_user_seconds":         proc.CPUSeconds,
+		"cpu_system_seconds":       0.0,
+		// rss_bytes/rss_current_bytes 是瞬时 RSS（linux 取 /proc/self/statm
+		// 常驻页口径），随真实占用起伏；max_rss_bytes 保留 ru_maxrss
+		// 只涨不降的峰值水印。无瞬时数据源的平台两字段为 0。
+		"rss_bytes":           proc.RSSCurrentBytes,
+		"rss_current_bytes":   proc.RSSCurrentBytes,
+		"max_rss_bytes":       proc.MaxRSSBytes,
+		"heap_alloc_bytes":    proc.HeapAllocBytes,
+		"heap_sys_bytes":      proc.HeapSysBytes,
+		"gc_count":            proc.NumGC,
+		"gc_pause_total_ns":   uint64(proc.GCPauseTotalMS * 1e6),
+		"gc_cpu_percent":      proc.GCCPUFraction * 100,
+		"sse_framing_repairs": 0,
+		// 监听归属看门狗（reuseport 静默并组的运行期兜底）：当轮外部持有
+		// 进程数与最近一次非零扫描时刻；未开 reuseport 的平台/部署恒为 0。
+		"foreign_listen_holders":           snap.ForeignListenHolders,
+		"foreign_listen_holders_last_seen": snap.ForeignListenLastSeen,
+	}
+	httpProxy := map[string]any{
+		"active_requests":        snap.ActiveRequests,
+		"completed_requests":     snap.CompletedRequests,
+		"non_error_responses":    snap.OKResponses,
+		"client_error_responses": snap.ClientErrorResponses,
+		"server_error_responses": snap.ServerErrorResponses,
+		"streaming_requests":     snap.StreamingRequests,
+		"non_streaming_requests": snap.NonStreamingRequests,
+		"request_body_bytes":     snap.RequestBodyBytes,
+		"response_body_bytes":    snap.ResponseBodyBytes,
+	}
+	data := map[string]any{
+		"process":             process,
+		"http_proxy":          httpProxy,
+		"responses_websocket": map[string]any{},
+	}
+	if stats := h.debug.Stats(); stats != nil {
+		logStats := decodeDebugStats(stats)
+		data["logs"] = map[string]any{
+			"backlog_entries":            logStats.QueuedLogEvents,
+			"queue_capacity_entries":     logStats.QueueCapacity,
+			"dropped_entries":            logStats.DroppedLogEvents,
+			"dropped_payload_bytes":      logStats.DroppedPayloadBytes,
+			"late_writes":                logStats.LateWrites,
+			"persistence_failed_entries": logStats.IOErrors,
+			"pending_bytes":              logStats.PendingBytes,
+			"pending_bytes_max":          logStats.PendingBytesMax,
+			"pending_bytes_cap":          logStats.PendingBytesCap,
+			"errors_only":                logStats.ErrorsOnly,
+		}
+		// debuglog 组是全量自观测（含 last_bind_failure 监听争夺取证、
+		// 保留策略回显）；logs 组是 ccLoad 契约四键 + 写侧在飞水位三档、
+		// 丢弃体积、errors_only 开关与 late_writes 迟到写计数的投影。
+		data["debuglog"] = stats
+	}
+	// rates/trend 是 Snapshot 原生段（RPM/QPS、60 分钟 10s 桶）；
+	// rejects 是管线前拒绝的分原因计数与最近事件环（不产生调试目录，
+	// 环是唯一实时面），rejectsView 另并入留存行写失败数 insert_failed。
+	if h.metrics != nil {
+		data["rates"] = snap.Rates
+		data["trend"] = snap.TrendMinutes
+		data["rejects"] = h.rejectsView()
+	}
+	// usage 组只投全局延迟分位数两行（ttfb/duration）；全量聚合视图
+	// 在 /admin/usage——轮询端点不背全桶排序的成本。
+	if h.store != nil {
+		if lat, err := h.store.LogLatency(r.Context()); err == nil {
+			data["usage"] = lat
+		} else {
+			slog.Warn("ccpanel: log latency query failed", "error", err)
+		}
+	}
+	// gate/warm/detached/accounts 四组同来自一次池快照——读数属于同
+	// 一时间切面。gate 组是速率闸门快照（闩态/配额/排队 + events 闩
+	// 迁移事件环）；warm 组投前缀保温簿记，hit_rate 由 hits/(hits+
+	// misses) 派生（cr=0 的 ping 不计入 misses，命中率只反映真实
+	// 命中）；detached 组投脱钩完成缓存簿记——泵终局（finished_*）、
+	// 移除原因与孤儿浪费（orphans/orphan_completed）在盘上 04 标记
+	// 行之外没有其它观测面，顶层为全 lane 聚合（计数求和、事件环
+	// 按时刻归并，事件带 lane 字段）；accounts 组是逐号视图——顶层
+	// gate/warm 仍是首 lane 快照（前端后兼容，闩态/分位数不可聚合），
+	// 逐号排障看这里。
+	if ps, ok := h.poolSnapshot(); ok {
+		data["gate"] = ps.Gate
+		data["warm"] = warmStatsView(ps.Warm)
+		data["detached"] = ps.Detached
+		accounts := make(map[string]any, len(ps.Accounts))
+		for name, ls := range ps.Accounts {
+			accounts[name] = map[string]any{
+				"gate":     ls.Gate,
+				"warm":     warmStatsView(ls.Warm),
+				"lane":     ls.State,
+				"detached": ls.Detached,
+			}
+		}
+		data["accounts"] = accounts
+	}
+	// quota 组投配额样本落库健康账（写失败/缓冲丢弃/重放救回与缓冲
+	// 当前深度）与采样轮心跳（协程级 rounds_* 计数/时刻 + 逐 lane
+	// 阶段账 lanes）——写失败与静默空洞此前只有 stderr WARN 甚至
+	// 毫无痕迹，丢点与调度器死活在这里才可见。
+	data["quota"] = h.quotaSub().persistStats()
+	// store 组投开库台账：opens_recent 里出现第二个 pid/build 即有别处
+	// 进程附着同一状态库（reuseport 交接残留曾静默持锁三天、stderr 零
+	// 留痕——台账正是为此而建）。读失败（老库无此表、表被污染）只省略
+	// 该组，观测面不动端点。
+	if h.store != nil {
+		if opens, err := h.store.StoreOpens(r.Context()); err == nil {
+			view := storeOpensView(opens)
+			// runtime_state 异步写队列的丢弃账与台账同组——gate 闩/池
+			// 冷却/脱钩台账的落库丢失只在此可见（写侧另有 stderr WARN）。
+			view["state_queue_drops"] = h.store.StateQueueDrops()
+			data["store"] = view
+		} else {
+			slog.Warn("ccpanel: store opens query failed", "error", err)
+		}
+	}
+	respondOK(w, data)
+}
+
+// warmStatsView 把一条 lane 的保温簿记投影成 runtime-metrics 的 warm
+// 组形状；hit_rate 由 hits/(hits+misses) 派生，cr=0 的 ping 不计入
+// misses（簿记侧口径），故命中率只反映真实命中。顶层 warm 组与
+// accounts 组内每号的 warm 共用同一投影。
+func warmStatsView(warm devin.WarmStats) map[string]any {
+	pingTotal := warm.PingHits + warm.PingMisses
+	hitRate := 0.0
+	if pingTotal > 0 {
+		hitRate = float64(warm.PingHits) / float64(pingTotal) * 100
+	}
+	view := map[string]any{
+		"enabled":        warm.Enabled,
+		"entries":        warm.Entries,
+		"promoted":       warm.Promoted,
+		"demoted":        warm.Demoted,
+		"suspects":       warm.Suspects,
+		"retained_bytes": warm.RetainedBytes,
+		"pings_sent":     warm.PingsSent,
+		"ping_hits":      warm.PingHits,
+		"ping_misses":    warm.PingMisses,
+		"ping_hit_rate":  hitRate,
+		"ping_skips":     warm.PingSkips,
+		"ping_errors":    warm.PingErrors,
+		"retired":        warm.Retired,
+		// 死因分账与 ping 燃烧账：churn 构成与保温座位成本的观测面
+		//（miss=全前缀重灌走估计、hit=上游实报 cache_read，口径见
+		// WarmStats 注释）。
+		"retired_by_cause":           warm.RetiredByCause,
+		"ping_miss_prefill_tokens":   warm.PingMissPrefillTokens,
+		"ping_hit_cache_read_tokens": warm.PingHitCacheReadTokens,
+		// failover_suspects 是号池换 lane 制造孤儿条目的实绩账（与
+		// retired_by_cause.suspect 的退役账对照看跨 lane 孤儿比重）。
+		"failover_suspects": warm.FailoverSuspects,
+	}
+	// events 是 ping 结局事件环（新在前）——与 gate.events 同构的
+	// omitempty 语义：未打过 ping 时不投该键。
+	if len(warm.Events) > 0 {
+		view["events"] = warm.Events
+	}
+	return view
+}
+
+// storeOpensView 把开库台账快照投影成 runtime-metrics 的 store 组：
+// opens_total 总行数、opens_distinct_pids_24h 回看窗内 distinct pid
+// 数（>1 即有别处进程附着）、opens_recent 最近行（新在前）。行字段
+// 取台账列的子集——path 对本面板冗余（handler 只绑一个库），不投。
+func storeOpensView(rep *store.StoreOpensReport) map[string]any {
+	recent := make([]map[string]any, 0, len(rep.Recent))
+	for _, o := range rep.Recent {
+		recent = append(recent, map[string]any{
+			"at":    o.At,
+			"pid":   o.PID,
+			"build": o.Build,
+			"argv":  renderOpenArgv(o.Argv),
+		})
+	}
+	return map[string]any{
+		"opens_total":             rep.Total,
+		"opens_distinct_pids_24h": rep.DistinctPIDs24h,
+		"opens_recent":            recent,
+	}
+}
+
+// renderOpenArgv 把台账 argv 渲染成单行：落库原值是 os.Args 的 JSON
+// 数组文本（写侧 4KB 截断可能切出非法 JSON），解码成功则空格紧凑
+// 相连，否则取原文；统一截到 200 rune——取证字段不背完整命令行。
+func renderOpenArgv(raw string) string {
+	s := raw
+	var args []string
+	if err := json.Unmarshal([]byte(raw), &args); err == nil && len(args) > 0 {
+		s = strings.Join(args, " ")
+	}
+	const max = 200
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max])
+	}
+	return s
+}

@@ -35,7 +35,7 @@ export async function listModules(): Promise<ModuleView[]> {
     getDb()`SELECT id,enabled FROM platform_modules`,
     createCpaClient().status(),
     commandcodeProviderHealthy(),
-    getDevinStatus().catch(error => ({ configured: Boolean(process.env.DEVIN2API_URL?.trim()), reachable: false, status: 'unavailable', message: error instanceof Error ? error.message : '无法读取 Devin 状态' })),
+    getDevinStatus().catch(error => ({ configured: false, reachable: false, status: 'unavailable', message: error instanceof Error ? error.message : '无法读取 Devin 状态' })),
   ])
   return MODULE_MANIFESTS.map(manifest => {
     const state = states.find(state => state.id === manifest.id)

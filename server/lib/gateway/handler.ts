@@ -20,7 +20,9 @@ import { classifyFailure, type UpstreamFailure } from './errors'
 import { ResponseCapture, ResponseInspection, MAX_RESPONSE_LOG_BYTES } from './response'
 import { readJsonBodyLimited, writeWithBackpressure } from './transport'
 import { resolveKeyPresetStack } from '../presets'
-import { applyPresetStack } from '../presets/engine'
+import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
+import { resolveAccountRoutingGroupId } from '../groups'
+import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, normalizeBillingRequest } from '../billing'
 
 type Protocol = ProviderProtocol
 const PROTOCOLS: readonly Protocol[] = PROVIDER_PROTOCOLS
@@ -229,12 +231,21 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
         const upstreamKey = decryptSecret(account.apiKeyCiphertext)
         effectiveBody = body
         if (protocol !== 'systemone') {
-          const presets = presetKeyId ? await resolveKeyPresetStack(presetKeyId) : []
-          if (presets.length) {
-            effectiveBody = applyPresetStack(presets, body, { protocol: protocol === 'chat/completions' ? 'chat' : protocol })
+          const matchedGroupId = presetKeyId ? await resolveAccountRoutingGroupId('commandcode', accountId, presetKeyId) : null
+          if (presetKeyId && !matchedGroupId) throw Object.assign(new Error('Selected account is no longer in an enabled group for this API key'), { statusCode: 403 })
+        const presets = presetKeyId && matchedGroupId ? await resolveKeyPresetStack(presetKeyId, [matchedGroupId]) : []
+        const generationType = resolvePresetGenerationType(body, event.node.req.headers)
+        if (presets.length) {
+            effectiveBody = applyPresetStack(presets, body, { protocol: protocol === 'chat/completions' ? 'chat' : protocol, generationType })
             event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
-          } else event.node.res.removeHeader('x-nexus-preset-id')
+        } else event.node.res.removeHeader('x-nexus-preset-id')
+        if (Object.hasOwn(effectiveBody, 'generation_type')) {
+          effectiveBody = { ...effectiveBody }
+          delete effectiveBody.generation_type
         }
+        }
+        effectiveBody = normalizeBillingRequest(effectiveBody, protocol)
+        event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
         resetIdle()
         // The owner requested GOAT's normal Provider API integration. Only
         // client-initiated inference reaches this endpoint, using the dedicated

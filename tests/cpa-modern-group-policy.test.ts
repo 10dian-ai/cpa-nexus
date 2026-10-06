@@ -51,7 +51,7 @@ describe('modern CPA runtime source policy inventory', () => {
     expect(sources).toHaveLength(1)
     expect(sources[0]).toMatchObject({ routingSupported: true, groupIds: ['private'] })
     expect(await resolveCpaGroupPolicy('router-any-alias', ['default'], 'default-key')).toBeNull()
-    expect(await resolveCpaGroupPolicy('router-any-alias', ['private'], 'private-key')).toEqual({ model: 'router-any-alias', allowedAuthIDs: ['actual-private-a', 'actual-private-b'], allowedPluginIDs: [] })
+    expect(await resolveCpaGroupPolicy('router-any-alias', ['private'], 'private-key')).toEqual({ model: 'router-any-alias', selectedGroupId: 'private', allowedAuthIDs: ['actual-private-a', 'actual-private-b'], allowedPluginIDs: [] })
     expect([...fixture.bindings.keys()].some(id => id.startsWith('runtime:'))).toBe(false)
   })
   it('never exposes managed bridge credentials as another default CPA source', async () => {

@@ -28,6 +28,7 @@ vi.mock('../server/lib/queues', () => ({ enqueueAccountRefresh: fixture.refresh 
 vi.mock('../server/lib/logs', () => ({ insertRequestLog: fixture.log }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: async () => {} }))
 vi.mock('../server/lib/presets', () => ({ resolveKeyPresetStack: async (...args: unknown[]) => { const value = await fixture.preset(...args); return Array.isArray(value) ? value : value ? [value] : [] } }))
+vi.mock('../server/lib/groups', () => ({ resolveAccountRoutingGroupId: async () => 'group-a' }))
 vi.mock('../server/lib/gateway/accounts', () => ({
   listCandidates: fixture.candidates, listGatewayModels: async () => ({ object: 'list', data: [] }),
   touchAccount: async () => {}, recordFailure: fixture.recordFailure, recordModelAllowed: fixture.recordAllowed,
@@ -124,6 +125,14 @@ describe('gateway over real HTTP connections', () => {
     expect(options.headers.get('x-session-id')).toBe(privateSessionId('conversation-a', Buffer.alloc(32, 9).toString('base64')))
     expect(options.headers.get('user-agent')).toBe('opencode')
   })
+  it('requests upstream usage for expanded streaming chat prompts and exposes only the billing policy', async () => {
+    const response = await post(url, true)
+    expect(response.status).toBe(200)
+    await response.text()
+    expect(response.headers.get('x-nexus-usage-policy')).toBe('upstream')
+    const outbound = JSON.parse(fixture.upstream.mock.calls[0]![1].body)
+    expect(outbound.stream_options).toEqual({ include_usage: true })
+  })
   it('attributes signed legacy callers to their original key for logs and affinity only through an authenticated bridge key', async () => {
     const originalId = 'original-client-key'
     const session = 'legacy-session'
@@ -145,11 +154,11 @@ describe('gateway over real HTTP connections', () => {
     const upstreamHeaders = fixture.upstream.mock.calls[0]![1].headers as Headers
     expect(upstreamHeaders.get(ORIGINAL_KEY_ID_HEADER)).toBeNull()
     expect(upstreamHeaders.get(ORIGINAL_KEY_SIGNATURE_HEADER)).toBeNull()
-    expect(fixture.preset).toHaveBeenLastCalledWith(originalId)
+    expect(fixture.preset).toHaveBeenLastCalledWith(originalId, ['group-a'])
     await invoke('Bearer original-manager-client-key')
     expect(fixture.candidates).toHaveBeenLastCalledWith('fixture/model', 'gateway-key')
     await vi.waitFor(() => expect(fixture.log).toHaveBeenLastCalledWith(expect.objectContaining({ keyId: 'gateway-key' })))
-    expect(fixture.preset).toHaveBeenLastCalledWith('gateway-key')
+    expect(fixture.preset).toHaveBeenLastCalledWith('gateway-key', ['group-a'])
     fixture.preset.mockClear()
     await invoke('Bearer ccm_nexus_test-bridge-key', { ...signedHeaders, [ORIGINAL_KEY_SIGNATURE_HEADER]: 'A'.repeat(43) })
     expect(fixture.candidates).toHaveBeenLastCalledWith('fixture/model', 'gateway-key')
@@ -185,7 +194,7 @@ describe('gateway over real HTTP connections', () => {
     const second = JSON.parse(fixture.upstream.mock.calls[1]![1].body)
     expect(first.messages).toEqual([{ role: 'user', content: 'hello' }])
     expect(second.messages).toEqual([{ role: 'system', content: 'Only KB' }, { role: 'user', content: 'hello' }])
-    expect(fixture.preset.mock.calls).toEqual([['KA'], ['KB']])
+    expect(fixture.preset.mock.calls).toEqual([['KA', ['group-a']], ['KB', ['group-a']]])
   })
   it('rejects a key bound to CPA and disabled or rebound signed original keys before model execution', async () => {
     fixture.authenticate.mockResolvedValueOnce({ id: 'cpa-key', moduleId: 'cpa' })
@@ -286,7 +295,7 @@ describe('gateway over real HTTP connections', () => {
     const second = JSON.parse(fixture.upstream.mock.calls[1]![1].body)
     expect(first.messages).toEqual([{ role: 'system', content: 'Key gateway-key' }, { role: 'user', content: 'hello' }])
     expect(second.messages).toEqual(first.messages)
-    expect(fixture.preset.mock.calls).toEqual([['gateway-key'], ['gateway-key']])
+    expect(fixture.preset.mock.calls).toEqual([['gateway-key', ['group-a']], ['gateway-key', ['group-a']]])
     expect(fixture.log).toHaveBeenCalledWith(expect.objectContaining({ requestBody: second }))
   })
   it('never widens group candidates after a model rejection when only one eligible account exists', async () => {

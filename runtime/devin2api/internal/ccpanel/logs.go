@@ -1,0 +1,762 @@
+// 本文件实现 ccLoad 日志页与调试模态的服务端契约：
+// GET /dashboard|/admin/logs（分页请求日志）、/logs/bootstrap（首屏聚合）、
+// GET /admin/debug-logs/{id}、GET /admin/active-requests/{id}/debug-log、
+// POST /admin/debug-logs/merged-response。
+//
+// 数据源是 store 的 logs 表 + 请求目录阶段文件（替代 ccLoad 的
+// logs/debug_logs 两表）。日志行 id 是 logs 表自增主键——stats 端点的
+// last_*_id 同口径，前端凭它经 LogDirByID 回查调试目录（迁移前的
+// started_at 毫秒戳链接由 FindDirByStartedAt 兜底）。
+package ccpanel
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/WncFht/devin2api/internal/authtoken"
+	"github.com/WncFht/devin2api/internal/debuglog"
+	"github.com/WncFht/devin2api/internal/store"
+)
+
+// maxMergedDebugResponseBodyBytes 是 merged-response 请求体上限（ccLoad 同名常量同值）。
+const maxMergedDebugResponseBodyBytes = 16 * 1024 * 1024
+
+// logCostComponent 对应 ccLoad util.CostComponent：单类 token 的可展示计价过程。
+type logCostComponent struct {
+	PricePerMillion float64 `json:"price_per_million"`
+	Quantity        int64   `json:"quantity"`
+	Cost            float64 `json:"cost"`
+}
+
+// logCostBreakdown 对应 ccLoad util.StandardCostBreakdown。本服务目录价无
+// service_tier/5m-1h 分档，cache_write 按 input 价计（与 cellCost 同口径）。
+type logCostBreakdown struct {
+	Input      logCostComponent `json:"input"`
+	Output     logCostComponent `json:"output"`
+	CacheRead  logCostComponent `json:"cache_read"`
+	CacheWrite logCostComponent `json:"cache_write"`
+	Total      float64          `json:"total"`
+}
+
+func newLogCostComponent(quantity int64, pricePerMillion float64) logCostComponent {
+	return logCostComponent{
+		PricePerMillion: pricePerMillion,
+		Quantity:        quantity,
+		Cost:            float64(quantity) * pricePerMillion / 1_000_000,
+	}
+}
+
+// logEntry 对应 ccLoad model.LogEntry 经 dashboardLogEntry 投影后的平铺
+// wire 形状。字段含义差异：model=客户端请求模型、actual_model=解析后发给
+// 上游的 uid（与 model 相同则省略，同 ccLoad「未重定向」语义）、
+// api_key_used/api_key_hash 都是本服务的 key_hash（无明文可脱敏）、
+// api=logs 表的入口端点原值、upstream_protocol 恒 "devin"、
+// cost_multiplier 恒 1；单上游无渠道维（channel_* 字段不投）。
+type logEntry struct {
+	ID            int64  `json:"id"`
+	Time          int64  `json:"time"` // unix 秒（ccLoad JSONTime 序列化口径）
+	Model         string `json:"model"`
+	ActualModel   string `json:"actual_model,omitempty"`
+	ResponseModel string `json:"response_model,omitempty"`
+	LogSource     string `json:"log_source,omitempty"`
+	StatusCode    int    `json:"status_code"`
+	Message       string `json:"message"`
+	// ErrorMessage 是首个失败的完整错误文案（logs 表同源，≤300B）；
+	// message 列只放 result[:error_stage] 短形态，长文案经本字段透出。
+	ErrorMessage         string  `json:"error_message,omitempty"`
+	Duration             float64 `json:"duration"`
+	IsStreaming          bool    `json:"is_streaming"`
+	UpstreamWebsocket    bool    `json:"upstream_websocket,omitempty"`
+	FirstByteTime        float64 `json:"first_byte_time,omitempty"`
+	APIKeyUsed           string  `json:"api_key_used"`
+	APIKeyHash           string  `json:"api_key_hash,omitempty"`
+	AuthTokenID          int64   `json:"auth_token_id"`
+	AuthTokenDescription string  `json:"auth_token_description"`
+	API                  string  `json:"api,omitempty"`
+	UpstreamProtocol     string  `json:"upstream_protocol,omitempty"`
+	// Account 是最终服务本请求的上游账号（号池 lane 名），
+	// AccountSwitches 是 failover 换号次数；与 logs 表同名同源。
+	Account                  string            `json:"account,omitempty"`
+	AccountSwitches          int               `json:"account_switches,omitempty"`
+	ClientIP                 string            `json:"client_ip"`
+	BaseURL                  string            `json:"base_url,omitempty"`
+	InputTokens              int64             `json:"input_tokens"`
+	OutputTokens             int64             `json:"output_tokens"`
+	ReasoningTokens          int64             `json:"reasoning_tokens,omitempty"`
+	CacheReadInputTokens     int64             `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64             `json:"cache_creation_input_tokens"`
+	Cache5mInputTokens       int64             `json:"cache_5m_input_tokens"`
+	Cache1hInputTokens       int64             `json:"cache_1h_input_tokens"`
+	Cost                     float64           `json:"cost"`
+	CostMultiplier           float64           `json:"cost_multiplier"`
+	CostBreakdown            *logCostBreakdown `json:"cost_breakdown,omitempty"`
+}
+
+// projectLogEntry 把一条 logs 表行投影成日志页行。message 列复刻
+// ccLoad 语义（成功="ok"，失败=result[:error_stage]）——前端要求它非空才
+// 渲染调试入口。
+func (h *Handler) projectLogEntry(e *store.LogRow, prices map[string]CatalogPrice, tokensByHash map[string]*authtoken.Token) logEntry {
+	actual := e.Model
+	if actual == e.RequestedModel {
+		actual = ""
+	}
+	message := "ok"
+	if e.Result != "completed" {
+		message = e.Result
+		if e.ErrorStage != "" {
+			message = e.Result + ": " + e.ErrorStage
+		}
+	}
+	entry := logEntry{
+		ID:                       e.ID,
+		Time:                     e.StartedAt.Unix(),
+		Model:                    e.RequestedModel,
+		ActualModel:              actual,
+		ResponseModel:            e.ResponseModel,
+		LogSource:                e.LogSource,
+		StatusCode:               e.StatusCode,
+		Message:                  message,
+		ErrorMessage:             e.ErrorMessage,
+		Duration:                 float64(e.DurationMS) / 1000,
+		IsStreaming:              e.Stream,
+		UpstreamWebsocket:        e.API == "responses-ws",
+		APIKeyUsed:               e.KeyHash,
+		APIKeyHash:               e.KeyHash,
+		API:                      e.API,
+		UpstreamProtocol:         e.UpstreamProtocol,
+		Account:                  e.Account,
+		AccountSwitches:          e.AccountSwitches,
+		ClientIP:                 e.ClientIP,
+		BaseURL:                  h.BaseURL(),
+		InputTokens:              e.InputTokens,
+		OutputTokens:             e.OutputTokens,
+		ReasoningTokens:          e.ReasoningTokens,
+		CacheReadInputTokens:     e.CacheReadTokens,
+		CacheCreationInputTokens: e.CacheWriteTokens,
+		Cache5mInputTokens:       e.CacheWriteTokens,
+		CostMultiplier:           1,
+	}
+	// key_hash 反查令牌投影 auth_token_id/description；master key 与开放
+	// 模式的行（无对应令牌）留零值，ccLoad 的 NULL 列同语义。
+	// tokensByHash 由调用方按整页批量反查（LookupByKeyHashes）——逐行
+	// 走仓查询是隐性热点。
+	if t, ok := tokensByHash[e.KeyHash]; ok {
+		entry.AuthTokenID = t.ID
+		entry.AuthTokenDescription = t.Description
+	}
+	if e.FirstUpstreamMS != nil {
+		entry.FirstByteTime = float64(*e.FirstUpstreamMS) / 1000
+	}
+	billing := e.Model
+	if billing == "" {
+		billing = e.RequestedModel
+	}
+	if p, ok := prices[billing]; ok {
+		breakdown := &logCostBreakdown{
+			Input:      newLogCostComponent(e.InputTokens, p.Input),
+			Output:     newLogCostComponent(e.OutputTokens, p.Output),
+			CacheRead:  newLogCostComponent(e.CacheReadTokens, p.Cached),
+			CacheWrite: newLogCostComponent(e.CacheWriteTokens, p.Input),
+		}
+		breakdown.Total = breakdown.Input.Cost + breakdown.Output.Cost +
+			breakdown.CacheRead.Cost + breakdown.CacheWrite.Cost
+		// ccLoad buildLogCostBreakdown：Cost<=0 不出 breakdown。
+		if breakdown.Total > 0 {
+			entry.Cost = breakdown.Total
+			entry.CostBreakdown = breakdown
+		}
+	}
+	return entry
+}
+
+// scopeKeyHash 把请求的数据范围收敛成 key_hash：api_token 身份强制只看
+// 自己令牌的行（KeyHash 缺失即排空）；auth_token_id 参数把指定令牌解析
+// 成 key_hash——查无令牌或与 api_token 身份冲突都判 excluded（条件不可能
+// 命中，调用方回空集）。logScope/queryScope 共用这段解析。
+func (h *Handler) scopeKeyHash(r *http.Request) (kh string, excluded bool) {
+	if id := identityFrom(r); id.Role == "api_token" {
+		kh = id.KeyHash
+		if kh == "" {
+			return "", true
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("auth_token_id")); raw != "" {
+		tkh := ""
+		if tid, err := strconv.ParseInt(raw, 10, 64); err == nil && h.tokens != nil {
+			if t, ok := h.tokens.Get(tid); ok {
+				tkh = t.KeyHash()
+			}
+		}
+		if tkh == "" || (kh != "" && tkh != kh) {
+			return "", true
+		}
+		kh = tkh
+	}
+	return kh, false
+}
+
+// logScope 把日志查询的数据范围折成 (key_hash, excluded)：kh 非空时只放
+// 该 key_hash 的行；excluded 表示筛选条件不可能命中，直接回空集。
+// 范围来源与 queryScope 同源（api_token 身份 + auth_token_id、
+// log_source 合法性校验），行级维度全部下推 LogQuery。
+func (h *Handler) logScope(r *http.Request) (kh string, excluded bool) {
+	switch strings.TrimSpace(r.URL.Query().Get("log_source")) {
+	case "", "all", "proxy", "manual_test", "rejected":
+	default:
+		return "", true
+	}
+	return h.scopeKeyHash(r)
+}
+
+// logQuery 是 logs/export/matrix 三个列表类端点共用的筛选解析：
+// 旧面板词汇（q/status 表达式/status_class/result/model/error_stage/
+// since/until/account）与 ccLoad 词汇（range/start_time/end_time/
+// status_code/api/upstream_protocol/model_like/log_source/auth_token_id）
+// 并存，全部下推 SQL。时间窗逐侧落定：显式 since/until(RFC3339) 优先——
+// matrix 下钻钉历史窗口靠它；缺席侧回落到 resolveRange（range 契约，
+// 默认 today）。excluded 表示条件不可能命中（logScope 判空）。
+func (h *Handler) logQuery(r *http.Request) (store.LogQuery, bool) {
+	kh, excluded := h.logScope(r)
+	q := r.URL.Query()
+	get := func(key string) string { return strings.TrimSpace(q.Get(key)) }
+	lq := store.LogQuery{
+		KeyHash:          kh,
+		Account:          get("account"),
+		LogSource:        get("log_source"),
+		API:              get("api"),
+		UpstreamProtocol: strings.ToLower(get("upstream_protocol")),
+		Model:            get("model"),
+		ModelLike:        get("model_like"),
+		Query:            get("q"),
+		StatusExpr:       get("status"),
+		StatusClass:      get("status_class"),
+		Result:           get("result"),
+		ErrorStage:       get("error_stage"),
+	}
+	since, until, _ := resolveRange(r, time.Now())
+	if raw := get("since"); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			since = parsed
+		}
+	}
+	if raw := get("until"); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			until = parsed
+		}
+	}
+	lq.SinceMS = since.UnixMilli()
+	lq.UntilMS = until.UnixMilli()
+	if lq.StatusExpr == "" {
+		if code, err := strconv.Atoi(get("status_code")); err == nil && code > 0 {
+			lq.StatusExpr = strconv.Itoa(code)
+		}
+	}
+	return lq, excluded
+}
+
+// respondLogEntries 写日志列表信封：data=行数组、count=命中总数、
+// has_more=窗外仍有更早历史；另附带 rejects 管线前拒绝环（形状同
+// runtime-metrics 的 http.rejects）——拒绝行以 log_source=rejected
+// 落表但被默认视图剔除，事件环给列表页一个「最近拒绝了什么」的直读窗。
+// rejects 是全局环（含各来源
+// ip/key_hash/ua/path），只对 admin 身份附——api_token 的数据范围
+// 限定在自己令牌的行，全局环会把他人流量痕迹泄漏给持钥人。
+func (h *Handler) respondLogEntries(w http.ResponseWriter, r *http.Request, entries []logEntry, count *int, hasMore bool) {
+	var rejects any
+	if h.metrics != nil && identityFrom(r).Role == "admin" {
+		rejects = h.rejectsView()
+	}
+	writeEnvelope(w, http.StatusOK, apiResponse{
+		Success: true, Data: entries, Count: count, HasMore: hasMore, Rejects: rejects,
+	})
+}
+
+// dashboardLogs 实现 ccLoad 的 /dashboard|/admin/logs（HandleErrors）：
+// data=日志行数组（新在前），count=筛选命中总数（SQL COUNT(*) 精确值，
+// 仅首页返回——深页翻页时全窗计数 ~0.7-1s/页是纯税，字段缺席走前端
+// 既有降级分支）；limit 默认 200、上限 1000。has_more=还有未翻到的
+// 命中行（深页用 limit+1 探测），或时间窗下界之外仍有更早历史。
+// 翻页编排（页参数归一化/limit+1 探测/计数省略/更早历史回落）归
+// store.SearchLogsPage——本 handler 只剩参数解析与 wire 投影。
+func (h *Handler) dashboardLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	lq, excluded := h.logQuery(r)
+	lq.Limit, _ = strconv.Atoi(q.Get("limit"))
+	lq.Offset, _ = strconv.Atoi(q.Get("offset"))
+	// before_id 是 keyset 翻页游标（传上一页最旧行的 id）：深页
+	// OFFSET 随页深线性退化，id 范围谓词走主键恒定成本。两参数
+	// 并存时谓词取交（id<before_id 且按 offset 跳行），前端只传其一。
+	if beforeID, err := strconv.ParseInt(q.Get("before_id"), 10, 64); err == nil && beforeID > 0 {
+		lq.BeforeID = beforeID
+	}
+	if h.store == nil || excluded {
+		h.respondLogEntries(w, r, []logEntry{}, nil, false)
+		return
+	}
+	rows, total, hasMore, err := h.store.SearchLogsPage(r.Context(), lq)
+	if err != nil {
+		// 静默回空 200 会让前端分不出「没数据」与「查询挂了」。
+		slog.Warn("ccpanel: logs search failed", "error", err)
+		respondError(w, http.StatusInternalServerError, "logs query failed")
+		return
+	}
+	prices := h.CatalogPrices(r.Context())
+	var tokensByHash map[string]*authtoken.Token
+	if h.tokens != nil {
+		hashes := make([]string, 0, len(rows))
+		for _, row := range rows {
+			if row.KeyHash != "" {
+				hashes = append(hashes, row.KeyHash)
+			}
+		}
+		tokensByHash = h.tokens.LookupByKeyHashes(hashes)
+	}
+	entries := make([]logEntry, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, h.projectLogEntry(row, prices, tokensByHash))
+	}
+	var count *int
+	if total >= 0 {
+		count = intPtr(int(total))
+	}
+	h.respondLogEntries(w, r, entries, count, hasMore)
+}
+
+// dashboardLogsBootstrap 实现 /dashboard|/admin/logs/bootstrap
+// （ccLoad LogsBootstrapResponse 形状）：logs 页首屏聚合。
+// ccLoad 用 range（默认 this_month）圈定 distinct 集合；本服务 rollup 覆盖
+// 索引全生命周期，模型/状态码集合不按 range 截窗（超集，对筛选 UI 无害）。
+func (h *Handler) dashboardLogsBootstrap(w http.ResponseWriter, r *http.Request) {
+	tokens := []any{}
+	if h.tokens != nil {
+		// api_token 身份只看得到自己的令牌项——令牌下拉是全仓清单，
+		// 全量返回会把其他令牌的描述/额度泄漏给下游持钥人。
+		if id := identityFrom(r); id.Role == "api_token" {
+			if t, ok := h.tokens.Get(id.TokenID); ok {
+				tokens = append(tokens, t.API())
+			}
+		} else {
+			for _, t := range h.tokens.List() {
+				tokens = append(tokens, t.API())
+			}
+		}
+	}
+	respondOK(w, map[string]any{
+		"auth_tokens":  tokens,
+		"models":       h.modelSet(r.Context(), identityFrom(r).KeyHash),
+		"status_codes": h.statusCodeSet(r.Context(), identityFrom(r).KeyHash),
+	})
+}
+
+// adminDebugLog 实现 GET /admin/debug-logs/{id}：id 是 logs 表自增主键
+// （迁移前的毫秒戳链接由 resolveDebugDir 兜底）；目录不存在（retention
+// 清理或 id 伪造）时回 ccLoad 的 404+data 形状。
+func (h *Handler) adminDebugLog(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		respondError(w, http.StatusBadRequest, "invalid log_id")
+		return
+	}
+	dir, timeMS, ok := h.resolveDebugDir(r, id)
+	if !ok {
+		h.respondDebugLogUnavailable(w)
+		return
+	}
+	resp := h.debugLogResponse(r.Context(), dir, id, timeMS)
+	if resp == nil {
+		// 日志行还在但 payload 已被保留策略整体淘汰——回「目录已删」404。
+		h.respondDebugLogUnavailable(w)
+		return
+	}
+	respondOK(w, resp)
+}
+
+// adminActiveRequestDebugLog 实现 GET /admin/active-requests/{id}/debug-log：
+// id 是活跃请求表里的目录名 FNV 哈希（与 adminActiveRequests 同口径），
+// 反查后投影同一份调试响应——请求未完结时 meta/06 都是半成品快照。
+func (h *Handler) adminActiveRequestDebugLog(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		respondError(w, http.StatusBadRequest, "invalid request_id")
+		return
+	}
+	if h.debug != nil {
+		for _, ar := range h.debug.ActiveRequests() {
+			if activeRequestID(ar.Dir) == id {
+				if resp := h.debugLogResponse(r.Context(), ar.Dir, id, id); resp != nil {
+					respondOK(w, resp)
+					return
+				}
+			}
+		}
+	}
+	h.respondDebugLogUnavailable(w)
+}
+
+// adminMergedResponse 实现 POST /admin/debug-logs/merged-response：
+// 请求体 {resp_body}（前端可能 gzip 上传），返回合并后的可读响应。
+func (h *Handler) adminMergedResponse(w http.ResponseWriter, r *http.Request) {
+	body, err := readMaybeCompressedJSONBody(r, maxMergedDebugResponseBodyBytes)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req struct {
+		RespBody string `json:"resp_body"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	// 上传的 resp_body 是用户贴的调试内容，合并前先过 token 字面值脱敏——
+	// 面板回显口径与目录读路径一致。
+	respondOK(w, mergeResponseBody(string(h.maskToken([]byte(req.RespBody)))))
+}
+
+// respondDebugLogUnavailable 对应 ccLoad 的 404+debugLogUnavailableInfo：
+// 前端按 data 里的两个 system setting 渲染「调试日志不可用」空态。
+// retention 投影用目录保留天数（ccLoad 语义是调试数据的整体寿命）。
+func (h *Handler) respondDebugLogUnavailable(w http.ResponseWriter) {
+	enabled := "false"
+	var retentionMin int64
+	if h.debug != nil {
+		if h.debug.Enabled() {
+			enabled = "true"
+		}
+		retentionMin = int64(h.debug.Policy().Days) * 24 * 60
+	}
+	writeEnvelope(w, http.StatusNotFound, apiResponse{
+		Success: false,
+		Error:   "debug log unavailable",
+		Data: map[string]any{
+			"reason": "debug_log_not_found",
+			"debug_log_enabled": map[string]any{
+				"key": "debug_log_enabled", "value": enabled, "value_type": "bool",
+			},
+			"debug_log_retention_minutes": map[string]any{
+				"key":   "debug_log_retention_minutes",
+				"value": strconv.FormatInt(retentionMin, 10), "value_type": "int",
+			},
+		},
+	})
+}
+
+// debugLogResponse 把一个请求目录投影成 ccLoad debugLogResponse 形状；
+// 目录 payload 已不存在（retention 淘汰）时返回 nil，调用方回 404。
+// fallbackMS 是 meta.json 缺席时 created_at 的兜底毫秒戳（logs 表行的
+// time 列；活跃请求路径沿用调用方 id 占位）。
+// 本服务的「协议转换」恒成立（客户端协议 → connect-RPC）：
+// original_* 来自 01（客户端原文），req_* 来自 03（上游 wire 请求，
+// 含 attemptN 重试分片），resp_* 来自 04（上游原始帧），translated_*
+// 由 06 的记录帧重建为客户端线上形态。上游请求/响应头 connect client
+// 未录制，如实给 "{}"（区别于 maskedHeaderUnavailable 的「脱敏失败」）。
+func (h *Handler) debugLogResponse(ctx context.Context, dir string, logID, fallbackMS int64) map[string]any {
+	resp := map[string]any{
+		"log_id":       logID,
+		"req_method":   http.MethodPost,
+		"req_headers":  "{}",
+		"resp_status":  0,
+		"resp_headers": "{}",
+	}
+
+	// Detail 一次拿 meta.json 与文件清单；files 投给前端文件页签
+	// （含进行中请求的半成品文件）。投影只用三个标量字段，自由文本
+	// 不外流，meta 本体不需要过 maskToken。目录整个不在时投影无意义，
+	// 返回 nil 让调用方回「目录已删」——只剩日志行的请求不能回 200 空壳。
+	detail, err := h.debug.Detail(ctx, dir)
+	if err != nil {
+		return nil
+	}
+	// meta.json 缺席或损坏时 Summary 为 nil：按零值投影——created_at
+	// 回落 fallbackMS、完结块字段一律零值，与旧匿名解码失败同口径。
+	meta := detail.Summary
+	if meta == nil {
+		meta = &debuglog.MetaSummary{}
+	}
+	resp["files"] = detail.Files
+	// 读路径按最近见过的 token 字面值兜底脱敏——写路径的 secretKey
+	// 名单只管结构化键名，自由文本（body 原文、上游错误文案）里的
+	// token 在这里罩住；自愈轮换后旧 token 仍在 recentTokens 集合内。
+	readStage := func(name string) ([]byte, error) {
+		data, _, _, err := h.debug.ReadFile(ctx, dir, name)
+		return h.maskToken(data), err
+	}
+	if started, err := time.Parse(time.RFC3339Nano, meta.StartedAt); err == nil {
+		resp["created_at"] = started.Unix()
+	} else {
+		resp["created_at"] = fallbackMS / 1000
+	}
+	// MetaSummary 的完结块字段是指针（区分「完结写了零值」与「创建期
+	// 未写」）；投影到 wire 时按零值落，两种缺席形态同口径。
+	statusCode := 0
+	if meta.StatusCode != nil {
+		statusCode = *meta.StatusCode
+	}
+	resp["translated_resp_status"] = statusCode
+	resp["translated_resp_headers"] = "{}"
+	// 号池归因投到详情首屏：与 logs 表的 account/account_switches
+	// 同口径（switches=失败尝试条数），免去为看归属再抓 meta.json。
+	if meta.UpstreamAccount != "" {
+		resp["account"] = meta.UpstreamAccount
+	}
+	if switches := len(meta.UpstreamAttempts); switches > 0 {
+		resp["account_switches"] = switches
+	}
+
+	// 01：客户端原始请求 → original_*；缺席时 protocol_transformed 留缺省，
+	// 前端「请求」页签回落到 req_*（上游 wire）而不是空面板。
+	if data, err := readStage(debuglog.StageHTTPRequest); err == nil {
+		var original struct {
+			Path    string          `json:"path"`
+			Headers json.RawMessage `json:"headers"`
+			Body    json.RawMessage `json:"body"`
+		}
+		if json.Unmarshal(data, &original) == nil {
+			resp["protocol_transformed"] = true
+			resp["original_req_url"] = original.Path
+			resp["original_req_headers"] = maskSensitiveHeaderJSON(string(original.Headers))
+			addDebugResponseBody(resp, "original_req_body", debugBodyBytes(original.Body))
+		}
+	}
+
+	// 03 + attemptN：上游 wire 请求体。多次重发按序拼接——ccLoad 的
+	// req_body 只记最后一次尝试，我们把每次尝试都留痕（重试排障要对比）。
+	var reqBody bytes.Buffer
+	if names, err := h.debug.DevinRequestStages(ctx, dir); err == nil {
+		for _, name := range names {
+			data, err := readStage(name)
+			if err != nil {
+				continue
+			}
+			if reqBody.Len() > 0 {
+				reqBody.WriteString("\n\n")
+			}
+			reqBody.Write(data)
+		}
+	}
+	// 上游 procedure 按 wire 体形辨：搜索调用无 chatMessagePrompts。
+	// req_url 只在确有上游请求体时投影——request_build 失败的请求从未
+	// 发出上游调用，投出 GetChatMessage 会让前端误显示发送行为。
+	if reqBody.Len() > 0 {
+		reqURL := h.BaseURL() + "/exa.api_server_pb.ApiServerService/GetChatMessage"
+		if !bytes.Contains(reqBody.Bytes(), []byte(`"chatMessagePrompts"`)) {
+			reqURL = h.BaseURL() + "/exa.api_server_pb.ApiServerService/GetWebSearchResults"
+		}
+		resp["req_url"] = reqURL
+	}
+	addDebugResponseBody(resp, "req_body", reqBody.Bytes())
+
+	// 04：上游原始帧原文 → resp_body。
+	if data, err := readStage(debuglog.StageDevinResponse); err == nil {
+		addDebugResponseBody(resp, "resp_body", data)
+	}
+
+	// resp_status 口径：completed→200（上游流式响应没有单发 HTTP 状态可记，
+	// 正常走完即视为 200）；devin_connect 是上游语义拒绝，借下发状态码近似
+	// 上游 wire 语义；其余（transport/rate_gate/本地层）记 0——
+	// 「未形成完整上游响应」由 upstream_error 补充说明。
+	var errStage, errMessage string
+	if data, err := readStage(debuglog.ErrorFile); err == nil {
+		var e struct {
+			Stage   string `json:"stage"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(data, &e) == nil {
+			errStage, errMessage = e.Stage, e.Message
+		}
+	}
+	switch {
+	case meta.Result != nil && *meta.Result == "completed":
+		resp["resp_status"] = 200
+	case errStage == debuglog.ErrStageDevinConnect && statusCode > 0:
+		resp["resp_status"] = statusCode
+	}
+	if errMessage != "" {
+		resp["upstream_error"] = errStage + ": " + errMessage
+	}
+
+	// 06：下发客户端的记录帧重建线上字节流。
+	if data, err := readStage(debuglog.StageHTTPResponse); err == nil {
+		addDebugResponseBody(resp, "translated_resp_body", rebuildClientWire(data))
+	}
+	return resp
+}
+
+// debugBodyBytes 把 01 里 body 的 RawMessage 还原成字节：JSON 原文原样
+// 返回；被记成 JSON 字符串的非 JSON 体（写入侧对非法 JSON 的退化形态）
+// 解码回文本，避免前端看到一层多余的引号包装。
+func debugBodyBytes(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	if len(raw) > 1 && raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return []byte(s)
+		}
+	}
+	return raw
+}
+
+// addDebugResponseBody 对应 ccLoad 同名函数：utf8 直接出字符串，
+// 否则 base64 + <key>_encoding 标记。
+func addDebugResponseBody(resp map[string]any, key string, body []byte) {
+	if utf8.Valid(body) {
+		resp[key] = string(body)
+		return
+	}
+	resp[key] = base64.StdEncoding.EncodeToString(body)
+	resp[key+"_encoding"] = "base64"
+}
+
+// rebuildClientWire 把 06-http-response.jsonl 的记录帧还原成线上字节流：
+//   - 簿记帧 event="response"/"error" 且为唯一记录 → data 即完整非流式响应体；
+//   - event="[DONE]"/空名 → data-only 帧（OpenAI chat 形态）；
+//   - 其余 → event: X + data: {…} 命名帧。
+//
+// "error" 的二义：非首条时是 anthropic 流内错误帧（event: error），
+// 单条时是管线前错误响应体（writeLoggedError 只在未提交时写簿记帧）。
+func rebuildClientWire(data []byte) []byte {
+	type record struct {
+		Event string          `json:"event"`
+		Data  json.RawMessage `json:"data"`
+	}
+	var records []record
+	for line := range bytes.Lines(data) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var rec record
+		if json.Unmarshal(line, &rec) == nil {
+			records = append(records, rec)
+		}
+	}
+	var out bytes.Buffer
+	for _, rec := range records {
+		switch {
+		case rec.Event == "response" || (rec.Event == "error" && len(records) == 1):
+			out.Write(rec.Data)
+			if !bytes.HasSuffix(rec.Data, []byte("\n")) {
+				out.WriteByte('\n')
+			}
+		case rec.Event == "[DONE]":
+			out.WriteString("data: [DONE]\n\n")
+		case rec.Event == "":
+			out.WriteString("data: ")
+			out.Write(rec.Data)
+			out.WriteString("\n\n")
+		default:
+			out.WriteString("event: " + rec.Event + "\ndata: ")
+			out.Write(rec.Data)
+			out.WriteString("\n\n")
+		}
+	}
+	return out.Bytes()
+}
+
+// maskedHeaderUnavailable 对应 ccLoad 同名常量：脱敏失败的可辨识占位。
+const maskedHeaderUnavailable = `{"_masked":"unavailable"}`
+
+// isSensitiveHeader 对应 ccLoad 同名函数：认证类请求头判定。
+func isSensitiveHeader(key string) bool {
+	return strings.EqualFold(key, "Authorization") ||
+		strings.EqualFold(key, "X-Refresh-Token") ||
+		strings.EqualFold(key, "X-Api-Key") ||
+		strings.EqualFold(key, "Api-Key") ||
+		strings.EqualFold(key, "X-Goog-Api-Key") ||
+		strings.EqualFold(key, "Proxy-Authorization")
+}
+
+// maskHeaderValue 对应 ccLoad 同名函数：≤8 字符全掩，否则留头尾各 4。
+func maskHeaderValue(v string) string {
+	if len(v) <= 8 {
+		return "******"
+	}
+	return v[:4] + "******" + v[len(v)-4:]
+}
+
+// maskSensitiveHeaderJSON 对应 ccLoad 同名函数（encoding/json 版）：
+// 对 JSON string 形态的 headers 脱敏；字符串值与字符串数组元素都处理。
+// 解析/写回失败返回 maskedHeaderUnavailable——静默换成 "{}" 会让人
+// 误以为上游真的没发请求头。
+func maskSensitiveHeaderJSON(jsonStr string) string {
+	if jsonStr == "" {
+		return jsonStr
+	}
+	var headers map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &headers); err != nil || headers == nil {
+		return maskedHeaderUnavailable
+	}
+	for key, value := range headers {
+		if !isSensitiveHeader(key) {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			headers[key] = maskHeaderValue(v)
+		case []any:
+			items := make([]any, len(v))
+			for i, item := range v {
+				if s, ok := item.(string); ok {
+					items[i] = maskHeaderValue(s)
+				} else {
+					items[i] = item
+				}
+			}
+			headers[key] = items
+		}
+	}
+	out, err := json.Marshal(headers)
+	if err != nil {
+		return maskedHeaderUnavailable
+	}
+	return string(out)
+}
+
+// readMaybeCompressedJSONBody 对应 ccLoad 同名函数：读 JSON 请求体，
+// 支持 Content-Encoding: gzip，超 limit 报错。
+func readMaybeCompressedJSONBody(req *http.Request, limit int64) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, errors.New("empty request body")
+	}
+	defer func() { _ = req.Body.Close() }()
+
+	var reader io.Reader = req.Body
+	switch strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+	case "gzip":
+		gz, err := gzip.NewReader(req.Body)
+		if err != nil {
+			return nil, errors.New("invalid gzip request body")
+		}
+		defer func() { _ = gz.Close() }()
+		reader = gz
+	default:
+		return nil, errors.New("unsupported content encoding")
+	}
+
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, errors.New("read request body failed")
+	}
+	if int64(len(body)) > limit {
+		return nil, errors.New("request body too large")
+	}
+	if len(body) == 0 {
+		return nil, errors.New("empty request body")
+	}
+	return body, nil
+}

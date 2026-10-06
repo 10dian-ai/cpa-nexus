@@ -4,6 +4,8 @@ import { getDb } from '../db'
 import { decryptSecret, encryptSecret } from '../crypto'
 import { accountGroupBindings, ensureAccountGroups, setAccountGroups } from '../groups'
 import { publishUpdate } from '../events'
+import { MAX_ACCOUNT_CONCURRENCY } from '../../../shared/concurrency'
+import { invalidateDevin2ApiRuntime } from './runtime'
 
 export interface Devin2ApiAccountInput {
   label?: string
@@ -12,6 +14,7 @@ export interface Devin2ApiAccountInput {
   model?: string
   proxy?: string
   enabled?: boolean
+  maxConcurrency?: number
   groupIds?: string[]
 }
 
@@ -22,6 +25,7 @@ export interface Devin2ApiAccount {
   model: string | null
   proxy: string | null
   enabled: boolean
+  maxConcurrency: number
   status: string
   modelSnapshot: unknown
   snapshot: unknown
@@ -50,11 +54,15 @@ const asNullableString = (value: unknown): string | null => {
   return result || null
 }
 const asBoolean = (value: unknown, fallback = false) => typeof value === 'boolean' ? value : fallback
+const asConcurrency = (value: unknown): number => {
+  const result = typeof value === 'number' ? value : Number(value)
+  return Number.isSafeInteger(result) && result > 0 ? Math.min(result, MAX_ACCOUNT_CONCURRENCY) : 2
+}
 const iso = (value: unknown): string | null => value == null ? null : new Date(value as string | number | Date).toISOString()
 const mapAccount = (row: Row): Devin2ApiAccount => ({
   id: asString(row.id), label: asString(row.label) || asString(row.email) || asString(row.id),
   baseUrl: asNullableString(row.base_url), model: asNullableString(row.model), proxy: asNullableString(row.proxy),
-  enabled: asBoolean(row.enabled, true), status: asString(row.status) || 'pending',
+  enabled: asBoolean(row.enabled, true), maxConcurrency: asConcurrency(row.max_concurrency), status: asString(row.status) || 'pending',
   modelSnapshot: row.snapshot ?? null, snapshot: row.snapshot ?? null, lastUsedAt: iso(row.last_used_at), syncError: asNullableString(row.sync_error),
   lastSyncAt: iso(row.last_sync_at), createdAt: iso(row.created_at) || new Date(0).toISOString(), updatedAt: iso(row.updated_at) || new Date(0).toISOString(),
   hasToken: !!asNullableString(row.token_ciphertext),
@@ -77,13 +85,13 @@ function validateBaseUrl(value: string | undefined): string | null {
 
 /** Return account rows without ever exposing the encrypted token. */
 export async function listDevin2ApiAccounts(): Promise<Devin2ApiAccount[]> {
-  const rows = await getDb()`SELECT id,label,base_url,model,proxy,enabled,status,snapshot,sync_error,last_sync_at,last_used_at,created_at,updated_at,token_ciphertext
+  const rows = await getDb()`SELECT id,label,base_url,model,proxy,enabled,max_concurrency,status,snapshot,sync_error,last_sync_at,last_used_at,created_at,updated_at,token_ciphertext
     FROM devin2api_accounts ORDER BY created_at DESC,id`
   return rows.map(row => mapAccount(row as Row))
 }
 
 export async function getDevin2ApiAccount(id: string): Promise<Devin2ApiAccount | null> {
-  const rows = await getDb()`SELECT id,label,base_url,model,proxy,enabled,status,snapshot,sync_error,last_sync_at,last_used_at,created_at,updated_at,token_ciphertext
+  const rows = await getDb()`SELECT id,label,base_url,model,proxy,enabled,max_concurrency,status,snapshot,sync_error,last_sync_at,last_used_at,created_at,updated_at,token_ciphertext
     FROM devin2api_accounts WHERE id=${id}`
   return rows.length ? mapAccount(rows[0] as Row) : null
 }
@@ -99,27 +107,34 @@ export async function listDevin2ApiGroupSources(): Promise<Devin2ApiGroupSource[
 export async function createDevin2ApiAccount(input: Devin2ApiAccountInput): Promise<Devin2ApiAccount> {
   const id = randomUUID()
   const label = input.label?.trim() || 'Devin'
+  if (input.maxConcurrency !== undefined && (!Number.isSafeInteger(input.maxConcurrency) || input.maxConcurrency < 1 || input.maxConcurrency > MAX_ACCOUNT_CONCURRENCY)) throw createError({ statusCode: 400, message: 'Devin 单账号并发上限无效' })
   const baseUrl = validateBaseUrl(input.baseUrl)
   const token = input.token?.trim() || ''
   const tokenCiphertext = token ? encryptSecret(token) : null
   const rows = await getDb().begin(async tx => {
-    const inserted = await tx`INSERT INTO devin2api_accounts(id,label,token_ciphertext,base_url,model,proxy,enabled,status)
-      VALUES(${id},${label},${tokenCiphertext},${baseUrl},${input.model?.trim() || null},${input.proxy?.trim() || null},${input.enabled ?? true},'pending') RETURNING *`
+    const inserted = await tx`INSERT INTO devin2api_accounts(id,label,token_ciphertext,base_url,model,proxy,enabled,max_concurrency,status)
+      VALUES(${id},${label},${tokenCiphertext},${baseUrl},${input.model?.trim() || null},${input.proxy?.trim() || null},${input.enabled ?? true},${input.maxConcurrency ?? 2},'pending') RETURNING *`
     if (input.groupIds !== undefined) await setAccountGroups(tx, 'devin2api' as never, id, input.groupIds)
     else await ensureAccountGroups(tx, 'devin2api' as never, id)
     return inserted
   })
+  await invalidateDevin2ApiRuntime(id)
   await publishUpdate({ type: 'accounts', accountId: id })
   return mapAccount(rows[0] as Row)
 }
 
 export async function patchDevin2ApiAccount(id: string, input: Devin2ApiAccountInput): Promise<Devin2ApiAccount | null> {
+  const runtimeChanged = input.token !== undefined || input.baseUrl !== undefined || input.model !== undefined || input.proxy !== undefined || input.enabled !== undefined || input.maxConcurrency !== undefined
   const updates: Record<string, unknown> = {}
   if (input.label !== undefined) updates.label = input.label.trim()
   if (input.baseUrl !== undefined) updates.base_url = validateBaseUrl(input.baseUrl)
   if (input.model !== undefined) updates.model = input.model.trim() || null
   if (input.proxy !== undefined) updates.proxy = input.proxy.trim() || null
   if (input.enabled !== undefined) updates.enabled = input.enabled
+  if (input.maxConcurrency !== undefined) {
+    if (!Number.isSafeInteger(input.maxConcurrency) || input.maxConcurrency < 1 || input.maxConcurrency > MAX_ACCOUNT_CONCURRENCY) throw createError({ statusCode: 400, message: 'Devin 单账号并发上限无效' })
+    updates.max_concurrency = input.maxConcurrency
+  }
   if (input.token !== undefined) updates.token_ciphertext = input.token.trim() ? encryptSecret(input.token.trim()) : null
   updates.updated_at = new Date()
   const rows = await getDb().begin(async tx => {
@@ -128,6 +143,7 @@ export async function patchDevin2ApiAccount(id: string, input: Devin2ApiAccountI
     return updated
   })
   if (!rows.length) return null
+  if (runtimeChanged) await invalidateDevin2ApiRuntime(id)
   await publishUpdate({ type: 'accounts', accountId: id })
   return mapAccount(rows[0] as Row)
 }
@@ -138,7 +154,10 @@ export async function deleteDevin2ApiAccount(id: string): Promise<boolean> {
     const rows = await tx`DELETE FROM devin2api_accounts WHERE id=${id} RETURNING id`
     return rows.length > 0
   })
-  if (deleted) await publishUpdate({ type: 'accounts', accountId: id })
+  if (deleted) {
+    await invalidateDevin2ApiRuntime(id)
+    await publishUpdate({ type: 'accounts', accountId: id })
+  }
   return deleted
 }
 

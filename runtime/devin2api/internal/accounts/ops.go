@@ -1,0 +1,538 @@
+// /admin/accounts 的操作面编排：行写入+重推+回滚的多步提交。
+package accounts
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/WncFht/devin2api/internal/config"
+	"github.com/WncFht/devin2api/internal/store"
+)
+
+// AccountOps 是 /admin/accounts 的操作面：账号集合的读写要跨 store
+// 行、config 声明集、devinPool 热应用与 settings 覆盖重放协调，
+// 实现由装配层（main）提供，面板只持有接口（ConfigOps 先例）。
+// 聚合视图组装留在面板——lane/gate/warm/quota/usage 全是面板已有
+// 快照源，ops 只给身份与动作。
+type AccountOps struct {
+	// Effective 返回当前生效集（config 声明 ∪ 活行 − 墓碑）。
+	Effective func(ctx context.Context) ([]store.ResolvedAccount, error)
+	// Create/Update/Delete/Restore 各自动作内部已完成「行写入 +
+	// ApplyConfigs 重推 + 回滚」，返回重推后的单号生效视图。
+	Create  func(ctx context.Context, in AccountWrite) (*store.ResolvedAccount, error)
+	Update  func(ctx context.Context, name string, patch AccountPatch) (*store.ResolvedAccount, error)
+	Delete  func(ctx context.Context, name string) (*store.ResolvedAccount, error)
+	Restore func(ctx context.Context, name string) (*store.ResolvedAccount, error)
+	// Import 批量 upsert：每条 AccountWrite 是该名的「期望全态」——
+	// 行级字段按入参整体覆盖（缺席 yaml 键即零值，token/credentials_file/
+	// api_key 传空即清行覆盖、config 名回落 config 值）。整批原子：
+	// 干跑整表校验或任一写入失败即全部回滚，成功返回被触账号的生效视图。
+	Import func(ctx context.Context, entries []AccountWrite) ([]store.ResolvedAccount, error)
+	// ClearCooldown 清该名 lane 的池侧冷却；无活 lane 返 false。
+	ClearCooldown func(name string) bool
+	// TokenOf 解析该名生效凭据（行值→config 值→credentials_file
+	// 现读，不经 lane；disabled 可解，tombstoned 不可解）。
+	TokenOf func(ctx context.Context, name string) (string, error)
+	// CredentialOf 解出一次写操作将生效的凭据（create verify 探测用）：
+	// content 直解、file 按 configDir 锚定后读、token 原样——与
+	// Create/Update 的持久化口径一致。nil 时 verify 探测不可用。
+	CredentialOf func(in AccountWrite) (string, error)
+}
+
+// AccountWrite 是建号输入：Token/CredentialsFile/APIKey 至少其一；
+// CredentialsContent 是 credentials.toml 全文粘贴（ops 落盘成
+// 管理目录下的 <name>.toml 并置 CredentialsFile），与 CredentialsFile
+// 互斥。APIKey 是 Devin 平台 durable key（cog_*）——lane 用它在上游
+// 判死时现场铸 session token。Verify 为 true 时 handler 先以上游探测
+// 验证凭据再建行。
+type AccountWrite struct {
+	Name               string
+	Token              string
+	CredentialsFile    string
+	CredentialsContent string
+	APIKey             string
+	Disabled           bool
+	Verify             bool
+	Priority           *int64
+	MaxRPM             *int64
+	Notes              *string
+}
+
+// AccountPatch 是改号输入：指针字段区分缺席与显式空——显式空串是
+// 「清行覆盖」（config 名回落 config 值），不是「不变」。
+// CredentialsFile 与 CredentialsContent 互斥（同现 400）；显式空
+// CredentialsContent 等价于清 credentials_file 覆盖。
+type AccountPatch struct {
+	Token              *string
+	CredentialsFile    *string
+	CredentialsContent *string
+	APIKey             *string
+	Disabled           *bool
+	Priority           *int64
+	MaxRPM             *int64
+	Notes              *string
+}
+
+// Ops 装配 /admin/accounts 的操作面：各闭包全部在 rt 锁下跑——
+// 行写入、Apply 重推与失败回滚是一条多步提交，和 reload 共用同一把
+// 串行化锁才不跟热更交错。写动作同一骨架：预检（存在性/状态/干跑
+// 整表校验）→ 行写入 → Apply → 失败按写前快照回滚行 → 成功回该名
+// 生效视图。replaySettings 非空时在重推后回调（面板覆盖重放）。
+func (rt *Runtime) Ops(replaySettings func() error) AccountOps {
+	configDir := filepath.Dir(rt.configPath)
+	push := func(ctx context.Context) ([]store.ResolvedAccount, error) {
+		outcome, err := rt.Apply(ctx, rt.Config(), replaySettings)
+		if err != nil {
+			return nil, err
+		}
+		return outcome.Resolved, nil
+	}
+	return AccountOps{
+		Effective: func(ctx context.Context) ([]store.ResolvedAccount, error) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			return rt.db.EffectiveAccounts(ctx, rt.Config().Devin.Accounts)
+		},
+		Create: func(ctx context.Context, in AccountWrite) (*store.ResolvedAccount, error) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			cfg := rt.Config()
+			if strings.TrimSpace(cfg.Devin.BaseURL) == "" || strings.TrimSpace(cfg.Devin.Model) == "" {
+				return nil, errors.New("devin.base_url / devin.model required before adding accounts")
+			}
+			rows, err := rt.db.ListAccounts(ctx)
+			if err != nil {
+				return nil, err
+			}
+			// config 声明名、活行与墓碑行（含死墓碑）同撞「已存在」：
+			// 声明名的覆盖要走 Update，墓碑名的单出口是 restore。
+			if findAccountRow(rows, in.Name) != nil || declaredAccount(cfg, in.Name) {
+				return nil, fmt.Errorf("account %q: %w", in.Name, store.ErrAccountExists)
+			}
+			row := &store.AccountRow{
+				Name:            in.Name,
+				Token:           strings.TrimSpace(in.Token),
+				CredentialsFile: strings.TrimSpace(in.CredentialsFile),
+				APIKey:          strings.TrimSpace(in.APIKey),
+				Disabled:        in.Disabled,
+				Priority:        in.Priority,
+				MaxRPM:          in.MaxRPM,
+			}
+			if in.Notes != nil {
+				row.Notes = *in.Notes
+			}
+			// credentials_content 是粘贴上传：先证明能解出 token 再落盘
+			// 到状态目录管理位，行存绝对路径。落盘先于干跑——合成校验
+			// 要按 credentials_file 口径重读它；后续步骤失败留下的是
+			// 未被引用的文件，惰性无害。
+			if in.CredentialsContent != "" {
+				if config.TokenFromCredentialsContent([]byte(in.CredentialsContent)) == "" {
+					return nil, errors.New("credentials_content carries no windsurf_api_key")
+				}
+				path, err := writeAccountCredentialsFile(rt.stateDir, in.Name, in.CredentialsContent)
+				if err != nil {
+					return nil, fmt.Errorf("write credentials_content: %w", err)
+				}
+				row.CredentialsFile = path
+			}
+			// 干跑整表校验先于行写入：合成集非法（零凭据/重名/重
+			// token/文件不可解）直接拒绝，库里不留脏行。
+			synthesized, err := config.ResolveAccounts(accountConfigs(
+				store.MergeAccounts(cfg.Devin.Accounts, append(rows, row)), true), configDir)
+			if err != nil {
+				return nil, err
+			}
+			// 写路径不享受降级：用户亲手写进一个解不出的 credentials_file
+			// 是输入错误，按旧契约 400 拒掉（别的号文件坏不拦本笔——
+			// 它的 lane 走降级）。LoadError 文案与旧致命错误同形。
+			if sa := synthesizedAccount(synthesized, in.Name); sa.LoadError != "" {
+				return nil, errors.New(sa.LoadError)
+			}
+			// 行存锚定后的绝对路径：merge 不做二次锚定，加载期「相对
+			// 锚 configDir」的规则要在行写入侧复刻。
+			if row.CredentialsFile != "" {
+				row.CredentialsFile = synthesizedAccount(synthesized, in.Name).CredentialsFile
+			}
+			if err := rt.db.UpsertAccount(ctx, row); err != nil {
+				return nil, err
+			}
+			resolved, err := push(ctx)
+			if err != nil {
+				rollbackAccountRow(ctx, rt.db, in.Name, nil)
+				return nil, err
+			}
+			return findResolved(resolved, in.Name), nil
+		},
+		Update: func(ctx context.Context, name string, patch AccountPatch) (*store.ResolvedAccount, error) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			cfg := rt.Config()
+			rows, err := rt.db.ListAccounts(ctx)
+			if err != nil {
+				return nil, err
+			}
+			acc := findResolved(store.MergeAccounts(cfg.Devin.Accounts, rows), name)
+			if acc == nil {
+				return nil, fmt.Errorf("account %q: %w", name, store.ErrAccountNotFound)
+			}
+			if acc.Source == store.AccountSourceTombstoned {
+				return nil, fmt.Errorf("account %q: %w", name, store.ErrAccountTombstoned)
+			}
+			oldRow := findAccountRow(rows, name)
+			row := &store.AccountRow{Name: name}
+			if oldRow != nil {
+				*row = *oldRow
+			}
+			// 指针字段区分缺席与显式空：显式 "" 落 NULL 即「清行覆盖」
+			// （config 名回落 config 值），缺席不动旧值。priority/max_rpm
+			// 的 0 是真实覆盖值——指针语义表达不了「清回 NULL」。
+			if patch.Token != nil {
+				row.Token = strings.TrimSpace(*patch.Token)
+			}
+			if patch.CredentialsFile != nil {
+				row.CredentialsFile = strings.TrimSpace(*patch.CredentialsFile)
+			}
+			if patch.APIKey != nil {
+				row.APIKey = strings.TrimSpace(*patch.APIKey)
+			}
+			if patch.Disabled != nil {
+				row.Disabled = *patch.Disabled
+			}
+			if patch.Priority != nil {
+				row.Priority = patch.Priority
+			}
+			if patch.MaxRPM != nil {
+				row.MaxRPM = patch.MaxRPM
+			}
+			if patch.Notes != nil {
+				row.Notes = *patch.Notes
+			}
+			// credentials_content 同 Create：显式空串清 credentials_file
+			// 覆盖（不落盘），非空先验 token 再写管理位。落盘先于干跑，
+			// 失败残留的孤儿文件惰性无害。
+			if patch.CredentialsContent != nil {
+				if *patch.CredentialsContent == "" {
+					row.CredentialsFile = ""
+				} else {
+					if config.TokenFromCredentialsContent([]byte(*patch.CredentialsContent)) == "" {
+						return nil, errors.New("credentials_content carries no windsurf_api_key")
+					}
+					path, err := writeAccountCredentialsFile(rt.stateDir, name, *patch.CredentialsContent)
+					if err != nil {
+						return nil, fmt.Errorf("write credentials_content: %w", err)
+					}
+					row.CredentialsFile = path
+				}
+			}
+			synthesized, err := config.ResolveAccounts(accountConfigs(
+				store.MergeAccounts(cfg.Devin.Accounts, replaceAccountRow(rows, row)), true), configDir)
+			if err != nil {
+				return nil, err
+			}
+			if sa := synthesizedAccount(synthesized, name); sa.LoadError != "" {
+				return nil, errors.New(sa.LoadError)
+			}
+			if row.CredentialsFile != "" {
+				row.CredentialsFile = synthesizedAccount(synthesized, name).CredentialsFile
+			}
+			if err := rt.db.UpsertAccount(ctx, row); err != nil {
+				return nil, err
+			}
+			resolved, err := push(ctx)
+			if err != nil {
+				rollbackAccountRow(ctx, rt.db, name, oldRow)
+				return nil, err
+			}
+			return findResolved(resolved, name), nil
+		},
+		Delete: func(ctx context.Context, name string) (*store.ResolvedAccount, error) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			cfg := rt.Config()
+			rows, err := rt.db.ListAccounts(ctx)
+			if err != nil {
+				return nil, err
+			}
+			acc := findResolved(store.MergeAccounts(cfg.Devin.Accounts, rows), name)
+			if acc == nil || acc.Source == store.AccountSourceTombstoned {
+				// 墓碑的单出口是 restore；死墓碑与无名同归 not found。
+				return nil, fmt.Errorf("account %q: %w", name, store.ErrAccountNotFound)
+			}
+			oldRow := findAccountRow(rows, name)
+			if acc.ConfigDeclared {
+				// config 名物理删会在下一次 merge 里复活成 config 源
+				// ——只能立墓碑压住；覆盖字段原样保留（restore 原样
+				// 复活，disabled/凭据覆盖不丢）。
+				tomb := &store.AccountRow{Name: name}
+				if oldRow != nil {
+					*tomb = *oldRow
+				}
+				tomb.Deleted = true
+				if err := rt.db.UpsertAccount(ctx, tomb); err != nil {
+					return nil, err
+				}
+			} else if err := rt.db.DeleteAccount(ctx, name); err != nil {
+				return nil, err
+			}
+			if _, err := push(ctx); err != nil {
+				rollbackAccountRow(ctx, rt.db, name, oldRow)
+				return nil, err
+			}
+			// 回「删除前」视图：handler 只读 ConfigDeclared 挑响应形态
+			// （tombstoned:true vs deleted:true），它在删除前后同值。
+			return acc, nil
+		},
+		Restore: func(ctx context.Context, name string) (*store.ResolvedAccount, error) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			cfg := rt.Config()
+			rows, err := rt.db.ListAccounts(ctx)
+			if err != nil {
+				return nil, err
+			}
+			acc := findResolved(store.MergeAccounts(cfg.Devin.Accounts, rows), name)
+			if acc == nil {
+				return nil, fmt.Errorf("account %q: %w", name, store.ErrAccountNotFound)
+			}
+			if acc.Source != store.AccountSourceTombstoned {
+				return nil, fmt.Errorf("account %q: %w", name, store.ErrAccountNotTombstoned)
+			}
+			oldRow := findAccountRow(rows, name)
+			row := *oldRow
+			row.Deleted = false
+			if err := rt.db.UpsertAccount(ctx, &row); err != nil {
+				return nil, err
+			}
+			resolved, err := push(ctx)
+			if err != nil {
+				rollbackAccountRow(ctx, rt.db, name, oldRow)
+				return nil, err
+			}
+			return findResolved(resolved, name), nil
+		},
+		// Import 是批量 upsert：单号写路径同一骨架（行写入→Apply 重推→
+		// 失败回滚），但整批共享一次干跑与一次重推——N 个号只付一趟
+		// ApplyConfigs 热应用。每条输入是该名的期望全态：新名建行、
+		// config 名建覆盖行、墓碑名写 deleted=0 即复活。credentials_content
+		// 同 Create 落盘管理位。任一环节失败按「写前快照」逐行回滚。
+		Import: func(ctx context.Context, entries []AccountWrite) ([]store.ResolvedAccount, error) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			cfg := rt.Config()
+			if strings.TrimSpace(cfg.Devin.BaseURL) == "" || strings.TrimSpace(cfg.Devin.Model) == "" {
+				return nil, errors.New("devin.base_url / devin.model required before importing accounts")
+			}
+			if len(entries) == 0 {
+				return nil, errors.New("no accounts in import payload")
+			}
+			rows, err := rt.db.ListAccounts(ctx)
+			if err != nil {
+				return nil, err
+			}
+			candidate := append([]*store.AccountRow(nil), rows...)
+			var staged []*store.AccountRow
+			for _, in := range entries {
+				row := &store.AccountRow{
+					Name:            in.Name,
+					Token:           strings.TrimSpace(in.Token),
+					CredentialsFile: strings.TrimSpace(in.CredentialsFile),
+					APIKey:          strings.TrimSpace(in.APIKey),
+					Disabled:        in.Disabled,
+					Priority:        in.Priority,
+					MaxRPM:          in.MaxRPM,
+				}
+				if in.Notes != nil {
+					row.Notes = *in.Notes
+				}
+				if old := findAccountRow(rows, in.Name); old != nil {
+					// 首插 created_at 永久保留——覆盖写不重置建号时间。
+					row.CreatedAt = old.CreatedAt
+				}
+				// credentials_content 同 Create：先证明能解出 token 再落盘
+				// 管理位；失败残留的孤儿文件惰性无害。
+				if in.CredentialsContent != "" {
+					if config.TokenFromCredentialsContent([]byte(in.CredentialsContent)) == "" {
+						return nil, fmt.Errorf("account %q: credentials_content carries no windsurf_api_key", in.Name)
+					}
+					path, err := writeAccountCredentialsFile(rt.stateDir, in.Name, in.CredentialsContent)
+					if err != nil {
+						return nil, fmt.Errorf("write credentials_content for %q: %w", in.Name, err)
+					}
+					row.CredentialsFile = path
+				}
+				candidate = replaceAccountRow(candidate, row)
+				staged = append(staged, row)
+			}
+			// 干跑整表校验先于一切落库：合成集非法（零凭据/重名/重
+			// token/文件不可解）整批拒绝，库里不留半批。
+			synthesized, err := config.ResolveAccounts(accountConfigs(
+				store.MergeAccounts(cfg.Devin.Accounts, candidate), true), configDir)
+			if err != nil {
+				return nil, err
+			}
+			for i, row := range staged {
+				if sa := synthesizedAccount(synthesized, row.Name); sa.LoadError != "" {
+					return nil, errors.New(sa.LoadError)
+				}
+				if row.CredentialsFile != "" {
+					row.CredentialsFile = synthesizedAccount(synthesized, row.Name).CredentialsFile
+				}
+				if err := rt.db.UpsertAccount(ctx, row); err != nil {
+					// 已落库的前序行按写前快照逐行回滚——「整批原子」
+					// 的注释承诺对写入层故障同样成立，不只管重推失败。
+					for _, done := range staged[:i] {
+						rollbackAccountRow(ctx, rt.db, done.Name, findAccountRow(rows, done.Name))
+					}
+					return nil, err
+				}
+			}
+			resolved, err := push(ctx)
+			if err != nil {
+				for _, row := range staged {
+					rollbackAccountRow(ctx, rt.db, row.Name, findAccountRow(rows, row.Name))
+				}
+				return nil, err
+			}
+			var touched []store.ResolvedAccount
+			for _, row := range staged {
+				if acc := findResolved(resolved, row.Name); acc != nil {
+					touched = append(touched, *acc)
+				}
+			}
+			return touched, nil
+		},
+		ClearCooldown: func(name string) bool {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			return rt.pool.ClearCooldown(name)
+		},
+		TokenOf: func(ctx context.Context, name string) (string, error) {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			return ResolveToken(ctx, rt.db, rt.Config().Devin.Accounts, name)
+		},
+		// CredentialOf 解析一次写输入将生效的凭据（verify 探测用）：
+		// content 直解；file 走整表校验的锚定/现读合成（~/ 展开、相对
+		// 锚 configDir），file 优先于 token——与 TokenOf/池侧 lane 的
+		// 「文件是自愈源、字面量是兜底」同口径。纯解析不落盘。
+		CredentialOf: func(in AccountWrite) (string, error) {
+			if in.CredentialsContent != "" {
+				if token := config.TokenFromCredentialsContent([]byte(in.CredentialsContent)); token != "" {
+					return token, nil
+				}
+				return "", errors.New("credentials_content carries no windsurf_api_key")
+			}
+			if in.CredentialsFile != "" {
+				synthesized, err := config.ResolveAccounts([]config.DevinAccountConfig{{
+					Name: in.Name, CredentialsFile: in.CredentialsFile,
+				}}, configDir)
+				if err != nil {
+					return "", err
+				}
+				// 文件解不出时 LoadError 证据原样返回——verify 探测拿空
+				// token 打上游只会换回无关的 401，把文件错误淹掉。
+				if synthesized[0].LoadError != "" {
+					return "", errors.New(synthesized[0].LoadError)
+				}
+				return synthesized[0].Token, nil
+			}
+			if in.Token != "" {
+				return in.Token, nil
+			}
+			if in.APIKey != "" {
+				// durable api_key 在 seat 系端点本身即是合法凭据——
+				// verify 探测（GetUserStatus）直接认它。
+				return in.APIKey, nil
+			}
+			return "", errors.New("one of token/credentials_file/credentials_content/api_key is required")
+		},
+	}
+}
+
+// writeAccountCredentialsFile 把粘贴的 credentials.toml 落进状态目录
+// 的 account-credentials/<name>.toml（0600 凭据件、0700 目录）；
+// name 已过账号名正则，路径无注入面。返回绝对路径供行 CredentialsFile
+// 置位。同名的覆盖写语义顺带给 Update 复用（改内容=改文件）。
+func writeAccountCredentialsFile(stateDir, name, content string) (string, error) {
+	dir := filepath.Join(stateDir, "account-credentials")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, name+".toml")
+	if err := config.WriteFileAtomic(path, []byte(content), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// findAccountRow 按名找库行（含墓碑）；无行返回 nil。
+func findAccountRow(rows []*store.AccountRow, name string) *store.AccountRow {
+	for _, row := range rows {
+		if row.Name == name {
+			return row
+		}
+	}
+	return nil
+}
+
+// synthesizedAccount 按名找干跑校验后的条目；调用方保证名在候选集
+// 内（刚写入的行非墓碑必在），找不到是装配 bug，直接暴露。
+func synthesizedAccount(synthesized []config.DevinAccountConfig, name string) config.DevinAccountConfig {
+	for _, acc := range synthesized {
+		if acc.Name == name {
+			return acc
+		}
+	}
+	return config.DevinAccountConfig{}
+}
+
+// replaceAccountRow 返回把 rows 里同名行换成 row（无同名则追加）的新
+// 切片——构造「写入后」的行集喂干跑校验，不碰库里旧行。
+func replaceAccountRow(rows []*store.AccountRow, row *store.AccountRow) []*store.AccountRow {
+	out := make([]*store.AccountRow, 0, len(rows)+1)
+	replaced := false
+	for _, existing := range rows {
+		if existing.Name == row.Name {
+			out = append(out, row)
+			replaced = true
+		} else {
+			out = append(out, existing)
+		}
+	}
+	if !replaced {
+		out = append(out, row)
+	}
+	return out
+}
+
+// rollbackAccountRow 在重推失败后把行写回 apply 前快照（快照 nil 即
+// 「写前无行」→ 物理删）。回滚失败只告警：重推错误本身已回传给
+// 操作者，残留行会在下一次成功重推时被同一规则重新评价。
+func rollbackAccountRow(ctx context.Context, db *store.Store, name string, old *store.AccountRow) {
+	var err error
+	if old == nil {
+		err = db.DeleteAccount(ctx, name)
+	} else {
+		err = db.UpsertAccount(ctx, old)
+	}
+	if err != nil {
+		slog.Warn("account row rollback failed", "name", name, "error", err)
+	}
+}
+
+// declaredAccount 报 name 是否被 config.yaml 声明——声明名即便没有
+// overlay 行也占着「已存在」语义：面板建同名号必须走 Update 覆盖
+// 路径，不能 Create 出第二条身份。
+func declaredAccount(cfg config.Config, name string) bool {
+	for _, acc := range cfg.Devin.Accounts {
+		if acc.Name == name {
+			return true
+		}
+	}
+	return false
+}

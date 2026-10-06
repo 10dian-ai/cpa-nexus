@@ -119,15 +119,15 @@ describe('unified model keys with persistent module binding over HTTP', () => {
   })
   afterEach(async () => { await new Promise<void>(resolve => { server.close(resolve); server.closeAllConnections() }) })
 
-  it('accepts legacy module fields as unified group-routed keys, stores only hashes and returns safe metadata', async () => {
-    for (const moduleId of ['cpa', 'commandcode'] as const) {
+  it('persists explicit module bindings, stores only hashes and returns safe metadata', async () => {
+    for (const moduleId of ['auto', 'cpa', 'commandcode', 'devin2api'] as const) {
       const response = await request('/api/keys', 'POST', { name: '  ' + moduleId + ' client  ', moduleId })
       expect(response.status).toBe(200)
       const created = await response.json()
       expect(created.key).toMatch(/^ccm_[A-Za-z0-9_-]{43}$/)
-      expect(created.item).toMatchObject({ name: moduleId + ' client', moduleId: 'auto', enabled: true, groupIds: fixture.defaultModelGroupIds })
-      expect(fixture.keys.get(created.item.id)?.module_id).toBe('auto')
-      expect(await authenticateGatewayKey(created.key)).toEqual({ id: created.item.id, name: moduleId + ' client', moduleId: 'auto' })
+      expect(created.item).toMatchObject({ name: moduleId + ' client', moduleId, enabled: true, groupIds: fixture.defaultModelGroupIds })
+      expect(fixture.keys.get(created.item.id)?.module_id).toBe(moduleId)
+      expect(await authenticateGatewayKey(created.key)).toEqual({ id: created.item.id, name: moduleId + ' client', moduleId })
       const insert = fixture.queries.filter(query => query.sql.startsWith('INSERT INTO gateway_keys')).at(-1)!
       expect(insert.values).not.toContain(created.key)
       expect(insert.values).toContain(hashGatewayKey(created.key))
@@ -139,17 +139,31 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     }
   })
 
-  it('keeps legacy module edits compatible while allowing enabled sources in either module', async () => {
+  it('changes module bindings and enforces the selected module during inference', async () => {
     expect(await authenticateGatewayKey(KEY)).toEqual({ id: KEY_ID, name: 'Existing key', moduleId: 'auto' })
-    const changed = await request(`/api/keys/${KEY_ID}`, 'PATCH', { moduleId: 'cpa', name: 'Moved key' })
-    expect(await changed.json()).toMatchObject({ ok: true, moduleId: 'auto' })
-    const key = (await authenticateGatewayKey(KEY))!
-    expect(key).toEqual({ id: KEY_ID, name: 'Moved key', moduleId: 'auto' })
-    await expect(requireModelKeyModule(key, 'cpa')).resolves.toBeUndefined()
-    await expect(requireModelKeyModule(key, 'commandcode')).resolves.toBeUndefined()
-    const listed = await (await request('/api/keys')).json()
-    expect(listed.items[0]).toMatchObject({ id: KEY_ID, moduleId: 'auto' })
-    expect(await findEnabledModelKey(KEY_ID)).toEqual(key)
+    for (const moduleId of ['cpa', 'commandcode', 'devin2api', 'auto'] as const) {
+      const changed = await request(`/api/keys/${KEY_ID}`, 'PATCH', { moduleId, name: 'Moved key' })
+      expect(await changed.json()).toMatchObject({ ok: true, moduleId })
+      const key = (await authenticateGatewayKey(KEY))!
+      expect(key).toEqual({ id: KEY_ID, name: 'Moved key', moduleId })
+      for (const target of ['cpa', 'commandcode', 'devin2api'] as const) {
+        if (moduleId === 'auto' || moduleId === target) await expect(requireModelKeyModule(key, target)).resolves.toBeUndefined()
+        else await expect(requireModelKeyModule(key, target)).rejects.toMatchObject({ statusCode: 403 })
+      }
+      const listed = await (await request('/api/keys')).json()
+      expect(listed.items[0]).toMatchObject({ id: KEY_ID, moduleId })
+      expect(await findEnabledModelKey(KEY_ID)).toEqual(key)
+    }
+  })
+
+  it('preserves an existing module binding during unrelated key edits', async () => {
+    seed(KEY_ID, KEY, 'devin2api')
+    for (const body of [{ name: 'Renamed Devin key' }, { enabled: false }, { presetEnabled: true }, { groupIds: [DEFAULT_GROUP_ID] }]) {
+      const response = await request(`/api/keys/${KEY_ID}`, 'PATCH', body)
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ ok: true, moduleId: 'devin2api' })
+      expect(fixture.keys.get(KEY_ID)?.module_id).toBe('devin2api')
+    }
   })
 
   it('defaults new model keys to unified routing while retaining historical internal identities', async () => {

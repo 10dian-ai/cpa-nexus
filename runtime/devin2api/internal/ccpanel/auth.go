@@ -1,0 +1,404 @@
+package ccpanel
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// webIdentity 是一次面板请求的身份：admin=密码持有者，api_token=下游
+// 令牌持有者（只读、按 auth_token_id 限定数据范围）。
+type webIdentity struct {
+	Role string
+	// TokenID 是 api_token 身份的令牌 id；admin 为 0。
+	TokenID int64
+	// KeyHash 是令牌对应 logs 表的 key_hash（哈希前 16 hex），
+	// 用于把 /dashboard 查询强制收敛到该令牌的数据。
+	KeyHash string
+}
+
+type identityContextKey struct{}
+
+// identityFrom 取请求的面板身份；未经 withAuth/withWebAuth 的链路按
+// 最小权限返回 api_token 空凭据：下游调用点以 Role=="api_token" 收敛
+// 数据范围，空 KeyHash 自然筛成空集——新端点忘包 middleware 时回空
+// 而非静默给 admin 全量（fail-closed）。
+func identityFrom(r *http.Request) webIdentity {
+	if id, ok := r.Context().Value(identityContextKey{}).(webIdentity); ok {
+		return id
+	}
+	return webIdentity{Role: "api_token"}
+}
+
+// bearerToken 提取 Authorization: Bearer 的凭据部分。
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
+		return auth[len(prefix):]
+	}
+	return ""
+}
+
+// loginFail 记录单个来源 IP 的连续登录失败状态。
+type loginFail struct {
+	// fails 是上次锁定以来的连续失败次数。
+	fails int
+	// lockedUntil 是锁定截止时间；到期前失败的请求直接 429。
+	lockedUntil time.Time
+	// lastSeen 是最近一次失败时刻：闲置超过一个锁定周期的条目计数
+	// 清零并可被机会清扫——爆破流量不走成功路径也能被回收。
+	lastSeen time.Time
+}
+
+const (
+	// loginMaxFails 是触发锁定的连续失败次数。
+	loginMaxFails = 5
+	// loginLockout 是达到失败上限后的锁定时长。
+	loginLockout = 10 * time.Minute
+	// loginSweepThreshold 是触发机会清扫的失败条目水位。
+	loginSweepThreshold = 64
+)
+
+// noteLoginFailure 把一次凭据校验失败计入 IP 账本（登录表单、admin/api_token
+// Bearer 认证共用），返回该 IP 当前是否处于锁定期；顺带按水位机会清扫过期
+// 条目——纯爆破流量不走成功路径，失败条目只增不扫会无界增长。
+func (h *Handler) noteLoginFailure(ip string) bool {
+	h.loginMu.Lock()
+	defer h.loginMu.Unlock()
+	now := time.Now()
+	state := h.loginFailures[ip]
+	if state == nil {
+		state = &loginFail{}
+		h.loginFailures[ip] = state
+	}
+	if now.Before(state.lockedUntil) {
+		state.lastSeen = now
+		return true
+	}
+	// 距上次失败超过一个锁定周期视为新一波尝试：陈旧计数跨时间
+	// 累积会把低频手滑误算成爆破。
+	if now.Sub(state.lastSeen) > loginLockout {
+		state.fails = 0
+	}
+	state.lastSeen = now
+	state.fails++
+	if state.fails >= loginMaxFails {
+		state.fails = 0
+		state.lockedUntil = now.Add(loginLockout)
+	}
+	if len(h.loginFailures) > loginSweepThreshold {
+		h.sweepLoginFailures(now)
+	}
+	return false
+}
+
+// sweepLoginFailures 清掉锁定已过期且闲置超过一个锁定周期的失败条目。
+// 仍在锁定中或近期仍有失败活动的条目保留。调用方须持有 loginMu。
+func (h *Handler) sweepLoginFailures(now time.Time) {
+	for key, state := range h.loginFailures {
+		if !now.Before(state.lockedUntil) && now.Sub(state.lastSeen) > loginLockout {
+			delete(h.loginFailures, key)
+		}
+	}
+}
+
+// clearLoginFailure 清掉该 IP 的失败账本——持对面板密码在锁定期内也
+// 放行并清零：锁定只为抬高爆破代价，持对凭据的真用户不被挡在门外。
+// 只有密码凭据验证成功才清零：api_token 成功只是「持有某下游令牌」，
+// 若也清零，持钥人可交替令牌命中+密码猜测全速绕过锁定爆破密码。
+func (h *Handler) clearLoginFailure(ip string) {
+	h.loginMu.RLock()
+	_, hasEntry := h.loginFailures[ip]
+	h.loginMu.RUnlock()
+	if hasEntry {
+		h.loginMu.Lock()
+		delete(h.loginFailures, ip)
+		h.loginMu.Unlock()
+	}
+}
+
+// passwordMatches 比对明文与当前生效哈希；生效面开放（两层皆无密码）
+// 时恒真。
+func (h *Handler) passwordMatches(provided string) bool {
+	hasPassword, passwordHash := h.passwordSnapshot()
+	if !hasPassword {
+		return true
+	}
+	sum := sha256.Sum256([]byte(provided))
+	return subtle.ConstantTimeCompare(sum[:], passwordHash[:]) == 1
+}
+
+// checkPasswordCredential 校验单份密码凭据（Bearer 头或登录表单的明文），
+// 成功清该 IP 的失败账本，失败计入账本并报告是否已进入锁定期。
+// 未命中先同步一次 DB 覆盖镜像再比——「sqlite3 删行/改行」是不重启的
+// 应急恢复通道；这趟 GetState 只落在失败尝试上，正常校验不付 IO。
+func (h *Handler) checkPasswordCredential(provided string, ip string) (ok, locked bool) {
+	if h.passwordMatches(provided) {
+		h.clearLoginFailure(ip)
+		return true, false
+	}
+	h.refreshPasswordOverride()
+	if h.passwordMatches(provided) {
+		h.clearLoginFailure(ip)
+		return true, false
+	}
+	return false, h.noteLoginFailure(ip)
+}
+
+// CheckPanelBearer 校验 Authorization: Bearer 头中的密码凭据：
+// 移植前端把密码本身当 Bearer token 用，不发 cookie、不查会话表。
+// locked 报告来源 IP 是否处于登录锁定期——Bearer 失败与表单登录共用
+// 同一 IP 账本，只守 login 端点等于把全速穷举通道留给 Bearer；
+// authed 为真时 locked 无意义。
+func (h *Handler) CheckPanelBearer(r *http.Request) (authed, locked bool) {
+	hasPassword, _ := h.passwordSnapshot()
+	if !hasPassword {
+		return true, false
+	}
+	auth, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false, false
+	}
+	return h.checkPasswordCredential(auth, remoteIP(r))
+}
+
+// isPanelPassword 判定一份凭据是否即面板密码（面板开放时任何凭据都
+// 按 admin 算）。令牌明文与面板密码同值的行（典型是旧版播种进仓的
+// auth.api_key 与 password 共用一串）命中 Resolve 后仍要用它把管理员
+// 从 api_token 受限身份捞回 admin。纯哈希比较，不进失败账本。
+func (h *Handler) isPanelPassword(cred string) bool {
+	hasPassword, passwordHash := h.passwordSnapshot()
+	sum := sha256.Sum256([]byte(cred))
+	return !hasPassword || subtle.ConstantTimeCompare(sum[:], passwordHash[:]) == 1
+}
+
+// CheckPanelPassword 校验登录表单提交的明文密码（/login admin 模式用）。
+func (h *Handler) CheckPanelPassword(pw string, r *http.Request) (ok, locked bool) {
+	hasPassword, _ := h.passwordSnapshot()
+	if !hasPassword {
+		return true, false
+	}
+	return h.checkPasswordCredential(pw, remoteIP(r))
+}
+
+// handleLogin 实现 ccLoad 契约的 POST /login：body {mode,password|token}。
+// admin 模式校验 dashboard.password，返回 token=密码本身——下游 Bearer
+// 校验本来就接受密码，因此无会话表、无过期状态、重启不掉线。
+// api_token 模式校验 auth_tokens 仓里的下游令牌，返回 token=明文令牌本身，
+// 面板后续 Bearer<令牌> 经 withWebAuth 解析回 api_token 身份。
+func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mode     string `json:"mode"`
+		Password string `json:"password"`
+		Token    string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	switch req.Mode {
+	case "admin":
+		ok, locked := h.CheckPanelPassword(req.Password, r)
+		if ok {
+			respondOK(w, map[string]any{
+				"token":     req.Password,
+				"expiresIn": 86400,
+				"role":      "admin",
+			})
+			return
+		}
+		if locked {
+			respondError(w, http.StatusTooManyRequests, "Too many failed login attempts")
+			return
+		}
+		respondError(w, http.StatusUnauthorized, "Invalid credentials")
+	case "api_token":
+		// 空 token 不得参与解析：Resolve("") 会命中匿名通道行——
+		// 匿名行是 /v1 无凭据流量的准入载体，不是可登录面板的凭据。
+		if h.tokens != nil && req.Token != "" {
+			if _, ok := h.tokens.Resolve(req.Token); ok {
+				// 令牌登录成功不清爆破账本：账本只对「证明持有面板
+				// 密码」的成功清零，见 clearLoginFailure。
+				respondOK(w, map[string]any{
+					"token":     req.Token,
+					"expiresIn": 86400,
+					"role":      "api_token",
+				})
+				return
+			}
+		}
+		// 令牌爆破面与密码等价（都直开面板只读面），共用同一按 IP
+		// 失败账本：失败计数与 admin 分支同语义进 ledger。
+		if h.noteLoginFailure(remoteIP(r)) {
+			respondError(w, http.StatusTooManyRequests, "Too many failed login attempts")
+			return
+		}
+		respondError(w, http.StatusUnauthorized, "Invalid credentials")
+	default:
+		respondError(w, http.StatusBadRequest, "Invalid request format")
+	}
+}
+
+// handleLogout 无服务端会话可清，回个成功让前端清本地 token 即可。
+func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	respondOK(w, map[string]any{"message": "已登出"})
+}
+
+// adminUpdateDashboardPassword 实现 PUT /admin/dashboard/password：
+// body {"password"}——非空把 sha256 写进 runtime_state 覆盖行（overlay
+// 语义：压过 config.yaml 值服役，文件值保留作应急回落）；空则删行
+// 回落文件值。先持久化再换内存镜像，失败不出分裂态。
+// 回执 set 时带 token=新密码：登录接口本来就回 token=密码本身，前端
+// 直接续上 Bearer 会话免于重登；clear 不回 token——文件密码是应急
+// 找回层，不该发给刚被换下的会话。
+func (h *Handler) adminUpdateDashboardPassword(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		respondError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	pw := strings.TrimSpace(req.Password)
+	if pw == "" {
+		if err := h.store.DeleteState(r.Context(), dashboardPasswordHashKey); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		h.authMu.Lock()
+		h.dbPasswordSet = false
+		h.dbPasswordHash = [32]byte{}
+		h.resolvePasswordLocked()
+		h.authMu.Unlock()
+		respondOK(w, map[string]any{"source": h.PasswordSource()})
+		return
+	}
+	sum := sha256.Sum256([]byte(pw))
+	if err := h.store.SetState(r.Context(), dashboardPasswordHashKey, hex.EncodeToString(sum[:])); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.authMu.Lock()
+	h.dbPasswordHash = sum
+	h.dbPasswordSet = true
+	h.resolvePasswordLocked()
+	h.authMu.Unlock()
+	respondOK(w, map[string]any{"source": "db", "token": pw})
+}
+
+// dashboardSession 实现 GET /dashboard/session：按身份回角色形状——
+// admin 只有 role；api_token 附带 ccLoad 契约的令牌视图字段。
+// 未知角色（含未经 middleware 的缺省身份）按 401 拒——fail-closed。
+func (h *Handler) dashboardSession(w http.ResponseWriter, r *http.Request) {
+	id := identityFrom(r)
+	switch id.Role {
+	case "api_token":
+		if h.tokens != nil {
+			if t, ok := h.tokens.Get(id.TokenID); ok && t.IsValid() {
+				models := t.AllowedModels
+				if models == nil {
+					models = []string{}
+				}
+				api := t.API()
+				respondOK(w, map[string]any{
+					"role":            "api_token",
+					"auth_token_id":   t.ID,
+					"description":     t.Description,
+					"allowed_models":  models,
+					"cost_used_usd":   api.CostUsedUSD,
+					"cost_limit_usd":  api.CostLimitUSD,
+					"max_concurrency": t.MaxConcurrency,
+				})
+				return
+			}
+		}
+		respondError(w, http.StatusUnauthorized, "API Token 已失效")
+	case "admin":
+		respondOK(w, map[string]any{"role": "admin"})
+	default:
+		respondError(w, http.StatusUnauthorized, "未授权访问，请先登录")
+	}
+}
+
+// withAuth 是 /admin 组的 Bearer 门槛：只认面板密码（admin）。
+// 有效下游令牌先经 Resolve 分流，再进密码校验——令牌有效但非面板
+// 密码是角色不足（403，见下），不能落进密码比对的失败账本：否则
+// 持钥人每请求 /admin 一次 +1，5 次后 IP 被误判锁定连 /login 都 429。
+// 令牌即密码（明文与面板密码同值的令牌行当管理凭据用）仍按 admin 放行。
+// 401 触发前端 fetchWithAuth 跳回 /web/login.html；429 复用爆破锁定语义。
+func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Bearer 缺席时不进 Resolve：匿名通道行的哈希就是空明文的
+		// 哈希，不挡这一下，无凭据请求会被当成有效令牌 403 掉而非 401。
+		if tok := bearerToken(r); tok != "" && h.tokens != nil {
+			if _, ok := h.tokens.Resolve(tok); ok {
+				if h.isPanelPassword(tok) {
+					h.clearLoginFailure(remoteIP(r))
+					next(w, r.WithContext(context.WithValue(r.Context(), identityContextKey{}, webIdentity{Role: "admin"})))
+					return
+				}
+				// 有效令牌但非密码：api_token 只读身份在摸 /admin
+				// （admin-only）。回 403 而非 401——fetchWithAuth 把
+				// 401 当凭据失效清 token 踢回登录页，令牌其实仍有效。
+				respondError(w, http.StatusForbidden, "API 令牌为只读身份，无权访问管理端点")
+				return
+			}
+		}
+		authed, locked := h.CheckPanelBearer(r)
+		if authed {
+			next(w, r.WithContext(context.WithValue(r.Context(), identityContextKey{}, webIdentity{Role: "admin"})))
+			return
+		}
+		if locked {
+			respondError(w, http.StatusTooManyRequests, "登录尝试过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusUnauthorized, "未授权访问，请先登录")
+	}
+}
+
+// withWebAuth 是 /dashboard 组的门槛：api_token Bearer 先解析（有效令牌
+// 直接进 api_token 身份——仅令牌即密码时清失败账本，纯令牌身份不清，
+// 理由见 clearLoginFailure）；解析不中再走密码校验——有效令牌若在密码
+// 校验上计失败，持钥人每请求 +1，5 次后被误判锁定。校验失败的 Bearer
+// 由 CheckPanelBearer 计入共享 IP 账本（一次失败只计一次，两种凭据不
+// 重复记）。面板密码为空（开放面板）时无 Bearer 也按 admin 放行——
+// CheckPanelBearer 的开放语义已覆盖这条。
+func (h *Handler) withWebAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Bearer 缺席时不进 Resolve：匿名通道行的哈希就是空明文的
+		// 哈希，不挡这一下，无凭据请求会被当成 api_token 身份放行。
+		if tok := bearerToken(r); tok != "" && h.tokens != nil {
+			if t, ok := h.tokens.Resolve(tok); ok {
+				if h.isPanelPassword(tok) {
+					h.clearLoginFailure(remoteIP(r))
+					next(w, r.WithContext(context.WithValue(r.Context(), identityContextKey{}, webIdentity{Role: "admin"})))
+					return
+				}
+				next(w, r.WithContext(context.WithValue(r.Context(), identityContextKey{}, webIdentity{
+					Role:    "api_token",
+					TokenID: t.ID,
+					KeyHash: t.KeyHash(),
+				})))
+				return
+			}
+		}
+		authed, locked := h.CheckPanelBearer(r)
+		if authed {
+			next(w, r.WithContext(context.WithValue(r.Context(), identityContextKey{}, webIdentity{Role: "admin"})))
+			return
+		}
+		if locked {
+			respondError(w, http.StatusTooManyRequests, "登录尝试过多，请稍后再试")
+			return
+		}
+		respondError(w, http.StatusUnauthorized, "未授权访问，请先登录")
+	}
+}

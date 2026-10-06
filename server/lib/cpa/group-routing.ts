@@ -231,16 +231,32 @@ async function requireLegacyPrefixRouting(client: Client) {
 export async function assertCpaGroupRoutingSafe(): Promise<void> {
   await requireVerifiedPluginRouting(createCpaClient())
 }
-export interface CpaGroupPolicySelection { model: string; allowedAuthIDs: string[]; allowedPluginIDs: string[]; legacyPrefix?: boolean }
-/** A router may rename an alias, but its complete execution chain inherits only this group union. */
+export interface CpaGroupPolicySelection { model: string; selectedGroupId: string; allowedAuthIDs: string[]; allowedPluginIDs: string[]; legacyPrefix?: boolean }
+/** A router may rename an alias, but the complete chain stays in the selected group. */
 export async function resolveCpaGroupPolicy(model: string, groupIds: string[], _keyId: string): Promise<CpaGroupPolicySelection | null> {
   if (model.startsWith('commandcode/') || !groupIds.length) return null
   const capabilities = await getNexusCpaCapabilities()
   if (!capabilities?.groupPolicy.enabled) throw fail(503, '请更新并配置 Nexus 内核以启用完整插件分组策略')
   const sources = await allowedSources(groupIds)
   if (!sources.length) return null
-  return { model, allowedAuthIDs: [...new Set(sources.flatMap(source => source.authIds))],
-    allowedPluginIDs: [...new Set(sources.flatMap(source => source.pluginId ? [source.pluginId] : []))] }
+  const bindings = await accountGroupBindings('cpa', sources.map(source => source.id))
+  const client = createCpaClient(), baseModel = modelParts(model).base
+  const advertised = new Set<string>()
+  await each(sources, async source => {
+    // Model inventories are advisory: routers and plugin executors may expose
+    // aliases that are not present in credentials/models. A transient catalog
+    // failure must not turn a valid opaque group policy into a 502.
+    try { if ((await accountModels(source, client)).some(entry => entry.id === model || entry.id === baseModel)) advertised.add(source.id) } catch { /* Keep opaque policy fallback below. */ }
+  })
+  // A concrete model belongs to the first caller group advertising it. Router
+  // aliases are resolved by the core; for those preserve deterministic group
+  // selection without ever unioning unrelated group policies or preset stacks.
+  const selectedGroupId = groupIds.find(groupId => sources.some(source => advertised.has(source.id) && bindings.get(source.id)?.groupIds.includes(groupId)))
+    || groupIds.find(groupId => sources.some(source => bindings.get(source.id)?.groupIds.includes(groupId)))
+  if (!selectedGroupId) return null
+  const selectedSources = sources.filter(source => bindings.get(source.id)?.groupIds.includes(selectedGroupId))
+  return { model, selectedGroupId, allowedAuthIDs: [...new Set(selectedSources.flatMap(source => source.authIds))],
+    allowedPluginIDs: [...new Set(selectedSources.flatMap(source => source.pluginId ? [source.pluginId] : []))] }
 }
 export async function resolveCommandcodeBridgePolicy(_keyId: string): Promise<{ allowedAuthIDs: string[]; allowedPluginIDs: string[]; legacyPrefix?: boolean }> {
   const capabilities = await getNexusCpaCapabilities()

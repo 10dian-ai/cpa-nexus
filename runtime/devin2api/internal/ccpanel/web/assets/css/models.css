@@ -1,0 +1,361 @@
+/* ===== 以下来自 styles.css：models 页专属规则 ===== */
+
+.channel-enable-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.channel-enable-switch:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success-500) 22%, transparent);
+}
+
+.channel-enable-switch__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: #ffffff;
+  box-shadow: var(--shadow-base);
+  transition: transform 0.18s ease;
+}
+
+.channel-enable-switch--on {
+  background: var(--success-500);
+  border-color: var(--success-600);
+}
+
+.channel-enable-switch--on .channel-enable-switch__knob {
+  transform: translateX(18px);
+}
+
+.channel-enable-switch--off {
+  background: var(--neutral-300);
+  border-color: var(--neutral-400);
+}
+
+.custom-rules-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+@media (max-width: 768px) {
+.custom-rules-footer .btn {
+      font-size: var(--text-13);
+      padding: 6px 14px;
+  }
+}
+
+
+/* 模型注册表页专用样式：特性标签筛选与行内徽标统一走无边框软胶囊 */
+
+.models-head-card {
+  padding: var(--space-5) var(--space-6);
+}
+
+.models-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+#models-summary {
+  margin-top: var(--space-2);
+}
+
+.models-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+#models-filter {
+  max-width: 240px;
+  margin-left: auto;
+}
+
+.models-filter-selects {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+
+.models-filter-selects .form-input {
+  width: auto;
+  min-width: 110px;
+}
+
+#f-provider {
+  min-width: 120px;
+}
+
+#f-sort {
+  min-width: 150px;
+  margin-left: auto;
+}
+
+#models-tag-chips {
+  margin-top: var(--space-3);
+}
+
+.models-price-note {
+  padding: 0 var(--space-4) var(--space-3);
+  font-size: var(--text-xs);
+}
+
+#models_page_size {
+  width: auto;
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+}
+
+.tag-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tag-chip {
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--neutral-100);
+  color: var(--color-text-secondary);
+  font-size: var(--text-13);
+  font-weight: 400;
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tag-chip:hover {
+  background: var(--neutral-200);
+  color: var(--neutral-900);
+}
+
+.tag-chip.active {
+  background: color-mix(in srgb, var(--primary-500) 14%, transparent);
+  color: var(--primary-600);
+  font-weight: 500;
+}
+
+/* 行内特性徽标：颜色由 models.js 经 --badge-color 注入，
+   底色用 color-mix 取 14% 同色系透明，不加边框 */
+.model-badge {
+  --badge-color: var(--neutral-500);
+  display: inline-block;
+  margin: 0 var(--space-1) 2px 0;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, var(--badge-color) 14%, transparent);
+  color: var(--badge-color);
+  white-space: nowrap;
+}
+
+/* 表格模式下列多：给足 min-width 让容器横向滚动，别把模型列压成高瘦行。
+   ≤768px 走 mobile-card 卡片布局，min-width 反而坏事，故只在宽屏生效 */
+@media (min-width: 769px) {
+  .models-table {
+    min-width: 1160px;
+  }
+
+  /* 数字列右对齐：4-7 = 倍率/输入价/缓存价/输出价 */
+  .models-table th:nth-child(4),
+  .models-table th:nth-child(5),
+  .models-table th:nth-child(6),
+  .models-table th:nth-child(7),
+  .models-table td:nth-child(4),
+  .models-table td:nth-child(5),
+  .models-table td:nth-child(6),
+  .models-table td:nth-child(7) {
+    text-align: right;
+  }
+
+  /* 特性列给足常见双徽标（档位+img）一行放下的宽度，别竖叠 */
+  .models-table th:nth-child(3),
+  .models-table td:nth-child(3) {
+    min-width: 96px;
+  }
+
+  /* 启用列是开关，居中；操作列右对齐 */
+  .models-table th:nth-child(9),
+  .models-table td:nth-child(9) {
+    text-align: center;
+  }
+
+  .models-table th:nth-child(11),
+  .models-table td:nth-child(11) {
+    text-align: right;
+  }
+}
+
+/* 实际解析列：解析名 + 重定向编辑入口；
+   负 margin + hover 底色把「— + 铅笔」读成一个可点区域 */
+.resolved-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: -4px -8px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-base);
+}
+
+.resolved-cell:hover {
+  background: var(--neutral-100);
+}
+
+.resolved-cell:hover .redirect-edit-btn {
+  opacity: 1;
+  color: var(--neutral-900);
+}
+
+/* 键盘到达时也要现身，纯 hover 隐藏对 Tab 用户不可见 */
+.redirect-edit-btn:focus-visible {
+  opacity: 1;
+}
+
+.redirect-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.redirect-edit-btn:hover {
+  background: var(--neutral-100);
+  color: var(--neutral-900);
+}
+
+/* 重定向选择弹窗的候选列表 */
+.redirect-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--space-3);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.redirect-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-base);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.redirect-item:hover {
+  background: var(--neutral-100);
+}
+
+.redirect-item--active {
+  background: color-mix(in srgb, var(--primary-500) 10%, transparent);
+}
+
+.redirect-item-name {
+  font-family: var(--font-family-mono);
+  font-size: var(--text-13);
+  overflow-wrap: anywhere;
+}
+
+.redirect-item-label {
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+}
+
+.redirect-item--custom .redirect-item-name {
+  font-family: inherit;
+  color: var(--primary-600);
+}
+
+.redirect-empty {
+  padding: var(--space-4);
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+/* 行内操作按钮与状态行 */
+.model-row--disabled {
+  opacity: 0.55;
+}
+
+.model-name {
+  overflow-wrap: anywhere;
+}
+
+.model-sub {
+  font-family: var(--font-family-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.model-override-dot {
+  color: var(--warning-400);
+  font-size: var(--text-2xs);
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+
+.model-src-badge {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  margin-right: var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  background: var(--src-bg);
+  color: var(--src-fg);
+}
+
+.model-actions {
+  white-space: nowrap;
+}
+
+.model-actions .btn {
+  padding: var(--space-1) var(--space-2);
+}
+
+.model-actions .btn + .btn {
+  margin-left: var(--space-1);
+}

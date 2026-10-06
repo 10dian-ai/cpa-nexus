@@ -1,0 +1,879 @@
+/* 上游账号池页专属样式（表格主视图 + 行展开托盘） */
+
+/* 页头与分区卡：布局对齐 models 页的 head 卡约定 */
+.accounts-head-card {
+  padding: var(--space-5) var(--space-6);
+}
+
+.accounts-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.accounts-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+#accounts-updated-at {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.accounts-section-card {
+  padding: var(--space-6);
+}
+
+.accounts-kpi-grid {
+  margin-top: var(--space-4);
+}
+
+.accounts-grid-full {
+  grid-column: 1 / -1;
+}
+
+/* 全池脉冲条：每 lane 一竖条，色即主状态 */
+.accounts-pulse {
+  display: flex;
+  gap: 4px;
+  height: 28px;
+  align-items: stretch;
+}
+
+.accounts-pulse-seg {
+  flex: 1;
+  min-width: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--color-border);
+  transition: background 0.3s;
+}
+
+.accounts-pulse-seg--ok { background: var(--success-500); }
+.accounts-pulse-seg--warn { background: var(--warning-500); }
+.accounts-pulse-seg--bad { background: var(--error-500); }
+.accounts-pulse-seg--idle { background: var(--color-border); }
+
+.accounts-pulse-empty {
+  color: var(--color-text-secondary);
+  font-size: var(--text-13);
+  align-self: center;
+}
+
+/* ---- 表格 ---- */
+
+.acct-table-wrap {
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+}
+
+.acct-table {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+  font-size: var(--text-13);
+}
+
+.acct-table th {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-align: left;
+  padding: var(--space-3) var(--space-3);
+  border-bottom: 1px solid var(--surface-border);
+  white-space: nowrap;
+}
+
+.acct-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--surface-border);
+  vertical-align: top;
+}
+
+.acct-table tbody tr.acct-row:last-child td,
+.acct-table tbody tr.acct-tray-row:last-child td {
+  border-bottom: none;
+}
+
+.acct-col-check {
+  width: 34px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.acct-check,
+.acct-table [data-select-all] {
+  margin: 0;
+  accent-color: var(--primary-500);
+  cursor: pointer;
+}
+
+.acct-col-acts {
+  width: 96px;
+  text-align: right;
+  vertical-align: middle;
+}
+
+/* 行交互：整行可点展开，悬停提示；展开态与托盘行共享底色连成片 */
+.acct-row {
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--timing-function);
+}
+
+.acct-row:hover {
+  background: var(--surface-hover);
+}
+
+.acct-row--open,
+.acct-row--open:hover {
+  background: var(--surface-hover);
+}
+
+.acct-row--open td {
+  border-bottom: none;
+}
+
+/* 深链高亮：?account=<name> 命中的行 */
+.acct-row--spot {
+  background: color-mix(in srgb, var(--primary-500) 8%, transparent);
+}
+
+.acct-row--spot:hover {
+  background: color-mix(in srgb, var(--primary-500) 12%, transparent);
+}
+
+/* 账号格：名 + 来源/优先级 tag + 身份行 + notes */
+.acct-cell-name {
+  min-width: 180px;
+}
+
+.acct-name-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.acct-name {
+  font-family: var(--font-family-mono);
+  font-size: var(--text-13);
+  font-weight: 700;
+}
+
+.acct-tag {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  padding: 1px 6px;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.acct-id {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.acct-notes {
+  display: inline-block;
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+  margin-top: 2px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态格：pills + 24h 内最近失败一行 */
+.acct-cell-status {
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.acct-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.acct-pill {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.acct-pill--ok {
+  background: color-mix(in srgb, var(--success-500) 14%, transparent);
+  color: var(--success-700);
+}
+
+.acct-pill--warn {
+  background: color-mix(in srgb, var(--warning-500) 16%, transparent);
+  color: var(--warning-700);
+}
+
+.acct-pill--bad {
+  background: color-mix(in srgb, var(--error-500) 14%, transparent);
+  color: var(--error-700);
+}
+
+/* disabled/tombstoned/has_override 徽标：灰调 */
+.acct-pill--idle {
+  background: color-mix(in srgb, var(--neutral-500) 16%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.acct-fail-line {
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+/* 配额格：日/周双迷你条 */
+.acct-cell-quota {
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.acct-mini-quota {
+  display: grid;
+  grid-template-columns: auto 1fr 32px;
+  align-items: center;
+  gap: 6px;
+}
+
+.acct-mini-label {
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.acct-mini-track {
+  height: 5px;
+  border-radius: var(--radius-xs);
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.acct-mini-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-xs);
+  transition: width 0.4s;
+}
+
+.acct-mini-val {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.acct-quota-sub {
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+}
+
+.acct-quota-sub--stale {
+  color: var(--warning-600);
+  font-weight: 600;
+}
+
+/* 今日与性能格：两行小字 */
+.acct-cell-today,
+.acct-cell-perf {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.acct-today-sub {
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+}
+
+/* 48×30min 健康条：限流染青（--info-500）与真错误分色 */
+.acct-cell-health {
+  min-width: 170px;
+}
+
+.acct-strip {
+  display: grid;
+  grid-template-columns: repeat(48, 1fr);
+  gap: 2px;
+}
+
+.acct-cell {
+  height: 18px;
+  border-radius: var(--radius-2xs);
+  background: var(--color-border);
+}
+
+.acct-cell--ok { background: var(--success-500); }
+.acct-cell--err { background: var(--error-500); }
+.acct-cell--rl { background: var(--info-500); }
+
+.acct-strip-foot {
+  margin-top: 4px;
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* 操作格：测试钮 + ⋯ kebab */
+.acct-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.acct-action-btn {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: all var(--duration-fast) var(--timing-function);
+}
+
+.acct-action-btn:hover {
+  background: var(--surface-hover);
+  color: var(--color-text);
+}
+
+.acct-action-btn:focus-visible {
+  /* transparent outline 在 forced-colors 下由系统绘制成可见焦点框 */
+  outline: 2px solid transparent;
+  border-color: var(--primary-500);
+}
+
+.acct-action-btn--danger {
+  color: var(--error-600);
+}
+
+.acct-action-btn--danger:hover {
+  background: var(--error-50);
+  color: var(--error-700);
+}
+
+.acct-kebab {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-13);
+  line-height: 1.2;
+}
+
+/* 测试按钮在途态 */
+.acct-action-btn--busy {
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.acct-action-btn--busy::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 5px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: spin 0.8s linear infinite;
+}
+
+/* kebab 下拉菜单：body 级 fixed，外点/Esc/滚动即关 */
+.acct-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 148px;
+  padding: var(--space-1);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.acct-menu-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-13);
+  text-align: left;
+  color: var(--color-text);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.acct-menu-item:hover {
+  background: var(--surface-hover);
+}
+
+.acct-menu-item:focus-visible {
+  outline: 2px solid transparent;
+  background: var(--surface-hover);
+}
+
+.acct-menu-item--danger {
+  color: var(--error-600);
+}
+
+.acct-menu-item--danger:hover {
+  background: var(--error-50);
+  color: var(--error-700);
+}
+
+/* ---- 展开托盘：整宽行内的取证网格 ---- */
+
+.acct-tray-row td {
+  padding: 0;
+  background: var(--surface-hover);
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.acct-tray {
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+.acct-tray-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--space-5) var(--space-6);
+}
+
+.acct-sec h4 {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin: 0 0 10px;
+}
+
+.acct-sec--curve {
+  margin-top: var(--space-5);
+  min-width: 0;
+}
+
+.acct-curve {
+  height: 180px;
+  width: 100%;
+  min-width: 0;
+}
+
+/* kv 行 */
+.acct-kv-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+}
+
+.acct-kv {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.acct-kv-k {
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+}
+
+.acct-kv-v {
+  font-size: var(--text-13);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.acct-yes { color: var(--success-600); }
+.acct-no { color: var(--error-600); }
+
+.acct-none {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+/* 托盘内配额完整条 */
+.acct-quota-row {
+  display: grid;
+  grid-template-columns: 52px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.acct-quota-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.acct-quota-track {
+  height: 8px;
+  border-radius: var(--radius-xs);
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.acct-quota-fill {
+  height: 100%;
+  border-radius: var(--radius-xs);
+  background: currentColor;
+  transition: width 0.4s;
+}
+
+.acct-quota-val {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 剩余量分档色统一走 styles.css 的 .tone-*（none 无数据，>50 healthy，>20 warning，其余 critical）；
+   quota fill 靠 currentColor 随文字色 */
+.acct-rate {
+  font-weight: 600;
+}
+
+.acct-quota-row .acct-quota-sub {
+  grid-column: 2 / 4;
+  margin-top: -2px;
+}
+
+/* 证据区尾（recover 钮 + 提示）与事件环 */
+.acct-drawer-foot {
+  margin-top: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.acct-ev-hint,
+.acct-ev-at {
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+}
+
+.acct-ev-events h5 {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin: 12px 0 6px;
+}
+
+.acct-ev-ev {
+  font-size: var(--text-xs);
+  padding: 2px 0;
+}
+
+.acct-ev-kind {
+  font-weight: 600;
+}
+
+/* failover 时间线 */
+.acct-fo {
+  border-top: 1px dashed var(--color-border);
+  padding-top: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.acct-fo:first-child {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.acct-fo-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+}
+
+.acct-fo-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.acct-tl {
+  display: grid;
+  gap: 4px;
+}
+
+.acct-tl-item {
+  font-size: var(--text-xs);
+}
+
+.acct-tl-x {
+  color: var(--error-500);
+  margin-right: 6px;
+}
+
+.acct-tl-item--ok .acct-tl-x {
+  color: var(--success-500);
+}
+
+.acct-tl-acct {
+  font-family: var(--font-family-mono);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.acct-tl-msg {
+  margin-left: 18px;
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.acct-fo-cands {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+}
+
+.acct-cand {
+  padding: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.acct-cand--sel {
+  border-color: var(--success-500);
+  color: var(--success-700);
+}
+
+.acct-cand--bound {
+  border-color: var(--primary-500);
+}
+
+.acct-cand-why {
+  margin-left: 3px;
+  color: var(--color-text-secondary);
+}
+
+/* ---- 批量条：fixed 底中浮出 ---- */
+
+.acct-batch {
+  position: fixed;
+  left: 50%;
+  bottom: var(--space-5);
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  max-width: calc(100vw - 32px);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.acct-batch[hidden] {
+  display: none;
+}
+
+.acct-batch-n {
+  font-size: var(--text-13);
+  font-weight: 600;
+  margin: 0 var(--space-2);
+  white-space: nowrap;
+}
+
+/* ---- 加号表单（modal 宿主 + 空态内嵌共用 .acct-form） ---- */
+
+.acct-form {
+  padding: var(--space-5) var(--space-6);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+/* modal 内表单去掉外层卡片铬，避免卡中卡 */
+#acct-add-modal .acct-form {
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.acct-form-row {
+  margin-bottom: var(--space-3);
+}
+
+.acct-form-row:last-child {
+  margin-bottom: 0;
+}
+
+/* 表单输入直接用全局 .form-input；凭据类字段叠加等宽修饰 */
+.acct-form-mono {
+  font-family: var(--font-family-mono);
+}
+
+textarea.acct-form-mono {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.acct-form-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: var(--space-4);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.acct-form-radio input {
+  margin: 0;
+  accent-color: var(--primary-500);
+}
+
+.acct-form-radio input:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: var(--shadow-focus-strong);
+}
+
+.acct-form-err {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--error-600);
+}
+
+.acct-form-duo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.acct-form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.acct-form-check input {
+  margin: 0;
+  accent-color: var(--primary-500);
+}
+
+/* 空池整页态：替代表格与概览卡 */
+.accounts-empty {
+  padding: var(--space-12) var(--space-6);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.accounts-empty-icon {
+  color: var(--neutral-400);
+  margin-bottom: var(--space-4);
+}
+
+.accounts-empty-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+}
+
+.accounts-empty-hint {
+  font-size: var(--text-sm);
+  max-width: 480px;
+  margin: 0 auto var(--space-6);
+}
+
+/* 内嵌加号表单：去掉外层卡片铬，避免卡中卡 */
+.accounts-empty-form {
+  max-width: 460px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.accounts-empty-form .acct-form {
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 页头排序选择器与深链筛选 chip */
+.acct-sort {
+  flex: none;
+  width: auto;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+}
+
+.acct-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  color: var(--primary-700);
+  background: color-mix(in srgb, var(--primary-500) 12%, transparent);
+  border-radius: var(--radius-full);
+}
+
+.acct-filter-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-13);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}

@@ -38,7 +38,7 @@ describe('persistent module state and real HTTP gating', () => {
     const app = createApp()
     app.use(modulesMiddleware)
     const router = createRouter()
-    for (const path of ['/v1/chat/completions', '/v1/models', '/nexus/cpa/v1/models', '/commandcode/v1/chat/completions', '/commandcode/v1/models', '/api/accounts', '/api/accounts/actions', '/api/external/accounts', '/api/jobs/test', '/api/accounts-other']) {
+    for (const path of ['/v1/chat/completions', '/v1/models', '/nexus/cpa/v1/models', '/commandcode/v1/chat/completions', '/commandcode/v1/models', '/api/accounts', '/api/accounts/actions', '/api/external/accounts', '/api/jobs/test', '/api/accounts-other', '/api/devin2api/status', '/api/devin2api/accounts', '/api/devin2api/accounts/test', '/api/devin2api-other']) {
       router.use(path, defineEventHandler(() => ({ ok: true })))
     }
     router.patch('/api/modules/:id', updateModuleHandler)
@@ -74,6 +74,23 @@ describe('persistent module state and real HTTP gating', () => {
     const restored = await fetch(base + '/v1/chat/completions', { method: 'POST' })
     expect(restored.status).toBe(200)
     await restored.arrayBuffer()
+  })
+
+  it('gates Devin API requests by module state without intercepting unified or unrelated routes', async () => {
+    expect(await isModuleEnabled('devin2api')).toBe(false)
+    for (const [path, method, expected] of [
+      ['/api/devin2api/status', 'GET', 200], ['/api/devin2api/accounts', 'POST', 503],
+      ['/api/devin2api/accounts/test', 'PATCH', 503], ['/api/devin2api/accounts/test', 'DELETE', 503],
+      ['/v1/chat/completions', 'POST', 200], ['/v1/models', 'GET', 200], ['/api/devin2api-other', 'POST', 200],
+    ] as const) {
+      const response = await fetch(base + path, { method })
+      expect(response.status, path + ' ' + method).toBe(expected)
+      await response.arrayBuffer()
+    }
+    await setModuleEnabled('devin2api', true)
+    const response = await fetch(base + '/api/devin2api/accounts', { method: 'POST' })
+    expect(response.status).toBe(200)
+    await response.arrayBuffer()
   })
 
   it('rejects unsupported toggles and malformed payloads without mutating persisted state', async () => {

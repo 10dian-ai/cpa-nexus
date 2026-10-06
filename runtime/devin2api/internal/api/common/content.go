@@ -1,0 +1,717 @@
+// 本文件提供 OpenAI / Anthropic 兼容 API 共用的内容解码工具。
+package common
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"mime"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/WncFht/devin2api/internal/llm"
+)
+
+// errImageShape 表示无法识别的图片值形态——内部控制流哨兵，
+// 不直接面向客户端。
+var errImageShape = errors.New("unrecognized image value shape")
+
+// invalidRequest 构造调用方可修正的请求形状错误的分类记录——解码层
+// 拒绝（缺字段、file_id 不支持、非 base64）全是请求错误而非上游故障。
+func invalidRequest(format string, args ...any) *llm.Failure {
+	return &llm.Failure{Code: "invalid_argument", Message: fmt.Sprintf(format, args...)}
+}
+
+// JSONBlank 判定原始 JSON 为空或字面 null——字段缺席与显式 null 同义。
+func JSONBlank(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
+}
+
+// DecodeContent 把 JSON 字符串或 part 数组解码为中间内容块。
+// 解码时被丢弃/降级的 part 记入 dropped（"content_part:<type>"），
+// 调用方接 RequestMessages.Dropped——「解码即过滤」的静默面需要可观测。
+func DecodeContent(raw json.RawMessage, dropped *[]string) ([]llm.Content, error) {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return []llm.Content{llm.TextContent{Text: text}}, nil
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return nil, &llm.Failure{Code: "invalid_argument", Message: "decode message content: " + err.Error(), Cause: err}
+	}
+	content := make([]llm.Content, 0, len(parts))
+	for index, part := range parts {
+		var header struct {
+			Type         string          `json:"type"`
+			Text         string          `json:"text"`
+			CacheControl json.RawMessage `json:"cache_control"`
+		}
+		if err := json.Unmarshal(part, &header); err != nil {
+			return nil, &llm.Failure{Code: "invalid_argument", Message: fmt.Sprintf("content[%d]: %s", index, err), Cause: err}
+		}
+		MarkCacheControl(header.CacheControl, dropped)
+		switch header.Type {
+		case "input_text", "output_text", "text":
+			content = append(content, llm.TextContent{Text: header.Text})
+		case "input_image", "image_url", "image":
+			image, err := DecodeImagePart(part)
+			if err != nil {
+				var failure *llm.Failure
+				if errors.As(err, &failure) {
+					failure.Message = fmt.Sprintf("content[%d]: %s", index, failure.Message)
+					return nil, failure
+				}
+				return nil, &llm.Failure{Code: "invalid_argument", Message: fmt.Sprintf("content[%d]: %s", index, err), Cause: err}
+			}
+			content = append(content, image)
+		case "input_file", "file", "document":
+			document, err := DecodeDocumentPart(part)
+			if err != nil {
+				var failure *llm.Failure
+				if errors.As(err, &failure) {
+					failure.Message = fmt.Sprintf("content[%d]: %s", index, failure.Message)
+					return nil, failure
+				}
+				return nil, &llm.Failure{Code: "invalid_argument", Message: fmt.Sprintf("content[%d]: %s", index, err), Cause: err}
+			}
+			content = append(content, document)
+		case "video", "video_url", "input_video":
+			video, err := DecodeVideoPart(part)
+			if err != nil {
+				var failure *llm.Failure
+				if errors.As(err, &failure) {
+					failure.Message = fmt.Sprintf("content[%d]: %s", index, failure.Message)
+					return nil, failure
+				}
+				return nil, &llm.Failure{Code: "invalid_argument", Message: fmt.Sprintf("content[%d]: %s", index, err), Cause: err}
+			}
+			content = append(content, video)
+		case "input_audio":
+			// 音频 part 上游没有对应通道，内容必然丢；
+			// 静默丢弃会让模型在缺上下文下回答而无人察觉，
+			// 落占位文本至少让缺失可见。
+			*dropped = append(*dropped, "content_part:"+header.Type)
+			content = append(content, llm.TextContent{
+				Text: "[content omitted: " + header.Type + " part not supported]",
+			})
+		default:
+			// 忽略未知 part，避免 IDE 额外字段整请求失败。
+			*dropped = append(*dropped, "content_part:"+header.Type)
+			continue
+		}
+	}
+	return content, nil
+}
+
+// DecodeDocumentPart 兼容 Anthropic document/file 与 OpenAI input_file/file
+// 文档 part 形态。上游 documents 通道接受 base64_data+mime_type 或 url
+// （两者互斥，url 形态不得带 mime_type）；file_id 指向供应商侧存储，
+// 无法解析按请求错误拒绝——与 file_id 图片同口径。
+func DecodeDocumentPart(raw json.RawMessage) (llm.DocumentContent, error) {
+	var envelope struct {
+		Type     string          `json:"type"`
+		Title    string          `json:"title"`
+		Filename string          `json:"filename"`
+		Source   json.RawMessage `json:"source"`
+		File     json.RawMessage `json:"file"`
+		// OpenAI 扁平字段。
+		FileData string `json:"file_data"`
+		FileURL  string `json:"file_url"`
+		FileID   string `json:"file_id"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return llm.DocumentContent{}, err
+	}
+	filename := envelope.Filename
+	if filename == "" {
+		filename = envelope.Title
+	}
+	doc := llm.DocumentContent{Filename: filename}
+	if envelope.FileID != "" {
+		return llm.DocumentContent{}, invalidRequest("file_id documents are not supported; send base64 file_data or an http(s) file_url")
+	}
+	// OpenAI chat 扩展形态 {"type":"file","file":{...}}：嵌套对象优先。
+	if !JSONBlank(envelope.File) {
+		var nested struct {
+			FileData string `json:"file_data"`
+			FileURL  string `json:"file_url"`
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(envelope.File, &nested); err != nil {
+			return llm.DocumentContent{}, invalidRequest("document file object: %s", err)
+		}
+		if nested.FileID != "" {
+			return llm.DocumentContent{}, invalidRequest("file_id documents are not supported; send base64 file_data or an http(s) file_url")
+		}
+		if doc.Filename == "" {
+			doc.Filename = nested.Filename
+		}
+		if nested.FileData != "" {
+			return decodeDocumentData(nested.FileData, "", doc.Filename)
+		}
+		if nested.FileURL != "" {
+			doc.URL = nested.FileURL
+			return doc, nil
+		}
+		return llm.DocumentContent{}, invalidRequest("document file object carries no file_data/file_url")
+	}
+	// Anthropic source 形态：{"type":"base64|text|url|content|file",...}。
+	if !JSONBlank(envelope.Source) {
+		var source struct {
+			Type      string          `json:"type"`
+			MediaType string          `json:"media_type"`
+			Data      string          `json:"data"`
+			URL       string          `json:"url"`
+			FileID    string          `json:"file_id"`
+			Content   json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(envelope.Source, &source); err != nil {
+			return llm.DocumentContent{}, invalidRequest("document source: %s", err)
+		}
+		if source.FileID != "" || source.Type == "file" {
+			return llm.DocumentContent{}, invalidRequest("file_id documents are not supported; send base64 or url source")
+		}
+		switch source.Type {
+		case "base64":
+			return decodeDocumentData(source.Data, source.MediaType, doc.Filename)
+		case "text":
+			// text source 是未编码的正文：编码成 text/plain 文档上行。
+			mimeType := source.MediaType
+			if mimeType == "" {
+				mimeType = "text/plain"
+			}
+			doc.Data = base64.StdEncoding.EncodeToString([]byte(source.Data))
+			doc.MIMEType = mimeType
+			return doc, nil
+		case "url":
+			if source.URL == "" {
+				return llm.DocumentContent{}, invalidRequest("document url source is empty")
+			}
+			doc.URL = source.URL
+			return doc, nil
+		case "content":
+			// source.content 是嵌套块数组：拼出全部 text 子块成一个
+			// text/plain 文档——其余子块类型（图片/文档）无落地通道。
+			text, err := documentContentSourceText(source.Content)
+			if err != nil {
+				return llm.DocumentContent{}, err
+			}
+			doc.Data = base64.StdEncoding.EncodeToString([]byte(text))
+			doc.MIMEType = "text/plain"
+			return doc, nil
+		default:
+			return llm.DocumentContent{}, invalidRequest("unsupported document source type %q", source.Type)
+		}
+	}
+	// OpenAI 扁平字段形态。
+	if envelope.FileData != "" {
+		return decodeDocumentData(envelope.FileData, "", doc.Filename)
+	}
+	if envelope.FileURL != "" {
+		doc.URL = envelope.FileURL
+		return doc, nil
+	}
+	return llm.DocumentContent{}, invalidRequest("document part missing source/file_data/file_url")
+}
+
+// decodeDocumentData 解码 base64 文档数据并按需补 mime：显式 mime 优先，
+// 缺省按 filename 扩展名 → PDF 魔数 → UTF-8 文本的顺序猜。
+func decodeDocumentData(encoded, mimeType, filename string) (llm.DocumentContent, error) {
+	encoded = strings.TrimSpace(encoded)
+	// data URL 前缀与图片通道同制剥除，meta 段里的 mime 可补缺省。
+	if strings.HasPrefix(encoded, "data:") {
+		meta, rest, ok := strings.Cut(encoded, ",")
+		if !ok {
+			return llm.DocumentContent{}, invalidRequest("document must be a base64 data URL")
+		}
+		encoded = rest
+		if mimeType == "" {
+			mimeType = strings.TrimPrefix(strings.TrimSuffix(meta, ";base64"), "data:")
+		}
+	}
+	data, err := base64.StdEncoding.DecodeString(stripBase64Whitespace(encoded))
+	if err != nil {
+		return llm.DocumentContent{}, &llm.Failure{Code: "invalid_argument", Message: "decode document data: " + err.Error(), Cause: err}
+	}
+	if len(data) == 0 {
+		return llm.DocumentContent{}, invalidRequest("document data is empty")
+	}
+	if mimeType == "" {
+		mimeType = sniffDocumentMIME(data, filename)
+	}
+	return llm.DocumentContent{
+		Data:     base64.StdEncoding.EncodeToString(data),
+		MIMEType: mimeType,
+		Filename: filename,
+	}, nil
+}
+
+// sniffDocumentMIME 猜文档媒体类型：filename 扩展名优先，其次 PDF 魔数
+// 与 UTF-8 文本判定，兜底 application/octet-stream。
+func sniffDocumentMIME(data []byte, filename string) string {
+	if ext := filepath.Ext(filename); ext != "" {
+		if mimeType := mime.TypeByExtension(strings.ToLower(ext)); mimeType != "" {
+			return mimeType
+		}
+	}
+	if len(data) >= 4 && string(data[:4]) == "%PDF" {
+		return "application/pdf"
+	}
+	if utf8.Valid(data) {
+		return "text/plain"
+	}
+	return "application/octet-stream"
+}
+
+// documentContentSourceText 拼出 Anthropic source.type=content 嵌套块数组的
+// 全部 text 子块。
+func documentContentSourceText(raw json.RawMessage) (string, error) {
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", invalidRequest("document content source: %s", err)
+	}
+	var text strings.Builder
+	for _, part := range parts {
+		if part.Type == "text" {
+			text.WriteString(part.Text)
+		}
+	}
+	if text.Len() == 0 {
+		return "", invalidRequest("document content source carries no text parts")
+	}
+	return text.String(), nil
+}
+
+// DecodeVideoPart 兼容 OpenAI video_url/input_video 与 Anthropic video
+// 视频 part 形态。上游 videos 通道接受 base64_data+mime_type 或 url——
+// 与 documents 同制两者互斥（实测 "video url must not set a mime_type"），
+// file_id 指向供应商侧存储按请求错误拒绝。VideoData wire 无 filename，
+// 携带的 filename 字段直接忽略。
+func DecodeVideoPart(raw json.RawMessage) (llm.VideoContent, error) {
+	var envelope struct {
+		Type   string          `json:"type"`
+		Source json.RawMessage `json:"source"`
+		File   json.RawMessage `json:"file"`
+		// OpenAI video_url：兼容字符串与 {"url":...} 对象两种形态。
+		VideoURL  json.RawMessage `json:"video_url"`
+		FileData  string          `json:"file_data"`
+		FileURL   string          `json:"file_url"`
+		FileID    string          `json:"file_id"`
+		MIMEType  string          `json:"mime_type"`
+		MediaType string          `json:"media_type"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return llm.VideoContent{}, err
+	}
+	if envelope.FileID != "" {
+		return llm.VideoContent{}, invalidRequest("file_id videos are not supported; send base64 file_data or an http(s) video_url")
+	}
+	mimeType := envelope.MIMEType
+	if mimeType == "" {
+		mimeType = envelope.MediaType
+	}
+	// Anthropic source 形态：{"type":"base64|url",...}，与文档同构。
+	if !JSONBlank(envelope.Source) {
+		var source struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+			URL       string `json:"url"`
+			FileID    string `json:"file_id"`
+		}
+		if err := json.Unmarshal(envelope.Source, &source); err != nil {
+			return llm.VideoContent{}, invalidRequest("video source: %s", err)
+		}
+		if source.FileID != "" || source.Type == "file" {
+			return llm.VideoContent{}, invalidRequest("file_id videos are not supported; send base64 or url source")
+		}
+		switch source.Type {
+		case "base64":
+			if source.MediaType != "" {
+				mimeType = source.MediaType
+			}
+			return decodeVideoData(source.Data, mimeType)
+		case "url":
+			if source.URL == "" {
+				return llm.VideoContent{}, invalidRequest("video url source is empty")
+			}
+			return llm.VideoContent{URL: source.URL}, nil
+		default:
+			return llm.VideoContent{}, invalidRequest("unsupported video source type %q", source.Type)
+		}
+	}
+	// OpenAI file 嵌套形态 {"type":"video","file":{...}}。
+	if !JSONBlank(envelope.File) {
+		var nested struct {
+			FileData string `json:"file_data"`
+			FileURL  string `json:"file_url"`
+			FileID   string `json:"file_id"`
+		}
+		if err := json.Unmarshal(envelope.File, &nested); err != nil {
+			return llm.VideoContent{}, invalidRequest("video file object: %s", err)
+		}
+		if nested.FileID != "" {
+			return llm.VideoContent{}, invalidRequest("file_id videos are not supported; send base64 file_data or an http(s) video_url")
+		}
+		if nested.FileData != "" {
+			return decodeVideoData(nested.FileData, mimeType)
+		}
+		if nested.FileURL != "" {
+			return llm.VideoContent{URL: nested.FileURL}, nil
+		}
+		return llm.VideoContent{}, invalidRequest("video file object carries no file_data/file_url")
+	}
+	if !JSONBlank(envelope.VideoURL) {
+		// video_url 字符串形态；对象形态取 url 字段。data: URL 的
+		// 字符串上游抓不了，转回 base64 数据。
+		var url string
+		if err := json.Unmarshal(envelope.VideoURL, &url); err == nil {
+			if strings.HasPrefix(url, "data:") {
+				return decodeVideoData(url, mimeType)
+			}
+			return llm.VideoContent{URL: url}, nil
+		}
+		var object struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(envelope.VideoURL, &object); err == nil && object.URL != "" {
+			if strings.HasPrefix(object.URL, "data:") {
+				return decodeVideoData(object.URL, mimeType)
+			}
+			return llm.VideoContent{URL: object.URL}, nil
+		}
+		return llm.VideoContent{}, invalidRequest("video_url must be a string or an object with url")
+	}
+	if envelope.FileData != "" {
+		return decodeVideoData(envelope.FileData, mimeType)
+	}
+	if envelope.FileURL != "" {
+		return llm.VideoContent{URL: envelope.FileURL}, nil
+	}
+	return llm.VideoContent{}, invalidRequest("video part missing video_url/source/file_data/file_url")
+}
+
+// decodeVideoData 解码 base64 视频数据并补 mime：显式 mime 优先，缺省
+// 取 data URL meta，再兜底 video/mp4。
+func decodeVideoData(encoded, mimeType string) (llm.VideoContent, error) {
+	encoded = strings.TrimSpace(encoded)
+	if strings.HasPrefix(encoded, "data:") {
+		meta, rest, ok := strings.Cut(encoded, ",")
+		if !ok {
+			return llm.VideoContent{}, invalidRequest("video must be a base64 data URL")
+		}
+		encoded = rest
+		if mimeType == "" {
+			mimeType = strings.TrimPrefix(strings.TrimSuffix(meta, ";base64"), "data:")
+		}
+	}
+	data, err := base64.StdEncoding.DecodeString(stripBase64Whitespace(encoded))
+	if err != nil {
+		return llm.VideoContent{}, &llm.Failure{Code: "invalid_argument", Message: "decode video data: " + err.Error(), Cause: err}
+	}
+	if len(data) == 0 {
+		return llm.VideoContent{}, invalidRequest("video data is empty")
+	}
+	if mimeType == "" {
+		mimeType = "video/mp4"
+	}
+	return llm.VideoContent{
+		Data:     base64.StdEncoding.EncodeToString(data),
+		MIMEType: mimeType,
+	}, nil
+}
+
+// DecodeImagePart 兼容 OpenAI Responses / Chat Completions / Anthropic 常见图片 part 形态。
+func DecodeImagePart(raw json.RawMessage) (llm.ImageContent, error) {
+	var envelope struct {
+		Type     string          `json:"type"`
+		ImageURL json.RawMessage `json:"image_url"`
+		Image    json.RawMessage `json:"image"`
+		Source   json.RawMessage `json:"source"`
+		FileID   string          `json:"file_id"`
+		// 少数客户端把 data URL 直接放在 url / data 字段。
+		URL  string `json:"url"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return llm.ImageContent{}, err
+	}
+	if envelope.FileID != "" {
+		return llm.ImageContent{}, invalidRequest("file_id images are not supported; use base64 data URL in image_url")
+	}
+
+	candidates := []json.RawMessage{envelope.ImageURL, envelope.Image, envelope.Source}
+	for _, candidate := range candidates {
+		if JSONBlank(candidate) {
+			continue
+		}
+		if image, err := DecodeImageValue(candidate); err == nil {
+			return image, nil
+		} else if !errors.Is(err, errImageShape) {
+			return llm.ImageContent{}, err
+		}
+	}
+	if envelope.URL != "" {
+		return DecodeDataImage(envelope.URL)
+	}
+	if envelope.Data != "" {
+		return DecodeDataImage(envelope.Data)
+	}
+	return llm.ImageContent{}, invalidRequest("image part missing image_url/url/data (base64 data URL required)")
+}
+
+// DecodeImageValue 解析 JSON 字符串或图片对象。
+func DecodeImageValue(raw json.RawMessage) (llm.ImageContent, error) {
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		return DecodeDataImage(asString)
+	}
+	var asObject struct {
+		URL       string `json:"url"`
+		Data      string `json:"data"`
+		Base64    string `json:"base64"`
+		B64JSON   string `json:"b64_json"`
+		MIMEType  string `json:"mime_type"`
+		MediaType string `json:"media_type"`
+		Type      string `json:"type"` // anthropic source.type = base64
+		FileID    string `json:"file_id"`
+	}
+	if err := json.Unmarshal(raw, &asObject); err != nil {
+		return llm.ImageContent{}, errImageShape
+	}
+	if asObject.FileID != "" {
+		return llm.ImageContent{}, invalidRequest("file_id images are not supported; use base64 data URL")
+	}
+	if asObject.URL != "" {
+		return DecodeDataImage(asObject.URL)
+	}
+	encoded := asObject.Data
+	if encoded == "" {
+		encoded = asObject.Base64
+	}
+	if encoded == "" {
+		encoded = asObject.B64JSON
+	}
+	if encoded == "" {
+		return llm.ImageContent{}, errImageShape
+	}
+	mimeType := asObject.MIMEType
+	if mimeType == "" {
+		mimeType = asObject.MediaType
+	}
+	if strings.HasPrefix(encoded, "data:") {
+		return DecodeDataImage(encoded)
+	}
+	if mimeType == "" {
+		mimeType = SniffImageMIME(encoded)
+	}
+	if mimeType == "" {
+		return llm.ImageContent{}, invalidRequest("image base64 requires mime_type/media_type or data URL prefix")
+	}
+	return DecodeRawBase64(encoded, mimeType)
+}
+
+// DecodeDataImage 解析 data URL 或裸 base64 图片字符串。
+func DecodeDataImage(value string) (llm.ImageContent, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return llm.ImageContent{}, invalidRequest("image url/data is empty")
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		return llm.ImageContent{}, invalidRequest("http(s) image URLs are not fetched yet; embed as data:image/<mime>;base64,<data>")
+	}
+	if !strings.HasPrefix(value, "data:") {
+		// 纯 base64：尝试按魔数嗅探。
+		if mimeType := SniffImageMIME(value); mimeType != "" {
+			return DecodeRawBase64(value, mimeType)
+		}
+		return llm.ImageContent{}, invalidRequest("only data URL or raw base64 images are supported")
+	}
+	meta, encoded, ok := strings.Cut(value, ",")
+	if !ok {
+		return llm.ImageContent{}, invalidRequest("image must be a base64 data URL")
+	}
+	meta = strings.TrimPrefix(meta, "data:")
+	// 允许 data:image/png;base64,xxx 与 data:image/png;charset=utf-8;base64,xxx
+	isBase64 := strings.Contains(meta, ";base64") || !strings.Contains(meta, ";")
+	mimeType := meta
+	if i := strings.Index(mimeType, ";"); i >= 0 {
+		mimeType = mimeType[:i]
+	}
+	mimeType = strings.TrimSpace(mimeType)
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	if _, _, err := mime.ParseMediaType(mimeType); err != nil {
+		return llm.ImageContent{}, &llm.Failure{Code: "invalid_argument", Message: "invalid image MIME type: " + err.Error(), Cause: err}
+	}
+	if !isBase64 {
+		return llm.ImageContent{}, invalidRequest("image data URL must be base64 encoded")
+	}
+	return DecodeRawBase64(encoded, mimeType)
+}
+
+// stripBase64Whitespace 去掉空白/换行（部分客户端会折行）。
+func stripBase64Whitespace(encoded string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, encoded)
+}
+
+// DecodeRawBase64 把 base64 字符串解码并返回中间图片内容块。
+func DecodeRawBase64(encoded, mimeType string) (llm.ImageContent, error) {
+	encoded = strings.TrimSpace(encoded)
+	// 快路径：干净的标准 base64 直接解码，并以原串作为上行载荷——
+	// StdEncoding 解码成功即说明字母表与 padding 合法，re-encode 只是
+	// 规范化字符串形态（字节不变），跳过省一次全量编码。
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err == nil && len(data) > 0 {
+		return llm.ImageContent{Data: encoded, MIMEType: mimeType}, nil
+	}
+	cleaned := stripBase64Whitespace(encoded)
+	if data, err = base64.StdEncoding.DecodeString(cleaned); err == nil && len(data) > 0 {
+		return llm.ImageContent{Data: cleaned, MIMEType: mimeType}, nil
+	}
+	// URL-safe 与无 padding 变体：解码成功但字符串形态需归一为标准 base64。
+	if err != nil {
+		data, err = base64.URLEncoding.DecodeString(cleaned)
+		if err != nil {
+			data, err = base64.RawStdEncoding.DecodeString(cleaned)
+			if err != nil {
+				data, err = base64.RawURLEncoding.DecodeString(cleaned)
+			}
+		}
+	}
+	if err != nil {
+		return llm.ImageContent{}, &llm.Failure{Code: "invalid_argument", Message: "decode image data: " + err.Error(), Cause: err}
+	}
+	if len(data) == 0 {
+		return llm.ImageContent{}, invalidRequest("image data is empty")
+	}
+	// 上游按纯 base64 字符串接收，不带 data: 前缀。
+	return llm.ImageContent{
+		Data:     base64.StdEncoding.EncodeToString(data),
+		MIMEType: mimeType,
+	}, nil
+}
+
+// SniffImageMIME 通过 base64 解码后的文件魔数猜测图片 MIME 类型。
+func SniffImageMIME(encoded string) string {
+	// 魔数判别只需前 12 个解码字节（16 个 base64 字符）；只取头部
+	// 非空白字符解码，避免对大图做全量 Map+DecodeString。
+	var head [24]byte
+	n := 0
+	for i := 0; i < len(encoded) && n < len(head); i++ {
+		c := encoded[i]
+		if c != '\n' && c != '\r' && c != ' ' && c != '\t' {
+			head[n] = c
+			n++
+		}
+	}
+	// 头部不含 padding（只在整串末尾出现），Raw 变体容忍非 4 对齐长度；
+	// 短串可能带上 '='，退回 Std 再试。
+	raw, err := base64.RawStdEncoding.DecodeString(string(head[:n]))
+	if err != nil {
+		raw, err = base64.StdEncoding.DecodeString(string(head[:n]))
+	}
+	if err != nil || len(raw) < 4 {
+		return ""
+	}
+	switch {
+	case len(raw) >= 3 && raw[0] == 0xff && raw[1] == 0xd8 && raw[2] == 0xff:
+		return "image/jpeg"
+	case len(raw) >= 8 && raw[0] == 0x89 && raw[1] == 0x50 && raw[2] == 0x4e && raw[3] == 0x47:
+		return "image/png"
+	case len(raw) >= 6 && raw[0] == 0x47 && raw[1] == 0x49 && raw[2] == 0x46:
+		return "image/gif"
+	case len(raw) >= 12 && raw[0] == 0x52 && raw[1] == 0x49 && raw[2] == 0x46 && raw[3] == 0x46 &&
+		raw[8] == 0x57 && raw[9] == 0x45 && raw[10] == 0x42 && raw[11] == 0x50:
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+// ContentText 拼接内容块中的全部 TextContent 正文。
+func ContentText(content []llm.Content) string {
+	// 单文本块是常态：直挂原串免一次 Builder 整段拷贝。
+	if len(content) == 1 {
+		if single, ok := content[0].(llm.TextContent); ok {
+			return single.Text
+		}
+	}
+	var builder strings.Builder
+	for _, block := range content {
+		if text, ok := block.(llm.TextContent); ok {
+			builder.WriteString(text.Text)
+		}
+	}
+	return builder.String()
+}
+
+// ClassifySignatureType 按内容形态识别可回放思考签名的上游体制：
+// sealed.* 是本代理下发过的密封格式；序列化 Responses reasoning item
+// 数组是 openai 体制（上游 signature 字段的实测形态）。signature_type
+// 是上游体制属性而非入口协议属性——跨前端回放时各端必须用同一判据，
+// 否则 openai 体制签名被标成 anthropic 触发上游 invalid_argument。
+// 其余外来不透明载荷不可解，返回空串由调用方决定丢弃还是按本端体制标注。
+func ClassifySignatureType(blob string) string {
+	switch {
+	case strings.HasPrefix(blob, "sealed."):
+		return "sealed"
+	case IsOpenAIReasoningSignature(blob):
+		return "openai"
+	default:
+		return ""
+	}
+}
+
+// IsOpenAIReasoningSignature 判断载荷是否为 openai 型签名——上游 signature
+// 字段的实测形态是序列化 Responses reasoning item 数组。下行时我们把整个
+// blob 原样放进 encrypted_content，回放时按同一形态识别。
+func IsOpenAIReasoningSignature(blob string) bool {
+	return OpenAIReasoningItems(blob) != nil
+}
+
+// OpenAIReasoningItem 是 openai 型签名里序列化 reasoning item 的投影；
+// id 是上游分配的真实 rs_* item 标识。
+type OpenAIReasoningItem struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+// OpenAIReasoningItems 解析 openai 型签名载荷；不是该形态（非 JSON 数组、
+// 空数组或首项非 reasoning）时返回 nil。responses 前端取首项 id 复用为
+// 下行 item 标识——与上游下发保持一致。
+func OpenAIReasoningItems(blob string) []OpenAIReasoningItem {
+	trimmed := strings.TrimSpace(blob)
+	if !strings.HasPrefix(trimmed, "[") {
+		return nil
+	}
+	var items []OpenAIReasoningItem
+	if json.Unmarshal([]byte(trimmed), &items) != nil || len(items) == 0 || items[0].Type != "reasoning" {
+		return nil
+	}
+	return items
+}
+
+// ContentAt 取 partial 消息中指定下标的内容块并按目标类型断言。
+func ContentAt[T llm.Content](message *llm.AssistantMessage, index int) (T, bool) {
+	var zero T
+	if message == nil || index < 0 || index >= len(message.Content) {
+		return zero, false
+	}
+	content, ok := message.Content[index].(T)
+	return content, ok
+}

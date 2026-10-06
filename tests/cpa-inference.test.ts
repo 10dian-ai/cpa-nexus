@@ -3,12 +3,13 @@ import type { AddressInfo } from 'node:net'
 import { createApp, defineEventHandler, getRequestURL, toNodeListener } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), compat: vi.fn(), internal: vi.fn(), groups: vi.fn(), cpaModels: vi.fn(), cpaRoute: vi.fn(), ccModels: vi.fn(), candidates: vi.fn(), provider: vi.fn(), policy: vi.fn(), limit: 1 }))
+const fixture = vi.hoisted(() => ({ route: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), compat: vi.fn(), internal: vi.fn(), groups: vi.fn(), cpaModels: vi.fn(), cpaRoute: vi.fn(), ccModels: vi.fn(), candidates: vi.fn(), provider: vi.fn(), policy: vi.fn(), log: vi.fn(), limit: 1 }))
 vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module, isModuleEnabled: fixture.enabled }))
 vi.mock('../server/lib/groups', () => ({ resolveEnabledKeyGroupIds: fixture.groups }))
 vi.mock('../server/lib/cpa/group-routing', () => ({ listCpaGroupModels: fixture.cpaModels,
-  resolveCpaGroupPolicy: async (...args: unknown[]) => { const value = await fixture.cpaRoute(...args); return value ? { allowedAuthIDs: [value.accountId], allowedPluginIDs: [], legacyPrefix: true, ...value } : null } }))
+  resolveCpaGroupPolicy: async (...args: unknown[]) => { const value = await fixture.cpaRoute(...args); return value ? { allowedAuthIDs: [value.accountId], allowedPluginIDs: [], selectedGroupId: 'group-a', legacyPrefix: true, ...value } : null } }))
 vi.mock('../server/lib/cpa/group-policy', () => ({ CPA_GROUP_POLICY_HEADER: 'x-nexus-group-policy', registerCpaGroupPolicy: fixture.policy }))
+vi.mock('../server/lib/logs', () => ({ insertRequestLog: fixture.log }))
 vi.mock('../server/lib/gateway/accounts', () => ({ listGatewayModels: fixture.ccModels, listCandidates: fixture.candidates }))
 vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: fixture.provider }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
@@ -31,6 +32,7 @@ describe('public CPA and original CCM inference routing', () => {
     fixture.route.mockResolvedValue(null); fixture.module.mockResolvedValue(undefined)
     fixture.enabled.mockResolvedValue(true); fixture.groups.mockResolvedValue(['group-a'])
     fixture.policy.mockResolvedValue('server-generated-private-policy')
+    fixture.log.mockResolvedValue(undefined)
     fixture.cpaModels.mockResolvedValue([{ id: 'custom/model' }, { id: 'native-model' }])
     fixture.cpaRoute.mockImplementation(async (model: string) => ({ accountId: 'source-a', model }))
     fixture.ccModels.mockResolvedValue({ object: 'list', data: [{ id: 'cc-model' }] }); fixture.candidates.mockResolvedValue([]); fixture.provider.mockResolvedValue(null)
@@ -97,7 +99,7 @@ describe('public CPA and original CCM inference routing', () => {
     expect(response.headers.get('x-nexus-preset-id')).toBe('First,Second')
     expect((await response.json()).body.messages).toEqual([{ role: 'system', content: 'First' }, { role: 'system', content: 'Second' }, { role: 'user', content: 'Client' }])
     expect(received).toHaveLength(1)
-    expect(fixture.route).toHaveBeenCalledWith('KB')
+    expect(fixture.route).toHaveBeenCalledWith('KB', ['group-a'])
   })
 
   it('keeps native body bytes, protocol headers and core authentication untouched when disabled', async () => {
@@ -160,7 +162,7 @@ describe('public CPA and original CCM inference routing', () => {
     expect(response.status).toBe(200); expect(response.headers.get('x-nexus-preset-id')).toBe('KB rule')
     const { body } = await response.json()
     expect(body).toMatchObject({ model: 'nexus-prefix/fixture', temperature: 0.9, tools, messages: [{ role: 'system', content: 'KB rule' }, { role: 'user', content: 'hello' }] })
-    expect(fixture.route).toHaveBeenCalledWith('KB')
+    expect(fixture.route).toHaveBeenCalledWith('KB', ['group-a'])
     expect(received.filter(request => request.path === '/v1/chat/completions')).toHaveLength(1)
   })
 
@@ -305,9 +307,12 @@ describe('public CPA and original CCM inference routing', () => {
     fixture.route.mockResolvedValue(preset('KB rule'))
     const response = await post({ model: 'fixture', messages: [{ role: 'user', content: 'hello' }], stream: true }, 'ccm_KB')
     expect(response.headers.get('x-nexus-preset-id')).toBe('KB rule')
+    expect(response.headers.get('x-nexus-usage-policy')).toBe('upstream')
     const reader = response.body!.getReader()
     expect(new TextDecoder().decode((await reader.read()).value)).toContain('data: first')
-    expect(JSON.parse(received[0]!.raw).messages[0].content).toBe('KB rule')
+    const forwarded = JSON.parse(received[0]!.raw)
+    expect(forwarded.messages[0].content).toBe('KB rule')
+    expect(forwarded.stream_options).toEqual({ include_usage: true })
     release!()
     while (!(await reader.read()).done) { /* Drain the streamed response. */ }
   })

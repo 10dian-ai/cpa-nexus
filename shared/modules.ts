@@ -73,5 +73,7 @@ export function gatedModuleForRequest(path: string, method: string): string | nu
   if (/^\/commandcode\/v1(?:\/|$)/.test(path)) return 'commandcode'
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) &&
       /^\/api\/(?:accounts|external\/accounts)(?:\/|$)/.test(path)) return 'commandcode'
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) &&
+      /^\/api\/devin2api(?:\/|$)/.test(path)) return 'devin2api'
   return null
 }

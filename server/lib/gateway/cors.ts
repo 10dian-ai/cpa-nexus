@@ -1,3 +1,5 @@
+import { BILLING_USAGE_POLICY_HEADER } from '../billing'
+
 const STANDARD_HEADERS = [
   'authorization', 'content-type', 'accept', 'x-api-key',
   'anthropic-version', 'anthropic-beta', 'anthropic-dangerous-direct-browser-access',
@@ -29,7 +31,7 @@ export function gatewayCors(pathname: string, method: string, requestedHeaders?:
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'access-control-allow-headers': [...allowed].join(', '),
-    'access-control-expose-headers': 'x-request-id, retry-after, x-nexus-preset-id',
+    'access-control-expose-headers': `x-request-id, retry-after, x-nexus-preset-id, ${BILLING_USAGE_POLICY_HEADER}`,
     vary: 'Access-Control-Request-Headers',
   }
   if (preflight) headers['access-control-max-age'] = '600'

@@ -1,0 +1,20 @@
+<svg width="176" height="36" viewBox="0 0 176 36" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="wordmark-blue-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+
+  <symbol id="brand-wordmark" viewBox="0 0 176 36">
+    <g font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="28" font-style="italic" font-weight="900">
+      <text x="0" y="24.5" fill="currentColor" textLength="84" lengthAdjust="spacingAndGlyphs">Devin</text>
+      <text x="86" y="24.5" fill="url(#wordmark-blue-gradient)" textLength="74" lengthAdjust="spacingAndGlyphs">2API</text>
+      <path d="M169 4 163.5 12.4h3.7L163.4 24 173 8.4h-4.2Z" fill="#fbbf24"/>
+    </g>
+
+    <text x="0" y="35" fill="#2563eb" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" font-weight="700" letter-spacing="2">DEVIN API PROXY</text>
+  </symbol>
+
+  <use href="#brand-wordmark" width="176" height="36" color="#071b35"/>
+</svg>

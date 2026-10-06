@@ -1,0 +1,1733 @@
+/* ===== 以下来自 styles.css：logs 页专属规则 ===== */
+
+@media (max-width: 768px) {
+.filter-controls > .logs-filter-summary-row {
+    grid-column: 1 / -1;
+  }
+}
+
+.logs-stream-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.logs-stream-toggle .form-label {
+  margin: 0;
+}
+
+/* 日志页筛选栏：各组按内容自然宽度排列 */
+
+.logs-filter-controls .filter-group {
+  flex: 0 1 auto;
+}
+
+.logs-filter-controls .filter-combobox-wrapper {
+  min-width: 120px;
+}
+
+.logs-filter-summary-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.logs-filter-summary-row .logs-filter-actions {
+  flex: none;
+}
+
+.logs-filter-summary-row .logs-filter-actions .btn {
+  white-space: nowrap;
+}
+
+/* ===== 上游详情 Modal ===== */
+
+.upstream-detail-modal-content {
+  width: 90vw;
+  max-width: 90vw;
+  height: 90vh;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.upstream-detail-modal-content .upstream-tab-panel.active {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.upstream-detail-tabs {
+  display: flex;
+  gap: 0;
+  align-items: center;
+  border-bottom: 2px solid var(--neutral-200);
+  margin-bottom: var(--space-4);
+}
+
+.upstream-tab {
+  padding: var(--space-2) var(--space-5);
+  border: none;
+  background: none;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--neutral-500);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.upstream-tab:hover {
+  color: var(--neutral-700);
+}
+
+.upstream-tab.active {
+  color: var(--primary-600);
+  border-bottom-color: var(--primary-600);
+}
+
+.upstream-tab-panel {
+  display: none;
+}
+
+.upstream-tab-panel.active {
+  display: block;
+}
+
+.upstream-copy-btn {
+  min-height: 24px;
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+  color: var(--neutral-600);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border-strong);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.upstream-copy-btn:hover {
+  color: var(--info-700);
+  border-color: var(--info-200);
+  background: var(--info-50);
+}
+
+.upstream-copy-btn.copied {
+  color: var(--success-600);
+  border-color: var(--success-500);
+}
+
+.upstream-copy-btn--tabs {
+  margin-left: auto;
+  margin-bottom: var(--space-1);
+}
+
+.upstream-wrap-btn {
+  margin-left: auto;
+  margin-bottom: var(--space-1);
+}
+
+.upstream-wrap-btn + .upstream-copy-btn--tabs {
+  margin-left: 6px;
+}
+
+.upstream-wrap-btn.active {
+  color: var(--info-700);
+  border-color: var(--info-500);
+  background: var(--info-200);
+}
+
+.upstream-merge-btn {
+  margin-left: 6px;
+  margin-bottom: var(--space-1);
+}
+
+.upstream-merge-btn.active {
+  color: var(--primary-600);
+  border-color: var(--primary-600);
+  background: var(--primary-50);
+}
+
+.upstream-pre--nowrap .code-line-content {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.upstream-merged-markdown {
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.upstream-merged-markdown > .chat-message {
+  flex: 0 0 auto;
+  max-width: min(92%, 980px);
+}
+
+/* Debug 合并响应按内容确定气泡宽度，长内容最多占满可用面板。 */
+
+#debugLogModal .upstream-merged-markdown > .chat-message {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  align-items: stretch;
+  box-sizing: border-box;
+}
+
+#debugLogModal .upstream-merged-markdown > .chat-message > .chat-message-content,
+#debugLogModal .upstream-merged-markdown > .chat-message > .chat-thinking,
+#debugLogModal .upstream-merged-markdown > .chat-message > .chat-tool-calls {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.upstream-merged-markdown--nowrap {
+  overflow-x: auto;
+}
+
+.upstream-merged-markdown:not(.upstream-merged-markdown--nowrap) .chat-message .chat-code-pre {
+  overflow-x: hidden;
+}
+
+.upstream-merged-markdown:not(.upstream-merged-markdown--nowrap) .chat-code-pre code,
+.upstream-merged-markdown:not(.upstream-merged-markdown--nowrap) .chat-code-pre code.hljs {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.upstream-detail-modal-content .upstream-tab-panel.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.has-upstream-detail {
+  --detail-fg: var(--primary-600);
+  --detail-fg-hover: var(--primary-700);
+  cursor: pointer;
+  color: var(--detail-fg);
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 3px;
+}
+
+.has-upstream-detail:hover {
+  color: var(--detail-fg-hover);
+  text-decoration-style: solid;
+}
+
+html[data-resolved-theme="dark"] .has-upstream-detail {
+  --detail-fg: var(--primary-300);
+  --detail-fg-hover: var(--primary-200);
+}
+
+body.web-role-api-token .logs-col-ip,
+body.web-role-api-token .logs-col-token-desc,
+body.web-role-api-token .logs-col-api-key {
+  display: none !important;
+}
+
+/* ===== Chat Panel (对话模式) ===== */
+
+/* 消息气泡 */
+
+.chat-message {
+  --chat-code-border: #d8dee8;
+  --chat-code-bg: #f8fafc;
+  --chat-code-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --chat-code-header-bg: #eef2f6;
+  --chat-code-header-fg: #526071;
+  --chat-code-gutter-border: #e2e7ef;
+  --chat-code-gutter-bg: #f1f4f8;
+  --chat-code-gutter-fg: #8a95a3;
+  --chat-code-chip-border: #cbd5e1;
+  --chat-code-chip-bg: #ffffff;
+  --chat-code-chip-fg: #334155;
+  --chat-code-chip-shadow: inset 0 -1px 0 rgba(15, 23, 42, 0.04);
+  --chat-code-copy-fg: #64748b;
+  --chat-code-copied-border: color-mix(in srgb, var(--success-500) 35%, transparent);
+  --chat-code-copied-bg: color-mix(in srgb, var(--success-500) 8%, transparent);
+  --chat-code-copied-fg: var(--success-600);
+  --chat-code-text: #243044;
+  --chat-syn-command: #0550ae;
+  --chat-syn-url: #0a7f42;
+  --chat-syn-flag: #d1242f;
+  --chat-syn-header-value: #6639ba;
+  --chat-syn-meta: #6e7781;
+  --chat-syn-comment: #6a737d;
+  --chat-syn-add: #1a7f37;
+  --chat-syn-delete: #cf222e;
+  --chat-syn-keyword: #d73a49;
+  --chat-syn-string: #032f62;
+  --chat-syn-type: #6f42c1;
+  --chat-syn-number: #005cc5;
+  max-width: 80%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.6;
+  word-break: break-word;
+  font-size: var(--text-sm);
+}
+
+html[data-resolved-theme="dark"] .chat-message {
+  --chat-code-border: #334155;
+  --chat-code-bg: #0f172a;
+  --chat-code-shadow: none;
+  --chat-code-header-bg: #1e293b;
+  --chat-code-header-fg: #cbd5e1;
+  --chat-code-gutter-border: #263548;
+  --chat-code-gutter-bg: #111c2d;
+  --chat-code-gutter-fg: #64748b;
+  --chat-code-chip-border: #475569;
+  --chat-code-chip-bg: #0f172a;
+  --chat-code-chip-fg: #e2e8f0;
+  --chat-code-chip-shadow: none;
+  --chat-code-copy-fg: #94a3b8;
+  --chat-code-copied-border: color-mix(in srgb, var(--success-500) 35%, transparent);
+  --chat-code-copied-bg: color-mix(in srgb, var(--success-500) 12%, transparent);
+  --chat-code-copied-fg: #4ade80;
+  --chat-code-text: #dbeafe;
+  --chat-syn-command: #79c0ff;
+  --chat-syn-url: #7ee787;
+  --chat-syn-flag: #ff7b72;
+  --chat-syn-header-value: #d2a8ff;
+  --chat-syn-meta: #8b949e;
+  --chat-syn-comment: #8b949e;
+  --chat-syn-add: #7ee787;
+  --chat-syn-delete: #ff7b72;
+  --chat-syn-keyword: #ff7b72;
+  --chat-syn-string: #a5d6ff;
+  --chat-syn-type: #d2a8ff;
+  --chat-syn-number: #79c0ff;
+}
+
+.chat-message--assistant {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.chat-message--assistant.chat-message--has-code {
+  width: min(92%, 980px);
+  max-width: min(92%, 980px);
+}
+
+.chat-message--assistant.chat-message--has-code .chat-message-content {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Markdown 内容 */
+
+.chat-message-content {
+  min-height: 1em;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  word-break: break-word;
+}
+
+.chat-message--assistant .chat-message-content {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-bottom-left-radius: 4px;
+}
+
+.chat-thinking,
+.chat-tool-calls {
+  margin-bottom: 10px;
+  padding: var(--space-2) 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--surface-bg-muted);
+  color: var(--color-text-secondary);
+}
+
+.chat-tool-calls {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.chat-thinking-summary,
+.chat-tool-calls-summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  user-select: none;
+}
+
+.chat-thinking-content,
+.chat-tool-calls-content {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+  white-space: pre-wrap;
+  font-size: var(--text-13);
+  line-height: 1.5;
+}
+
+.chat-message .chat-message-content p {
+  margin: 0 0 var(--space-2);
+}
+
+.chat-message .chat-message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-message .chat-message-content hr {
+  margin: var(--space-3) 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.chat-message--assistant .chat-message-content pre:not(.chat-code-pre) {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 10px var(--space-3);
+  overflow-x: auto;
+  margin: var(--space-2) 0;
+}
+
+.chat-message--assistant .chat-message-content code {
+  font-family: var(--font-family-mono);
+  font-size: var(--text-13);
+}
+
+.chat-message--assistant .chat-message-content pre:not(.chat-code-pre) code {
+  background: none;
+  padding: 0;
+  font-size: var(--text-13);
+}
+
+.chat-message .chat-code-block {
+  max-width: 100%;
+  margin: 10px 0;
+  overflow: hidden;
+  border: 1px solid var(--chat-code-border);
+  border-radius: var(--radius-base);
+  background: var(--chat-code-bg);
+  box-shadow: var(--chat-code-shadow);
+}
+
+.chat-message .chat-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 34px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--chat-code-border);
+  background: var(--chat-code-header-bg);
+  color: var(--chat-code-header-fg);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  line-height: 1;
+}
+
+.chat-message .chat-code-language {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chat-message .chat-code-language-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--chat-code-chip-border);
+  border-radius: var(--radius-xs);
+  background: var(--chat-code-chip-bg);
+  color: var(--chat-code-chip-fg);
+  font-family: var(--font-family-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-bold);
+  line-height: 1;
+  box-shadow: var(--chat-code-chip-shadow);
+}
+
+.chat-message .chat-code-language-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-message .chat-code-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.chat-message .chat-code-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--chat-code-copy-fg);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-message .chat-code-copy-btn:hover,
+.chat-message .chat-code-copy-btn:focus-visible {
+  border-color: var(--chat-code-chip-border);
+  background: var(--chat-code-chip-bg);
+  color: var(--chat-code-chip-fg);
+  outline: 2px solid transparent;
+}
+
+.chat-message .chat-code-copy-btn--copied {
+  border-color: var(--chat-code-copied-border);
+  background: var(--chat-code-copied-bg);
+  color: var(--chat-code-copied-fg);
+}
+
+.chat-message .chat-code-body {
+  display: flex;
+  min-width: 0;
+  background: var(--chat-code-bg);
+}
+
+.chat-message .chat-code-line-numbers {
+  flex: 0 0 auto;
+  padding: 14px 10px 14px var(--space-3);
+  border-right: 1px solid var(--chat-code-gutter-border);
+  background: var(--chat-code-gutter-bg);
+  color: var(--chat-code-gutter-fg);
+  font-family: var(--font-family-mono);
+  font-size: var(--text-13);
+  line-height: 1.7;
+  text-align: right;
+  user-select: none;
+}
+
+.chat-message .chat-code-line-numbers span {
+  display: block;
+  min-width: 2ch;
+}
+
+.chat-message .chat-message-content .chat-code-pre,
+.chat-message .chat-tool-calls-content .chat-code-pre {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 14px var(--space-4);
+  overflow-x: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  line-height: 1.7;
+  tab-size: 2;
+}
+
+.chat-message .chat-code-pre code,
+.chat-message .chat-code-pre code.hljs {
+  display: block;
+  min-width: max-content;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  color: var(--chat-code-text);
+  font-size: var(--text-13);
+  line-height: inherit;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.chat-message .chat-shell-command,
+.chat-message .chat-header-key {
+  color: var(--chat-syn-command);
+  font-weight: var(--font-bold);
+}
+
+.chat-message .chat-shell-url {
+  color: var(--chat-syn-url);
+}
+
+.chat-message .chat-shell-flag {
+  color: var(--chat-syn-flag);
+  font-weight: var(--font-semibold);
+}
+
+.chat-message .chat-header-value {
+  color: var(--chat-syn-header-value);
+}
+
+.chat-message .chat-patch-meta {
+  color: var(--chat-syn-meta);
+  font-weight: var(--font-bold);
+}
+
+.chat-message .chat-patch-add-marker {
+  color: var(--chat-syn-add);
+  font-weight: var(--font-bold);
+}
+
+.chat-message .chat-patch-delete-marker {
+  color: var(--chat-syn-delete);
+  font-weight: var(--font-bold);
+}
+
+.chat-message .chat-patch-keyword {
+  color: var(--chat-syn-keyword);
+  font-weight: var(--font-bold);
+}
+
+.chat-message .chat-patch-string {
+  color: var(--chat-syn-string);
+}
+
+.chat-message .chat-patch-type {
+  color: var(--chat-syn-type);
+  font-weight: var(--font-semibold);
+}
+
+.chat-message .chat-patch-number {
+  color: var(--chat-syn-number);
+}
+
+.chat-message .chat-patch-comment {
+  color: var(--chat-syn-comment);
+  font-style: italic;
+}
+
+.chat-message--assistant .chat-message-content :not(pre) > code {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xs);
+  padding: 1px var(--space-1);
+}
+
+.chat-message .chat-message-content ul,
+.chat-message .chat-message-content ol {
+  padding-left: var(--space-5);
+  margin: 6px 0;
+}
+
+.chat-message--assistant .chat-message-content blockquote {
+  border-left: 3px solid var(--color-border);
+  margin: var(--space-2) 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 768px) {
+.chat-message--assistant.chat-message--has-code {
+    width: 100%;
+    max-width: 100%;
+  }
+.chat-message .chat-code-header {
+    min-height: 32px;
+    padding: 0 var(--space-3);
+  }
+.chat-message .chat-code-line-numbers {
+    padding: var(--space-3) var(--space-2) var(--space-3) 10px;
+  }
+.chat-message .chat-message-content .chat-code-pre {
+    padding: var(--space-3);
+  }
+}
+
+/* 输入区 */
+
+/* 打字机光标 */
+
+.chat-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: currentColor;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: chat-blink 0.7s step-end infinite;
+}
+
+
+:root {
+  /* 在途行用品牌紫淡染——琥珀是"警告"语义，进行中是中性状态；
+     color-mix 随 --primary-500 的暗色提亮自动适配，无需另写暗色块 */
+  --logs-pending-row-bg: color-mix(in srgb, var(--primary-500) 7%, transparent);
+  --logs-pending-row-hover-bg: color-mix(in srgb, var(--primary-500) 12%, transparent);
+  --logs-pending-badge-bg: color-mix(in srgb, var(--primary-500) 15%, transparent);
+  --logs-pending-badge-fg: var(--primary-500);
+}
+
+/* API Key 测试按钮样式 */
+
+/* 列显隐下拉面板：入口在工具栏，JS 按触发按钮的视口坐标定位 */
+.logs-col-toggle-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-dropdown);
+  background: var(--surface-bg-strong);
+  color: var(--neutral-900);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-base);
+  box-shadow: var(--shadow-lg);
+  padding: 6px 0;
+  min-width: 150px;
+  max-height: min(400px, 70vh);
+  overflow-y: auto;
+}
+
+.logs-col-toggle-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  transition: background 0.1s;
+  user-select: none;
+}
+
+.logs-col-toggle-item:hover {
+  background: var(--surface-hover);
+}
+
+.test-key-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  border-radius: var(--radius-xs);
+  transition: all 0.2s ease;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.test-key-btn svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.test-key-btn:hover {
+  background: var(--primary-100);
+  transform: none;
+}
+
+.test-key-btn:active {
+  transform: none;
+}
+
+.logs-abort-btn {
+  padding: 1px 6px;
+  border: 1px solid var(--error-300);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--error-600);
+  cursor: pointer;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  white-space: nowrap;
+  transition: background 0.2s ease;
+}
+
+.logs-abort-btn:hover:not(:disabled) {
+  background: var(--error-100);
+}
+
+.logs-abort-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+  border-color: var(--neutral-300);
+  color: var(--neutral-500);
+}
+
+.log-channel-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-2xs);
+  line-height: 1;
+  font-weight: var(--font-bold);
+  letter-spacing: 0.01em;
+  box-shadow: var(--shadow-hairline);
+}
+
+.log-channel-websocket-badge {
+  color: var(--primary-700);
+  background: var(--primary-100);
+}
+
+/* 加载动画复用 styles.css 的 .loading-spinner 与 @keyframes spin */
+
+/* 输入/输出列统一宽度，方便对齐 */
+.token-metric-value {
+  display: inline-block;
+  min-width: 6ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.stream-flag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-2xs);
+  min-width: 24px;
+  text-align: center;
+  color: var(--primary-700);
+  background-color: var(--primary-100);
+}
+
+.stream-flag.placeholder {
+  visibility: hidden;
+}
+
+.logs-mono-text {
+  font-family: var(--font-family-mono);
+  font-size: var(--text-xs);
+  color: var(--neutral-600);
+}
+
+/* 列语义对齐：文本/标识列左对齐，数值列右对齐（表头同向），
+   状态码徽章列居中。th/td 共用 logs-col-* 类，一处规则同时生效 */
+.logs-table th,
+.logs-table td {
+  padding: var(--space-2) var(--space-1);
+  text-align: left;
+}
+
+.logs-table .logs-col-timing,
+.logs-table .logs-col-speed,
+.logs-table .logs-col-input,
+.logs-table .logs-col-output,
+.logs-table .logs-col-cache-read,
+.logs-table .logs-col-cache-write,
+.logs-table .logs-col-cache-util,
+.logs-table .logs-col-cost {
+  text-align: right;
+}
+
+.logs-table .logs-col-status {
+  text-align: center;
+}
+
+@media (min-width: 769px) {
+  .logs-table .logs-col-cost {
+    width: 1%;
+    padding-left: var(--space-3);
+    white-space: nowrap;
+  }
+
+  .logs-table .logs-col-cost .log-cost {
+    min-width: max-content;
+  }
+}
+
+/* 顶部工具栏：标签置顶、控件等高，单条 flex 流一行排布；
+   组宽按内容定死（不拉伸填空），行操作靠右收尾 */
+.logs-filter-controls {
+  gap: var(--space-2) 10px;
+  align-items: flex-end;
+}
+
+.logs-filter-group {
+  flex: 0 0 auto;
+  width: 112px;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.logs-filter-group--range {
+  width: 88px;
+}
+
+.logs-filter-group--token {
+  width: 108px;
+}
+
+.logs-filter-group.filter-group--api {
+  width: 124px;
+}
+
+.logs-filter-group.filter-group--log-source {
+  width: 124px;
+}
+
+.logs-filter-group.filter-group--model {
+  width: 156px;
+}
+
+.logs-filter-group.filter-group--status {
+  width: 92px;
+}
+
+.logs-filter-group.filter-group--error-stage {
+  width: 108px;
+}
+
+.logs-filter-group .filter-label {
+  margin-right: 0;
+}
+
+.logs-filter-group .filter-input,
+.logs-filter-group .filter-select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding-top: 0;
+  padding-bottom: 0;
+  box-sizing: border-box;
+}
+
+.logs-filter-controls .filter-combobox-wrapper {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.logs-filter-actions .btn {
+  height: 32px;
+  padding: 0 var(--space-3);
+  gap: 5px;
+}
+
+.log-source-badge {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-2xs);
+  line-height: 1;
+  font-weight: var(--font-bold);
+  letter-spacing: 0.01em;
+  box-shadow: var(--shadow-hairline);
+  pointer-events: none;
+  z-index: var(--z-raised);
+}
+
+.logs-table .logs-col-message {
+  position: relative;
+  max-width: 300px;
+  word-break: break-word;
+}
+
+.log-source-badge--manual {
+  color: var(--success-600);
+  background: var(--success-100);
+}
+
+/* 号池换号角标：sup 贴在 lane 名后透出 failover 次数 */
+.logs-account-switches {
+  margin-left: 3px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-bold);
+  line-height: 1.4;
+  color: var(--warning-700);
+  background: var(--warning-100);
+}
+
+/* 失败行 error_message：压在人性化标签下的次级小字行；
+   单行省略保持行高一致，全文在 title */
+.log-error-text {
+  display: block;
+  margin-top: 2px;
+  color: var(--neutral-500);
+  font-size: var(--text-xs);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.logs-filter-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.logs-filter-actions {
+  flex: none;
+}
+
+/* 表格工具条：列显隐/导出作用在结果集上，贴表格右上 */
+.logs-table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.logs-table-toolbar .btn {
+  height: 30px;
+  padding: 0 10px;
+  gap: 5px;
+  font-size: var(--text-sm);
+}
+
+.debug-log-status {
+  display: inline-flex;
+  align-items: center;
+  margin-left: var(--space-2);
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  border-radius: var(--radius-full);
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.debug-log-status--refreshing {
+  color: var(--info-700);
+  background: var(--info-50);
+  border: 1px solid var(--info-200);
+}
+
+.debug-log-status--refreshing::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--info-500);
+}
+
+.debug-log-status--finished {
+  color: var(--neutral-700);
+  background: var(--neutral-100);
+  border: 1px solid var(--neutral-200);
+}
+
+/* #debugLogContent 由 JS 切 display:flex；类里只留布局属性 */
+.debug-log-content {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.debug-log-unavailable {
+  padding: var(--space-4);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  background: var(--surface-bg-muted);
+  color: var(--neutral-700);
+  text-align: left;
+}
+
+.debug-log-unavailable__title {
+  font-weight: var(--font-semibold);
+  color: var(--neutral-900);
+  margin-bottom: var(--space-2);
+}
+
+.debug-log-unavailable__hint {
+  margin-bottom: var(--space-3);
+  line-height: 1.6;
+}
+
+.debug-log-unavailable__settings-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--neutral-800);
+  margin-bottom: var(--space-2);
+}
+
+.debug-log-unavailable__settings {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.debug-log-unavailable__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-base);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border);
+}
+
+.debug-log-unavailable__label {
+  min-width: 0;
+  color: var(--neutral-600);
+  line-height: 1.5;
+}
+
+.debug-log-unavailable__value {
+  flex: 0 0 auto;
+  font-weight: var(--font-semibold);
+  color: var(--neutral-900);
+  white-space: nowrap;
+}
+
+.log-timing-pair {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+
+.log-cost {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  font-size: var(--text-13);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  vertical-align: middle;
+}
+
+.log-cost-effective {
+  font-weight: var(--font-semibold);
+}
+
+@media (max-width: 768px) {
+  .logs-table-container {
+    overflow-x: visible;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  .logs-table .logs-col-message {
+    grid-column: 1 / -1;
+  }
+
+  .logs-table .logs-col-time {
+    order: 1;
+  }
+
+  .logs-table .logs-col-status {
+    order: 2;
+  }
+
+  .logs-table .logs-col-model {
+    order: 3;
+  }
+
+  .logs-table .logs-col-account {
+    order: 4;
+  }
+
+  .logs-table .logs-col-api-key {
+    order: 5;
+  }
+
+  .logs-table .logs-col-token-desc {
+    order: 6;
+  }
+
+  .logs-table .logs-col-ip {
+    order: 7;
+  }
+
+  .logs-table .logs-col-timing {
+    order: 8;
+  }
+
+  .logs-table .logs-col-speed {
+    order: 9;
+  }
+
+  .logs-table .logs-col-input {
+    order: 10;
+  }
+
+  .logs-table .logs-col-output {
+    order: 11;
+  }
+
+  .logs-table .logs-col-cache-read {
+    order: 12;
+  }
+
+  .logs-table .logs-col-cache-write {
+    order: 13;
+  }
+
+  .logs-table .logs-col-cache-util {
+    order: 14;
+  }
+
+  .logs-table .logs-col-cost {
+    order: 15;
+  }
+
+  .logs-table .logs-col-message {
+    order: 30;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+
+  .logs-table tbody .mobile-card-row td.logs-col-time,
+  .logs-table tbody .mobile-card-row td.logs-col-status,
+  .logs-table tbody .mobile-card-row td.logs-col-model,
+  .logs-table tbody .mobile-card-row td.logs-col-account,
+  .logs-table tbody .mobile-card-row td.logs-col-api-key,
+  .logs-table tbody .mobile-card-row td.logs-col-token-desc,
+  .logs-table tbody .mobile-card-row td.logs-col-ip,
+  .logs-table tbody .mobile-card-row td.logs-col-timing,
+  .logs-table tbody .mobile-card-row td.logs-col-speed,
+  .logs-table tbody .mobile-card-row td.logs-col-input,
+  .logs-table tbody .mobile-card-row td.logs-col-output,
+  .logs-table tbody .mobile-card-row td.logs-col-cache-read,
+  .logs-table tbody .mobile-card-row td.logs-col-cache-write,
+  .logs-table tbody .mobile-card-row td.logs-col-cache-util,
+  .logs-table tbody .mobile-card-row td.logs-col-cost,
+  .logs-table tbody .mobile-card-row td.logs-col-message {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .logs-table tbody .mobile-card-row td.logs-col-time::before,
+  .logs-table tbody .mobile-card-row td.logs-col-status::before,
+  .logs-table tbody .mobile-card-row td.logs-col-model::before,
+  .logs-table tbody .mobile-card-row td.logs-col-account::before,
+  .logs-table tbody .mobile-card-row td.logs-col-api-key::before,
+  .logs-table tbody .mobile-card-row td.logs-col-token-desc::before,
+  .logs-table tbody .mobile-card-row td.logs-col-ip::before,
+  .logs-table tbody .mobile-card-row td.logs-col-timing::before,
+  .logs-table tbody .mobile-card-row td.logs-col-speed::before,
+  .logs-table tbody .mobile-card-row td.logs-col-input::before,
+  .logs-table tbody .mobile-card-row td.logs-col-output::before,
+  .logs-table tbody .mobile-card-row td.logs-col-cache-read::before,
+  .logs-table tbody .mobile-card-row td.logs-col-cache-write::before,
+  .logs-table tbody .mobile-card-row td.logs-col-cache-util::before,
+  .logs-table tbody .mobile-card-row td.logs-col-cost::before,
+  .logs-table tbody .mobile-card-row td.logs-col-message::before {
+    width: auto;
+    margin-bottom: 0;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .logs-table tbody .mobile-card-row td.mobile-empty-cell {
+    display: none;
+  }
+
+  .logs-table .logs-col-model,
+  .logs-table .logs-col-message {
+    align-items: flex-start;
+  }
+
+  .debug-log-unavailable__row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .debug-log-unavailable__value {
+    white-space: normal;
+  }
+
+  .logs-table .logs-col-model .model-tag,
+  .logs-table .logs-col-message {
+    min-width: 0;
+  }
+
+  .logs-table tbody .mobile-card-row td.logs-col-api-key,
+  .logs-table tbody .mobile-card-row td.logs-col-timing {
+    white-space: normal;
+  }
+
+  .logs-table .logs-col-api-key code {
+    word-break: break-all;
+  }
+
+  .logs-table .logs-col-timing .log-timing-pair {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+
+  .logs-table .logs-col-timing .log-timing-separator {
+    display: none;
+  }
+
+  .logs-table .logs-col-timing::before {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .logs-filter-controls {
+    gap: 6px;
+  }
+
+  .logs-filter-group,
+  .logs-filter-group.filter-group--api,
+  .logs-filter-group.filter-group--log-source,
+  .logs-filter-group.filter-group--model,
+  .logs-filter-group.filter-group--status,
+  .logs-filter-group.filter-group--error-stage {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    width: 100%;
+  }
+
+  .logs-filter-group .filter-label {
+    margin-right: 0;
+    text-align: right;
+  }
+
+  .logs-filter-summary-row {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2);
+    align-items: center;
+  }
+
+  .logs-filter-summary-row .logs-filter-actions {
+    width: auto;
+    justify-self: end;
+    /* 按钮组内容宽于视口时向右溢出会把首个按钮裁出屏幕——
+       限宽 + 允许换行，保持右对齐 */
+    max-width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .logs-filter-summary-row .logs-filter-actions .btn {
+    width: auto;
+    padding: var(--space-2) var(--space-3);
+  }
+}
+
+/* ≤480px 与全局 filter-group 约定一致：label 移到控件上方。
+   不改的话 ≤768 的 72px 标签列会继续生效，在两列网格半格里把
+   select 压到 ~76px，下拉值整段被裁掉 */
+@media (max-width: 480px) {
+  .logs-filter-group,
+  .logs-filter-group.filter-group--api,
+  .logs-filter-group.filter-group--log-source,
+  .logs-filter-group.filter-group--model,
+  .logs-filter-group.filter-group--status,
+  .logs-filter-group.filter-group--error-stage {
+    grid-template-columns: 1fr;
+  }
+
+  .logs-filter-group .filter-label {
+    text-align: left;
+  }
+}
+
+/* 列背景交替（按列斑马纹） */
+.logs-table tbody td:nth-child(odd) {
+  background: var(--table-bg);
+}
+
+.logs-table tbody td:nth-child(even) {
+  background: var(--surface-bg-muted);
+}
+
+/* 空值单元格不铺列底色，免得整列空格也被高亮成有内容。
+   位置必须在 pending-row 规则之前，进行中行的整行高亮不被戳破 */
+.logs-table tbody td:empty {
+  background: transparent;
+}
+
+/* 固定宽度列一律按列类名选择，不用 nth-child：ccload 原版按渠道列还在时的
+   位置编号，移植后列序前移导致 nth-child(7) 的 60px 钳错位打到 timing 列，
+   表头「首字/耗时(秒)」被压出单元格。 */
+.logs-table .logs-col-time {
+  width: 110px;
+  /* 时间: MM-DD HH:mm:ss */
+  min-width: 110px;
+  max-width: 110px;
+}
+
+.logs-table .logs-col-ip {
+  width: 110px;
+  /* IP: xxx.xxx.*.* */
+  min-width: 110px;
+  max-width: 110px;
+}
+
+.logs-table .logs-col-status {
+  width: 60px;
+  /* 状态码: 200/403/500 */
+  min-width: 60px;
+  max-width: 60px;
+  text-align: center;
+}
+
+.logs-table .logs-col-cache-util {
+  width: 78px;
+  /* 缓存命中（en 'Cache Hit' 需 ~74px） */
+  min-width: 78px;
+  max-width: 78px;
+  padding-right: var(--space-2);
+}
+
+.logs-table .logs-col-message {
+  min-width: 120px;
+}
+
+.logs-table .logs-col-model {
+  position: relative;
+}
+
+.model-display {
+  display: inline-block;
+  position: relative;
+}
+
+.logs-table .logs-col-model>.model-display {
+  position: static;
+}
+
+/* 模型标签样式 */
+.model-tag {
+  display: inline-block;
+  position: relative;
+  padding: 2px var(--space-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-13);
+  color: inherit;
+}
+
+.model-tag.model-redirected {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.model-tag.model-redirected .model-text {
+  max-width: 120px;
+}
+
+.model-redirect-arrow {
+  flex-shrink: 0;
+  color: var(--warning-600);
+  font-weight: var(--font-bold);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+
+.model-text--actual {
+  font-weight: var(--font-semibold);
+}
+
+.model-text {
+  display: inline-block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.model-badges {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  line-height: 1;
+  transform: scale(0.9);
+  transform-origin: top right;
+  white-space: nowrap;
+}
+
+.logs-table .logs-col-model>.model-display .model-badges {
+  top: 2px;
+  right: 4px;
+}
+
+.thinking-effort-badge {
+  min-width: 16px;
+  color: var(--primary-600);
+  font-size: var(--text-2xs);
+  padding: 2px 6px;
+  border-radius: var(--radius-base);
+  font-weight: var(--font-bold);
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .logs-table .logs-col-model>.model-display {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+
+  .logs-table .logs-col-model>.model-display .model-tag {
+    max-width: 100%;
+    padding-right: var(--space-2);
+  }
+
+  .logs-table .logs-col-model>.model-display .model-text {
+    max-width: 100%;
+  }
+
+  .logs-table .logs-col-model>.model-display .model-badges {
+    position: static;
+    order: -1;
+    max-width: 100%;
+    justify-content: flex-end;
+    transform: none;
+  }
+}
+
+/* 进行中状态样式 */
+.status-pending {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  background: var(--logs-pending-badge-bg);
+  color: var(--logs-pending-badge-fg);
+}
+
+/* 进行中行高亮 */
+.logs-table tr.pending-row td {
+  background: var(--logs-pending-row-bg);
+}
+
+.logs-table tr.pending-row:hover td {
+  background: var(--logs-pending-row-hover-bg);
+}
+
+/* 整行点击打开 debug 模态的行（tbody 委托，见 logs.js） */
+.logs-table tbody tr[data-debug-log-id],
+.logs-table tbody tr[data-debug-active-id] {
+  cursor: pointer;
+}
+
+/* 当前总况指标条：复用共享 kpi 卡片语言，压缩留白贴合列表头区 */
+.logs-metrics {
+  margin-bottom: var(--space-3);
+}
+
+.logs-metrics .kpi-card {
+  padding: var(--space-2) var(--space-3);
+}
+
+.logs-metrics .kpi-label {
+  min-height: 0;
+}
+
+.logs-metrics .kpi-value {
+  margin: var(--space-1) 0;
+}
+
+/* 列表提示条：管线前拒绝事件环 */
+.logs-list-hint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.logs-list-hint-item {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-base);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border);
+  color: var(--neutral-600);
+  line-height: 1.5;
+}
+
+.logs-list-hint-item a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+/* 调试记录文件列表与查看器 */
+.debug-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+
+.debug-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-base);
+  border: 1px solid var(--surface-border);
+  background: var(--surface-bg-strong);
+  color: var(--neutral-800);
+  cursor: pointer;
+  text-align: left;
+}
+
+.debug-file-item:hover {
+  border-color: var(--surface-border-strong);
+}
+
+.debug-file-item.active {
+  border-color: var(--primary-500);
+  font-weight: var(--font-semibold);
+}
+
+.debug-file-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-mono);
+}
+
+.debug-file-item-size {
+  flex: 0 0 auto;
+  color: var(--neutral-600);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.debug-file-view-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.debug-file-view-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-mono);
+  font-weight: var(--font-semibold);
+}
+
+.debug-file-binary {
+  padding: var(--space-3);
+  color: var(--neutral-600);
+  line-height: 1.6;
+}
+
+.debug-merged-note {
+  margin-bottom: var(--space-2);
+  color: var(--warning-600);
+  font-size: var(--text-sm);
+}
+
+/* 行内样式收口：nowrap / 占位符 / token 指标色 / 紧凑单元格 */
+
+.logs-table td.logs-nowrap {
+  white-space: nowrap;
+}
+
+.logs-dash {
+  color: var(--neutral-500);
+}
+
+.logs-dash-faint {
+  color: var(--neutral-400);
+}
+
+/* 信息列：「详情」是固定入口，已接收字节数是降级副文本 */
+.logs-bytes-received {
+  margin-left: var(--space-2);
+  color: var(--success-600);
+  font-size: var(--text-xs);
+}
+
+/* data-copy 截断值点击复制 */
+.logs-copyable {
+  cursor: copy;
+}
+
+.logs-copyable.logs-copied {
+  color: var(--success-600);
+}
+
+.log-timing-separator {
+  color: var(--neutral-400);
+}
+
+.token-metric-value--neutral {
+  color: var(--neutral-700);
+}
+
+.token-metric-value--success {
+  color: var(--success-600);
+}
+
+.token-metric-value--primary {
+  color: var(--primary-600);
+}
+
+.cache-5m-badge {
+  color: var(--primary-500);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-semibold);
+}
+
+.logs-compact-cell > * + * {
+  margin-left: var(--space-2);
+}

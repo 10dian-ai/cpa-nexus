@@ -3,13 +3,20 @@ import { PRESET_CONTEXT_KEYS, type PresetApplyOptions, type PresetCompatibility,
 
 type JsonObject = Record<string, unknown>
 interface Prompt { id: string; role: string; content: string; marker: boolean; position: number; depth: number; order: number; triggers: string[] }
-interface Compiled { prompts: Prompt[]; parameters: JsonObject; settings: JsonObject; issues: PresetIssue[] }
+interface Compiled { prompts: Prompt[]; parameters: JsonObject; settings: JsonObject; issues: PresetIssue[]; prefill?: string; continuePrefill?: boolean; continuePostfix?: string }
 const isObject = (value: unknown): value is JsonObject => !!value && typeof value === 'object' && !Array.isArray(value)
 const error = (message: string, data?: Record<string, unknown>) => platformError({ statusCode: 422, message, data })
 const markers: Record<string, string> = { worldInfoBefore: 'wiBefore', worldInfoAfter: 'wiAfter', charDescription: 'description', charPersonality: 'personality', scenario: 'scenario', personaDescription: 'persona', dialogueExamples: 'mesExamples' }
 const dynamicMacros = new Set(['lastMessage', 'lastUserMessage', 'lastCharMessage', 'newline'])
 const allowedMacros = new Set<string>([...PRESET_CONTEXT_KEYS, ...dynamicMacros])
 const generationTypes = new Set(['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'])
+/** Resolve SillyTavern's generation action without forwarding this control field upstream. */
+export function resolvePresetGenerationType(body: JsonObject, headers?: Record<string, unknown>): PresetApplyOptions['generationType'] {
+  const bodyValue = typeof body.generation_type === 'string' ? body.generation_type : ''
+  const headerValue = typeof headers?.['x-nexus-generation-type'] === 'string' ? headers['x-nexus-generation-type'] : ''
+  const value = (bodyValue || headerValue).trim()
+  return generationTypes.has(value) ? value as PresetApplyOptions['generationType'] : 'normal'
+}
 function replaceTemplate(template: string, token: string, value: string): string {
   return template.split(token).join(value)
 }
@@ -143,10 +150,18 @@ function compile(source: JsonObject): Compiled {
   if (settings.stream_openai !== undefined) add('client_stream', '流式模式由客户端请求决定', 'stream_openai', 'warning')
   for (const field of ['new_chat_prompt', 'new_group_chat_prompt', 'continue_nudge_prompt', 'impersonation_prompt', 'group_nudge_prompt', 'send_if_empty']) if (settings[field]) add('browser_generation_control', `${field} 属于酒馆交互行为，本模块不自动触发`, field, 'warning')
   if (settings.reverse_proxy || settings.custom_url || settings.proxy_password) add('network_settings', '预设内的地址和代理凭据只保留，不改变平台上游路由', 'reverse_proxy', 'warning')
-  const known = new Set(['prompts', 'prompt_order', 'temperature', 'temp_openai', 'top_p', 'top_p_openai', 'frequency_penalty', 'freq_pen_openai', 'presence_penalty', 'pres_pen_openai', 'openai_max_tokens', 'max_tokens', 'top_k', 'seed', 'stop', 'stop_openai', 'main_prompt', 'nsfw_prompt', 'jailbreak_prompt', 'post_history_instructions', 'custom_include_body', 'custom_exclude_body', 'custom_include_headers', 'extensions', 'top_a', 'min_p', 'repetition_penalty', 'openai_max_context', 'stream_openai', 'new_chat_prompt', 'new_group_chat_prompt', 'continue_nudge_prompt', 'impersonation_prompt', 'group_nudge_prompt', 'send_if_empty', 'reverse_proxy', 'custom_url', 'proxy_password', 'wi_format', 'scenario_format', 'personality_format'])
+  const known = new Set(['prompts', 'prompt_order', 'temperature', 'temp_openai', 'top_p', 'top_p_openai', 'frequency_penalty', 'freq_pen_openai', 'presence_penalty', 'pres_pen_openai', 'openai_max_tokens', 'max_tokens', 'top_k', 'seed', 'stop', 'stop_openai', 'main_prompt', 'nsfw_prompt', 'jailbreak_prompt', 'post_history_instructions', 'custom_include_body', 'custom_exclude_body', 'custom_include_headers', 'extensions', 'top_a', 'min_p', 'repetition_penalty', 'openai_max_context', 'stream_openai', 'new_chat_prompt', 'new_group_chat_prompt', 'continue_nudge_prompt', 'impersonation_prompt', 'group_nudge_prompt', 'send_if_empty', 'reverse_proxy', 'custom_url', 'proxy_password', 'wi_format', 'scenario_format', 'personality_format', 'assistant_prefill', 'continue_prefill', 'continue_postfix'])
   const retained = Object.keys(settings).filter(key => !known.has(key))
   if (retained.length) add('retained_settings', `这些酒馆界面/后端专用设置只保留，不应用到请求：${retained.slice(0, 24).join('、')}${retained.length > 24 ? ` 等 ${retained.length} 项` : ''}`, undefined, 'warning')
-  return { prompts, parameters, settings, issues }
+  for (const field of ['assistant_prefill', 'continue_postfix']) {
+    if (settings[field] !== undefined && typeof settings[field] !== 'string') add('invalid_prefill', `${field} 必须是文本`, field)
+  }
+  if (settings.continue_prefill !== undefined && typeof settings.continue_prefill !== 'boolean') add('invalid_prefill', 'continue_prefill 必须是布尔值', 'continue_prefill')
+  const prefill = typeof settings.assistant_prefill === 'string' ? settings.assistant_prefill : undefined
+  const continuePrefill = typeof settings.continue_prefill === 'boolean' ? settings.continue_prefill : undefined
+  const continuePostfix = typeof settings.continue_postfix === 'string' ? settings.continue_postfix : undefined
+  if (prefill) add('prefill_support', '回复预填充以末尾 Assistant 消息发送；是否继续该前缀取决于目标模型，Responses 和部分 Chat 模型仅将其作为历史上下文', 'assistant_prefill', 'warning')
+  return { prompts, parameters, settings, issues, prefill, continuePrefill, continuePostfix }
 }
 
 const macroMatches = (content: string) => [...content.matchAll(/\{\{([\s\S]*?)\}\}/g)]
@@ -163,6 +178,13 @@ export function inspectPreset(source: JsonObject, variables: Record<string, stri
       const macro = match[1]!.trim()
       if (!allowedMacros.has(macro)) issues.push({ code: 'unsupported_macro', severity: 'error', message: `不支持宏 {{${macro}}}；不执行酒馆脚本、变量指令、随机或扩展宏`, path: `prompts.${prompt.id}.content` })
       else if (!dynamicMacros.has(macro) && !Object.hasOwn(variables, macro)) issues.push({ code: 'missing_variable', severity: 'error', message: `需要填写变量 ${macro}，不能猜测角色或用户信息`, path: `prompts.${prompt.id}.content` })
+    }
+  }
+  for (const [field, text] of [['assistant_prefill', compiled.prefill], ['continue_postfix', compiled.continuePostfix]] as const) {
+    for (const match of macroMatches(text || '')) {
+      const macro = match[1]!.trim()
+      if (!allowedMacros.has(macro)) issues.push({ code: 'unsupported_macro', severity: 'error', message: `不支持宏 {{${macro}}}；预填充不会执行脚本或扩展宏`, path: field })
+      else if (!dynamicMacros.has(macro) && !Object.hasOwn(variables, macro)) issues.push({ code: 'missing_variable', severity: 'error', message: `需要填写变量 ${macro}`, path: field })
     }
   }
   // Deduplicate repeated macro diagnostics while preserving actionable paths.
@@ -199,6 +221,7 @@ export function applyPresetStack(presets: Array<Pick<PresetView, 'sourceJson' | 
   const last = (role?: string) => messageText([...history].reverse().find(item => !role || item.role === role) || {})
   const prefix: JsonObject[] = [], suffix: JsonObject[] = [], depthPrompts: Prompt[] = []
   const expanded = new Map<Prompt, string>(), parameters: JsonObject = {}
+  let assistantPrefill = '', continuePrefill = false, continuePostfix = ' '
   for (const preset of presets) {
     const context = { ...validatePresetVariables(preset.variables), ...validatePresetVariables(options.context || {}) }
     const compatibility = inspectPreset(preset.sourceJson, context)
@@ -235,6 +258,11 @@ export function applyPresetStack(presets: Array<Pick<PresetView, 'sourceJson' | 
       if (prompt.position === 1) depthPrompts.push(prompt)
       else (afterHistory ? suffix : prefix).push({ role: prompt.role, content: expanded.get(prompt)! })
     }
+    // Later presets override earlier prefix settings, including an explicit
+    // empty string. Prefix whitespace is intentional and must be preserved.
+    if (compiled.prefill !== undefined) assistantPrefill = substitute(compiled.prefill)
+    if (compiled.continuePrefill !== undefined) continuePrefill = compiled.continuePrefill
+    if (compiled.continuePostfix !== undefined) continuePostfix = substitute(compiled.continuePostfix)
   }
   // Depth counts user/assistant turns; tool call + results are indivisible history spans.
   const boundaries = [0]
@@ -264,6 +292,16 @@ export function applyPresetStack(presets: Array<Pick<PresetView, 'sourceJson' | 
     if (index < history.length) enriched.push(history[index]!)
   }
   const outgoing: JsonObject[] = [...prefix, ...enriched, ...suffix]
+  if (options.generationType === 'continue' && continuePrefill) {
+    // Continue the last assistant text; keep tools and all original content
+    // intact. Never turn a tool call into an unfinished textual prefix.
+    const lastMessage = outgoing[outgoing.length - 1]
+    if (lastMessage?.role === 'assistant' && typeof lastMessage.content === 'string' && !lastMessage.tool_calls) {
+      outgoing[outgoing.length - 1] = { ...lastMessage, content: lastMessage.content + continuePostfix }
+    }
+  } else if (assistantPrefill && options.generationType !== 'impersonate') {
+    outgoing.push({ role: 'assistant', content: assistantPrefill })
+  }
   if (protocol === 'messages') {
     const system: unknown[] = [], messages: JsonObject[] = []
     if (typeof body.system === 'string') { if (body.system) system.push({ type: 'text', text: body.system }) }
