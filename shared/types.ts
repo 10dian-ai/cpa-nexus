@@ -32,6 +32,7 @@ export const DEFAULT_SETTINGS: SystemSettings = {
 export interface GatewayKeyView extends Partial<GroupBinding> { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; createdAt: string; lastUsedAt: string | null }
 export interface RequestLogView {
   id: string; accountId: string | null; accountLabel: string | null; keyName: string | null
+  moduleId?: string | null; sourceId?: string | null
   model: string; protocol: string; status: string; httpStatus: number | null
   durationMs: number; usage: Record<string, unknown> | null; errorMessage: string | null
   createdAt: string; streaming: boolean; responseTruncated: boolean

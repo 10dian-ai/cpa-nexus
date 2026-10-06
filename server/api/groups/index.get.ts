@@ -3,5 +3,5 @@ import { listGroups, getModuleDefaultGroupIds } from '../../lib/groups'
 import { DEFAULT_GROUP_ID } from '../../../shared/groups'
 export default defineEventHandler(async () => {
   const [items, moduleDefaultGroupIds] = await Promise.all([listGroups(), getModuleDefaultGroupIds()])
-  return { items, defaultGroupId: DEFAULT_GROUP_ID, defaultGroupIds: [...new Set([moduleDefaultGroupIds.cpa, moduleDefaultGroupIds.commandcode])], moduleDefaultGroupIds }
+  return { items, defaultGroupId: DEFAULT_GROUP_ID, defaultGroupIds: [...new Set(Object.values(moduleDefaultGroupIds))], moduleDefaultGroupIds }
 })

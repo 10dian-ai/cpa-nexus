@@ -36,6 +36,19 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
     ],
   },
   {
+    id: 'devin2api', name: 'Devin', kind: 'extension', required: false, defaultEnabled: false, version: '0.1.0',
+    description: 'Devin 2API 适配模块，将 Devin 会话映射为标准模型接口。',
+    capabilities: ['Responses API', 'Chat Completions', 'Messages API', '账号与令牌', '模型目录', '分组路由', '调用日志'],
+    navigation: [
+      { to: '/devin2api', label: '模块概览', icon: 'i-ph-chart-bar-bold' },
+      { to: '/devin2api?tab=accounts', label: '账号管理', icon: 'i-ph-users-three-bold' },
+      { to: '/groups/accounts?module=devin2api', label: '账号调用分组', icon: 'i-ph-users-four-bold' },
+      { to: '/devin2api?tab=models', label: '模型目录', icon: 'i-ph-cube-bold' },
+      { to: '/devin2api?tab=logs', label: '请求日志', icon: 'i-ph-list-bullets-bold' },
+      { to: '/devin2api?tab=settings', label: '模块设置', icon: 'i-ph-sliders-horizontal-bold' },
+    ],
+  },
+  {
     id: 'presets', name: '酒馆预设', kind: 'extension', required: false, defaultEnabled: false, version: '0.1.0',
     description: '导入、编辑酒馆 JSON 预设，为模块和 API Key 选择请求处理路由。',
     capabilities: ['JSON 导入与导出', '提示词编排', '采样参数', '模块与 API Key 路由'],

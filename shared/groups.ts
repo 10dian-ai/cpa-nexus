@@ -1,5 +1,6 @@
 export const DEFAULT_GROUP_ID = '00000000-0000-4000-8000-000000000001'
-export type GroupModuleId = 'commandcode' | 'cpa'
+/** Source module that owns an account/integration binding. */
+export type GroupModuleId = 'commandcode' | 'cpa' | 'devin2api'
 export interface GroupBinding { groupIds: string[]; groupNames: string[] }
 export interface GroupView {
   id: string; name: string; description: string; enabled: boolean; isDefault: boolean

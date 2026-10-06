@@ -19,6 +19,8 @@ import { getProviderModel } from '../official-catalog'
 import { privacyHeaders } from '../privacy-headers'
 import { getConfig } from '../config'
 import { CPA_GROUP_POLICY_HEADER, registerCpaGroupPolicy } from './group-policy'
+import { handleDevin2ApiInference } from '../devin2api/inference'
+import { listDevin2ApiGroupModels } from '../devin2api/routing'
 
 const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
@@ -97,8 +99,11 @@ export async function forwardNativeCpa(event: H3Event, path: string, body?: Reco
 
 async function listModelGroups(event: H3Event, keyId: string, groupIds: string[], moduleId: string) {
   const catalogs: Array<Promise<Array<{ id: string }>>> = []
-  if (moduleId !== 'commandcode') catalogs.push(listCpaGroupModels(groupIds))
-  if (moduleId !== 'cpa' && await isModuleEnabled('commandcode')) catalogs.push(listGatewayModels(keyId).then(result => result.data))
+  const includeCommandcode = (moduleId === 'commandcode' || moduleId === 'auto') && await isModuleEnabled('commandcode')
+  const includeDevin = (moduleId === 'devin2api' || moduleId === 'auto') && await isModuleEnabled('devin2api')
+  if (moduleId === 'cpa' || moduleId === 'auto') catalogs.push(listCpaGroupModels(groupIds))
+  if (includeCommandcode) catalogs.push(listGatewayModels(keyId).then(result => result.data))
+  if (includeDevin) catalogs.push(listDevin2ApiGroupModels(groupIds))
   const results = await Promise.allSettled(catalogs)
   if (results.every(result => result.status === 'rejected')) throw Object.assign(new Error('模型目录暂不可用'), { statusCode: 503 })
   const models = new Map<string, Record<string, unknown>>()
@@ -156,12 +161,14 @@ export async function handleNexusInference(event: H3Event) {
       if (moduleId === 'auto') return await handleCommandcodeCompatibility(event, { protocolPath: path })
       fail(event, path, 403, 'System One requires a key with Command Code group access'); return
     }
-    const clientKey = process.env.CPA_CLIENT_KEY?.trim()
-    if (!clientKey) { fail(event, path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
     if (event.node.req.headers['content-encoding']) { fail(event, path, 415, 'Model API keys require an uncompressed JSON request'); return }
     let body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024)
     const model = typeof body.model === 'string' ? body.model.trim() : ''
     if (!model || model.length > 256) { fail(event, path, 400, 'model must be a non-empty string of at most 256 characters'); return }
+    if (moduleId === 'devin2api' || (moduleId === 'auto' && model.startsWith('devin/'))) {
+      return await handleDevin2ApiInference(event, { keyId: key.id, groupIds, protocolPath: path, body })
+    }
+    if (model.startsWith('devin/')) { fail(event, path, 403, 'This API key is not bound to the Devin module'); return }
     if (moduleId === 'auto') {
       if (model.startsWith('commandcode/')) return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
       // Provider IDs are unambiguous for the existing CommandCode clients. Keep
@@ -172,6 +179,8 @@ export async function handleNexusInference(event: H3Event) {
         if (provider && (await listCandidates(model, key.id)).length) return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
       }
     } else if (model.startsWith('commandcode/')) { fail(event, path, 403, 'This legacy key is bound to CPA'); return }
+    const clientKey = process.env.CPA_CLIENT_KEY?.trim()
+    if (!clientKey) { fail(event, path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
     await requireModule('cpa')
     const selected = await resolveCpaGroupPolicy(model, groupIds, key.id)
     if (!selected) { fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return }

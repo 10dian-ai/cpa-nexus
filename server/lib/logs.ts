@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
 export interface RequestLogInput {
   id?: string; keyId: string | null; accountId: string | null; model: string
+  moduleId?: string | null; sourceId?: string | null
   protocol: 'chat/completions' | 'messages' | 'responses' | 'systemone'; sessionId: string | null
   status: 'success' | 'error' | 'cancelled' | 'incomplete'; httpStatus: number | null
   durationMs: number; streaming: boolean; usage: Record<string, unknown> | null
@@ -34,9 +35,9 @@ export async function insertRequestLog(input: RequestLogInput) {
   }
   const id = input.id ?? randomUUID()
   const write = async (keyId: string | null, accountId: string | null) => {
-    await db`INSERT INTO request_logs(id,key_id,account_id,model,protocol,session_id,status,http_status,duration_ms,streaming,usage,error_message,request_body,response_body,response_truncated)
+    await db`INSERT INTO request_logs(id,key_id,account_id,module_id,source_id,model,protocol,session_id,status,http_status,duration_ms,streaming,usage,error_message,request_body,response_body,response_truncated)
       VALUES(${id},(SELECT id FROM gateway_keys WHERE id=${keyId}),(SELECT id FROM managed_accounts WHERE id=${accountId}),
-      ${input.model},${input.protocol},${input.sessionId},${input.status},${input.httpStatus},${input.durationMs},${input.streaming},
+      ${input.moduleId ?? null},${input.sourceId ?? null},${input.model},${input.protocol},${input.sessionId},${input.status},${input.httpStatus},${input.durationMs},${input.streaming},
       ${json(input.usage)}::jsonb,${input.errorMessage},${json(input.requestBody)}::jsonb,${json(input.responseBody)}::jsonb,${input.responseTruncated})
       ON CONFLICT(id) DO NOTHING`
   }

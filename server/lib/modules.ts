@@ -3,6 +3,7 @@ import { getDb } from './db'
 import { MODULE_MANIFESTS, findModule, type ModuleView } from '../../shared/modules'
 import { commandcodeProviderHealthy } from './commandcode-health'
 import { createCpaClient } from './cpa/client'
+import { getDevinStatus } from './devin2api/admin'
 
 const stateCache = new Map<string, { enabled: boolean; until: number }>()
 export function resetModuleCache() { stateCache.clear() }
@@ -30,10 +31,11 @@ export async function setModuleEnabled(id: string, enabled: boolean) {
   return { id, enabled }
 }
 export async function listModules(): Promise<ModuleView[]> {
-  const [states, cpa, commandcodeHealthy] = await Promise.all([
+  const [states, cpa, commandcodeHealthy, devinStatus] = await Promise.all([
     getDb()`SELECT id,enabled FROM platform_modules`,
     createCpaClient().status(),
     commandcodeProviderHealthy(),
+    getDevinStatus().catch(error => ({ configured: Boolean(process.env.DEVIN2API_URL?.trim()), reachable: false, status: 'unavailable', message: error instanceof Error ? error.message : '无法读取 Devin 状态' })),
   ])
   return MODULE_MANIFESTS.map(manifest => {
     const state = states.find(state => state.id === manifest.id)
@@ -47,6 +49,11 @@ export async function listModules(): Promise<ModuleView[]> {
     if (manifest.id === 'commandcode') return {
       ...manifest, enabled, status: commandcodeHealthy ? 'ready' : 'unavailable',
       message: commandcodeHealthy ? '官方 Provider 模型目录已同步，账号池使用官方 API。' : '官方 Provider 目录尚未同步或更新失败，请刷新官方目录。',
+    }
+    if (manifest.id === 'devin2api') return {
+      ...manifest, enabled,
+      status: devinStatus.reachable ? 'ready' : devinStatus.configured ? 'unavailable' : 'unconfigured',
+      message: devinStatus.message,
     }
     if (manifest.id === 'platform') return { ...manifest, enabled, status: 'ready', message: '平台管理服务可访问。' }
     if (manifest.id === 'presets') return { ...manifest, enabled, status: 'ready', message: '已启用预设路由；未选择预设的请求直接调用原模块。' }
