@@ -182,3 +182,13 @@
   .official-source-list li .official-source-error { grid-column: auto; }
   .official-source-footer { align-items: flex-start; flex-direction: column; }
 }
+/* Collapsible sidebar sections */
+.nexus-navigation .nav-section-toggle { display: flex; align-items: center; gap: 6px; width: calc(100% - 14px); margin: 0 7px 7px; padding: 4px 7px; border: 0; border-radius: 5px; background: none; font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .045em; color: #7c8176; text-align: left; cursor: pointer; }
+.nexus-navigation .nav-section-toggle:hover:not(:disabled) { background: #e8e9e1; color: #4f5547; }
+.nexus-navigation .nav-section-toggle:disabled { cursor: default; color: #5f6558; opacity: 1; }
+.nexus-navigation .nav-section-toggle:focus-visible { outline: 2px solid #9aa08f; outline-offset: 1px; }
+.nexus-navigation .nav-section-caret { margin-left: auto; font-size: 11px; opacity: .55; }
+.nexus-navigation .nav-section-toggle:disabled .nav-section-caret { opacity: .25; }
+.nexus-navigation .nav-section-count { font-size: 10px; font-weight: 500; color: #9a9d91; background: #e5e6de; border-radius: 999px; padding: 0 6px; line-height: 16px; }
+.nexus-navigation section.is-collapsed + section { margin-top: 6px; }
+.nexus-navigation section.is-collapsed .nav-section-toggle { margin-bottom: 0; }

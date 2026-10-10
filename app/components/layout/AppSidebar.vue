@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { NavigationGroup, NavigationLink } from '~/composables/useAppNavigation'
 
-defineProps<{
+const props = defineProps<{
   groups: NavigationGroup[]
   current: NavigationLink
   username?: string | null
@@ -13,6 +13,31 @@ const emit = defineEmits<{
   close: []
   logout: []
 }>()
+
+/**
+ * Sections can be folded. By default only the platform section and the
+ * section holding the current page are open; an explicit choice by the admin
+ * is remembered per browser. The current page's section is always shown so
+ * the active entry never disappears.
+ */
+const STORAGE_KEY = 'cpa-nexus:sidebar-sections'
+const choices = ref<Record<string, boolean>>({})
+onMounted(() => {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) choices.value = Object.fromEntries(Object.entries(stored).filter(([, value]) => typeof value === 'boolean')) as Record<string, boolean>
+  } catch { /* Storage unavailable: keep defaults. */ }
+})
+const activeLabel = computed(() => props.groups.find(group => group.links.some(link => link.to === props.current.to))?.label)
+function expanded(group: NavigationGroup, index: number) {
+  if (group.label === activeLabel.value) return true
+  return choices.value[group.label] ?? index === 0
+}
+function toggle(group: NavigationGroup, index: number) {
+  if (group.label === activeLabel.value) return
+  choices.value = { ...choices.value, [group.label]: !expanded(group, index) }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(choices.value)) } catch { /* Not persisted; still toggles. */ }
+}
 </script>
 
 <template>
@@ -23,22 +48,35 @@ const emit = defineEmits<{
       <span>CPA Nexus<small>模型与模块管理平台</small></span>
     </NuxtLink>
     <nav class="nexus-navigation" aria-label="主导航">
-      <section v-for="group in groups" :key="group.label">
-        <div class="nav-caption">{{ group.label }}</div>
-        <NuxtLink
-          v-for="link in group.links"
-          :key="link.to"
-          :to="link.to"
-          class="nav-link"
-          :aria-current="current.to === link.to ? 'page' : undefined"
-          :class="{ active: current.to === link.to }"
-          :title="link.description"
-          @click="emit('close')"
+      <section v-for="(group, index) in groups" :key="group.label" :class="{ 'is-collapsed': !expanded(group, index) }">
+        <button
+          type="button"
+          class="nav-caption nav-section-toggle"
+          :aria-expanded="expanded(group, index)"
+          :aria-controls="`nav-section-${index}`"
+          :disabled="group.label === activeLabel"
+          @click="toggle(group, index)"
         >
-          <UIcon :name="link.icon" aria-hidden="true" />
-          <span>{{ link.label }}</span>
-          <UIcon v-if="current.to === link.to" name="i-ph-caret-right-bold" class="nav-chevron" aria-hidden="true" />
-        </NuxtLink>
+          <span>{{ group.label }}</span>
+          <span v-if="!expanded(group, index)" class="nav-section-count">{{ group.links.length }}</span>
+          <UIcon :name="expanded(group, index) ? 'i-ph-caret-down-bold' : 'i-ph-caret-right-bold'" class="nav-section-caret" aria-hidden="true" />
+        </button>
+        <div v-show="expanded(group, index)" :id="`nav-section-${index}`">
+          <NuxtLink
+            v-for="link in group.links"
+            :key="link.to"
+            :to="link.to"
+            class="nav-link"
+            :aria-current="current.to === link.to ? 'page' : undefined"
+            :class="{ active: current.to === link.to }"
+            :title="link.description"
+            @click="emit('close')"
+          >
+            <UIcon :name="link.icon" aria-hidden="true" />
+            <span>{{ link.label }}</span>
+            <UIcon v-if="current.to === link.to" name="i-ph-caret-right-bold" class="nav-chevron" aria-hidden="true" />
+          </NuxtLink>
+        </div>
       </section>
     </nav>
     <div class="sidebar-footer">
@@ -48,4 +86,3 @@ const emit = defineEmits<{
     </div>
   </aside>
 </template>
-

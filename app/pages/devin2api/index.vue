@@ -11,11 +11,12 @@ const route = useRoute()
 const api = useRequestFetch()
 const { busy, run } = useApiAction()
 const tabs = [
-  { id:'overview', label:'运行概览', icon:'i-ph-chart-bar-bold' },
-  { id:'accounts', label:'账号与令牌', icon:'i-ph-users-three-bold' },
+  // Same icons as the module's sidebar entries (shared/modules.ts).
+  { id:'overview', label:'运行概览', icon:'i-ph-robot-bold' },
+  { id:'accounts', label:'账号与令牌', icon:'i-ph-user-list-bold' },
   { id:'models', label:'模型目录', icon:'i-ph-cube-bold' },
-  { id:'logs', label:'调用日志', icon:'i-ph-list-bullets-bold' },
-  { id:'settings', label:'模块设置', icon:'i-ph-sliders-horizontal-bold' },
+  { id:'logs', label:'调用日志', icon:'i-ph-clipboard-text-bold' },
+  { id:'settings', label:'模块设置', icon:'i-ph-wrench-bold' },
 ]
 const tab = computed(() => tabs.some(item => item.id === route.query.tab) ? String(route.query.tab) : 'overview')
 function setTab(id:string) { void navigateTo({ path:'/devin2api', query: id === 'overview' ? undefined : { tab:id } }) }
@@ -62,7 +63,7 @@ function statusLabel(value:string) { return value === 'ready' ? '正常' : value
 <template>
   <AppPageHeader title="Devin 模块" description="以独立模块接入 devin-2api；账号、模型、酒馆预设路由和调用日志在此统一管理。">
     <button class="button" :disabled="statusPending || accountsPending" @click="refreshAll"><UIcon name="i-ph-arrow-clockwise-bold" :class="{ spinning: statusPending || accountsPending }" />刷新状态</button>
-    <NuxtLink to="/groups/accounts?module=devin2api" class="button"><UIcon name="i-ph-users-four-bold" />调用分组</NuxtLink>
+    <NuxtLink to="/groups/accounts?module=devin2api" class="button"><UIcon name="i-ph-address-book-bold" />账号分组</NuxtLink>
   </AppPageHeader>
   <nav class="nexus-tabs devin-tabs" aria-label="Devin 模块页面">
     <button v-for="item in tabs" :key="item.id" :class="{ active: tab === item.id }" @click="setTab(item.id)"><UIcon :name="item.icon" />{{ item.label }}</button>
@@ -77,7 +78,7 @@ function statusLabel(value:string) { return value === 'ready' ? '正常' : value
         <section class="metric-card"><div class="metric-top"><span>可用模型</span><UIcon name="i-ph-cube-bold" /></div><strong>{{ formatNumber(status.modelCount) }}</strong><p>来自内置 Devin 运行时的实时目录</p></section>
         <section class="metric-card"><div class="metric-top"><span>已配置账号</span><UIcon name="i-ph-users-three-bold" /></div><strong>{{ formatNumber(accounts?.length || 0) }}</strong><p>令牌保存在本地加密存储中</p></section>
       </div>
-      <section class="panel overview-panel"><div class="panel-heading"><h2>调用链路</h2><StatusBadge :status="status.reachable ? 'ready' : 'error'" :label="status.reachable ? '可调用' : '待配置'" /></div><p>客户端请求进入 CPA Nexus 后，先按 <span class="mono">devin/模型 ID</span> 选择 Devin 模块，再应用绑定的酒馆预设，最后由 CPAN 内置运行时调用 Devin。</p><dl class="summary-rows"><div><dt>运行时</dt><dd>由 CPAN 按账号凭证自动管理</dd></div><div><dt>最近检查</dt><dd>{{ formatDate(status.checkedAt) }}</dd></div><div><dt>日志入口</dt><dd><button class="text-link" @click="setTab('logs')">查看 Devin 调用日志<UIcon name="i-ph-arrow-right-bold" /></button></dd></div></dl></section>
+      <section class="panel overview-panel"><div class="panel-heading"><h2>调用链路</h2><StatusBadge :status="status.reachable ? 'ready' : 'error'" :label="status.reachable ? '可调用' : '待配置'" /></div><p>客户端用 <span class="mono">devin/模型 ID</span> 调用时，只有 Key 的分组里有能接这个模型的 Devin 模块账号才进入本模块，再应用该分组的酒馆预设，最后由 CPAN 内置运行时调用 Devin；否则请求留在 CPA 内核，由 CPA 自带的 Devin 渠道处理。</p><dl class="summary-rows"><div><dt>运行时</dt><dd>由 CPAN 按账号凭证自动管理</dd></div><div><dt>最近检查</dt><dd>{{ formatDate(status.checkedAt) }}</dd></div><div><dt>日志入口</dt><dd><button class="text-link" @click="setTab('logs')">查看 Devin 调用日志<UIcon name="i-ph-arrow-right-bold" /></button></dd></div></dl></section>
     </template>
   </template>
 

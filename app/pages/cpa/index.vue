@@ -7,16 +7,17 @@ async function checkVersion() {
   const result = await run(() => $fetch<{ 'latest-version': string }>(cpaManagementUrl('server/latest-version')))
   if (result.ok) latest.value = result.value['latest-version']
 }
+// Icons match the CPA sidebar entries in shared/modules.ts.
 const features = [
   { to: '/cpa/native', title: '原版完整控制台', description: '完整保留官方面板的管理界面与原生功能。', icon: 'i-ph-browser-bold' },
   { to: '/cpa/oauth', title: 'OAuth 登录', description: '原生和插件渠道登录、设备码、回调及服务账号导入。', icon: 'i-ph-sign-in-bold' },
   { to: '/cpa/credentials', title: '凭证管理', description: '导入、批量启停、刷新、下载及账号状态。', icon: 'i-ph-identification-card-bold' },
-  { to: '/cpa/quota', title: '额度中心', description: '实际调用观察与官方账号额度查询。', icon: 'i-ph-chart-pie-bold' },
-  { to: '/cpa/config', title: '内核配置', description: '完整 JSON、YAML 和原生配置节点。', icon: 'i-ph-sliders-horizontal-bold' },
+  { to: '/cpa/quota', title: '额度中心', description: '实际调用观察与官方账号额度查询。', icon: 'i-ph-gauge-bold' },
+  { to: '/cpa/config', title: '内核配置', description: '完整 JSON、YAML 和原生配置节点。', icon: 'i-ph-gear-six-bold' },
   { to: '/cpa/channels', title: '渠道与模型', description: '上游渠道、模型映射、路由与重试规则。', icon: 'i-ph-git-branch-bold' },
   { to: '/keys', title: 'API Key', description: '选择一个或多个分组，跨模块调用组内模型，并选择是否经过酒馆预设。', icon: 'i-ph-key-bold' },
-  { to: '/cpa/logs', title: '日志与用量', description: '原生日志、用量统计与观测配置。', icon: 'i-ph-list-bullets-bold' },
-  { to: '/cpa/requests', title: '上游请求检查', description: '使用内核认证能力检查上游接口返回。', icon: 'i-ph-arrows-left-right-bold' },
+  { to: '/cpa/logs', title: '日志与用量', description: '原生日志、用量统计与观测配置。', icon: 'i-ph-scroll-bold' },
+  { to: '/cpa/requests', title: '上游请求检查', description: '使用内核认证能力检查上游接口返回。', icon: 'i-ph-flask-bold' },
   { to: '/cpa/plugins', title: '原生插件', description: '运行状态、原生插件配置和官方插件商店。', icon: 'i-ph-plugs-connected-bold' },
 ]
 </script>

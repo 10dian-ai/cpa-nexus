@@ -17,7 +17,7 @@ async function connectCommandcode() {
   const result = await run(() => api<{ connected: boolean; name: string; models: number; error?: string }>('/api/modules/commandcode/connect', { method: 'POST' }))
   if (result.ok) { await refresh(); await refreshBridge() }
 }
-function icon(module: ModuleView) { return module.kind === 'kernel' ? 'i-ph-cpu-bold' : module.id === 'commandcode' ? 'i-ph-command-bold' : 'i-ph-stack-bold' }
+function icon(module: ModuleView) { return module.icon || 'i-ph-stack-bold' }
 </script>
 <template>
   <AppPageHeader title="模块管理" description="CPA 作为核心执行模块，业务能力按模块维护，统一管理状态与入口。"><button class="button" :disabled="pending || busy" @click="refresh(); refreshBridge()"><UIcon name="i-ph-arrow-clockwise-bold" />重新检测</button></AppPageHeader>
