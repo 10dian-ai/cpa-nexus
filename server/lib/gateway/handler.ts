@@ -25,6 +25,7 @@ import { resolveAccountRoutingGroupId } from '../groups'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, normalizeBillingRequest } from '../billing'
 import { DiagnosticResponseFilter } from '../diagnostic-response'
 import { redactLogValue, redactSensitiveText } from '../../../shared/log-privacy'
+import { modelErrorShape } from '../model-errors'
 
 type Protocol = ProviderProtocol
 const PROTOCOLS: readonly Protocol[] = PROVIDER_PROTOCOLS
@@ -360,7 +361,9 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
       const failureMessage = errorMessage || 'Gateway request failed'
       const validationStatus = Number((error as { statusCode?: number }).statusCode)
       httpStatus = validationStatus >= 400 && validationStatus < 500 ? validationStatus : /timeout/i.test(failureMessage) ? 504 : 502
-      gatewayError(event, protocol, httpStatus, httpStatus < 500 ? 'preset_route_error' : 'gateway_upstream_error', failureMessage)
+      // Only a SillyTavern preset that cannot be applied (422) is a preset
+      // routing error; group/permission failures keep their real meaning.
+      gatewayError(event, protocol, httpStatus, httpStatus === 422 ? 'preset_route_error' : httpStatus < 500 ? modelErrorShape(httpStatus).code : 'gateway_upstream_error', failureMessage)
     } else if (!event.node.res.writableEnded && !event.node.res.destroyed) {
       event.node.res.destroy()
     }

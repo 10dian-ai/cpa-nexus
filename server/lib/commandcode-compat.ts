@@ -12,7 +12,8 @@ import { ORIGINAL_KEY_ID_HEADER, ORIGINAL_KEY_SIGNATURE_HEADER, signOriginalGate
 import { assertCpaGroupRoutingSafe, resolveCommandcodeBridgePolicy } from './cpa/group-routing'
 import { registerCpaGroupPolicy, CPA_GROUP_POLICY_HEADER } from './cpa/group-policy'
 import { DiagnosticResponseFilter } from './diagnostic-response'
-import { redactLogValue } from '../../shared/log-privacy'
+import { redactLogValue, redactSensitiveText } from '../../shared/log-privacy'
+import { modelErrorBody } from './model-errors'
 
 const PROTOCOLS = ['chat/completions', 'messages', 'responses']
 const IDLE_MS = 120_000
@@ -26,9 +27,25 @@ function error(event: H3Event, protocol: string, status: number, code: string, m
 
 /** Legacy manager keys enter CPA for protocol conversion; CPA returns to /v1 for native account execution. */
 export async function handleCommandcodeCompatibility(event: H3Event, options?: { protocolPath?: string; body?: Record<string, unknown> }) {
-  await requireModule('commandcode')
   const pathname = getRequestURL(event).pathname
   const path = options?.protocolPath || pathname.replace(/^\/commandcode\/v1\//, '').replace(/\/$/, '')
+  try {
+    return await handleCompatibility(event, path, options)
+  } catch (failure) {
+    // Platform preconditions (module stopped, kernel without the group-policy
+    // adapter, managed channel not registered) used to escape as H3's generic
+    // `{ error: true, statusCode }` page, which model clients cannot parse.
+    if (event.node.res.headersSent) { if (!event.node.res.writableEnded) event.node.res.destroy(); return }
+    const status = Number((failure as { statusCode?: number }).statusCode) || 502
+    const message = failure instanceof Error && (failure as { statusCode?: number }).statusCode ? redactSensitiveText(failure.message) : 'Command Code request failed'
+    event.node.res.statusCode = status
+    event.node.res.setHeader('content-type', 'application/json; charset=utf-8')
+    event.node.res.end(JSON.stringify(modelErrorBody(path, status, message)))
+  }
+}
+
+async function handleCompatibility(event: H3Event, path: string, options?: { protocolPath?: string; body?: Record<string, unknown> }) {
+  await requireModule('commandcode')
   const method = event.node.req.method || 'GET'
   const cors = gatewayCors('/v1/' + path, method, event.node.req.headers['access-control-request-headers'])
   if (cors) {

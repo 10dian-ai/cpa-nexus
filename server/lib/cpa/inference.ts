@@ -15,8 +15,7 @@ import { isModuleEnabled, requireModule } from '../modules'
 import { gatewayCors } from '../gateway/cors'
 import { resolveEnabledKeyGroupIds } from '../groups'
 import { listCpaGroupModels, resolveCpaGroupPolicy } from './group-routing'
-import { listCandidates, listGatewayModels } from '../gateway/accounts'
-import { getProviderModel } from '../official-catalog'
+import { listGatewayModels } from '../gateway/accounts'
 import { privacyHeaders } from '../privacy-headers'
 import { getConfig } from '../config'
 import { CPA_GROUP_POLICY_HEADER, registerCpaGroupPolicy } from './group-policy'
@@ -26,9 +25,13 @@ import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver
 import { insertRequestLog } from '../logs'
 import { DiagnosticResponseFilter } from '../diagnostic-response'
 import { writeWithBackpressure } from '../gateway/transport'
-import { redactLogValue, redactSensitiveText } from '../../../shared/log-privacy'
+import { redactSensitiveText } from '../../../shared/log-privacy'
+import { modelErrorBody } from '../model-errors'
+import { resolveInferenceRoute } from '../inference-route'
 
 const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
+/** Anthropic token counting is answered by the CPA kernel for the same group-scoped sources as `messages`. */
+const COUNT_TOKENS = 'messages/count_tokens'
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
 // Kept for callers upgrading from the former native-key authentication cache.
 export function resetCpaInferenceAuthCache() {}
@@ -40,13 +43,11 @@ function copyHeaders(source: IncomingHttpHeaders): IncomingHttpHeaders {
 function destination(path: string) {
   return new URL(path, validateCpaBaseUrl(process.env.CPA_URL || CPA_DEFAULT_URL))
 }
-function fail(event: H3Event, protocol: string, status: number, message: string) {
+function fail(event: H3Event, protocol: string, status: number, message: string, code?: string) {
   if (event.node.res.destroyed || event.node.res.writableEnded) return
   event.node.res.statusCode = status
   event.node.res.setHeader('content-type', 'application/json; charset=utf-8')
-  event.node.res.end(JSON.stringify(redactLogValue(protocol === 'messages'
-    ? { type: 'error', error: { type: 'invalid_request_error', message } }
-    : { error: { type: 'invalid_request_error', code: 'preset_route_error', message } })))
+  event.node.res.end(JSON.stringify(modelErrorBody(protocol, status, message, code)))
 }
 
 function requestHeaders(event: H3Event, clientKey?: string): IncomingHttpHeaders {
@@ -186,11 +187,15 @@ export async function handleNexusInference(event: H3Event) {
     if (secret.startsWith('ccm_nexus_') && bridgeProtocol && verifyOriginalGatewayKey(event.node.req.headers)) {
       return await handleGateway(event, { protocolPath: bridgeProtocol })
     }
-    if (!((path === 'models' && event.method === 'GET') || ((protocol || path === 'systemone') && event.method === 'POST'))) { fail(event, path, 404, 'Unsupported model endpoint'); return }
+    const countTokens = path === COUNT_TOKENS
+    if (!((path === 'models' && event.method === 'GET') || ((protocol || countTokens || path === 'systemone') && event.method === 'POST'))) { fail(event, path, 404, 'Unsupported model endpoint', 'unsupported_endpoint'); return }
     const key = await authenticateGatewayKey(secret)
     if (!key || secret.startsWith('ccm_nexus_')) { fail(event, path, 401, 'A valid model API key is required'); return }
     const moduleId = key.moduleId || 'commandcode'
-    if (moduleId === 'commandcode') return await handleCommandcodeCompatibility(event, { protocolPath: path })
+    if (moduleId === 'commandcode') {
+      if (countTokens) { fail(event, path, 404, 'Token counting is only available for CPA sources', 'unsupported_endpoint'); return }
+      return await handleCommandcodeCompatibility(event, { protocolPath: path })
+    }
     const groupIds = await resolveEnabledKeyGroupIds(key.id)
     if (!groupIds.length) { fail(event, path, 403, '这个模型 API Key 没有已启用的分组'); return }
     if (path === 'models') return await listModelGroups(event, key.id, groupIds, moduleId)
@@ -202,26 +207,30 @@ export async function handleNexusInference(event: H3Event) {
     let body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024)
     const model = typeof body.model === 'string' ? body.model.trim() : ''
     if (!model || model.length > 256) { fail(event, path, 400, 'model must be a non-empty string of at most 256 characters'); return }
-    if (moduleId === 'devin2api' || (moduleId === 'auto' && model.startsWith('devin/'))) {
-      return await handleDevin2ApiInference(event, { keyId: key.id, groupIds, protocolPath: path, body })
+    const route = await resolveInferenceRoute({ moduleId, model, keyId: key.id, groupIds })
+    if (route.target === 'reject') { fail(event, path, route.status, route.message); return }
+    if (route.target !== 'cpa' && countTokens) { fail(event, path, 404, 'Token counting is only available for CPA sources', 'unsupported_endpoint'); return }
+    if (route.target === 'devin2api') {
+      return await handleDevin2ApiInference(event, { keyId: key.id, groupIds, protocolPath: path, body, selection: route.selection })
     }
-    if (model.startsWith('devin/')) { fail(event, path, 403, 'This API key is not bound to the Devin module'); return }
-    if (moduleId === 'auto') {
-      if (model.startsWith('commandcode/')) return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
-      // Provider IDs are unambiguous for the existing CommandCode clients. Keep
-      // their protocol bridge and retry pool, restricted to this same key's groups.
-      if (await isModuleEnabled('commandcode')) {
-        let provider: Awaited<ReturnType<typeof getProviderModel>> = null
-        try { provider = await getProviderModel(model) } catch { /* CPA can remain usable during a catalog outage. */ }
-        if (provider && (await listCandidates(model, key.id)).length) return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
-      }
-    } else if (model.startsWith('commandcode/')) { fail(event, path, 403, 'This legacy key is bound to CPA'); return }
+    if (route.target === 'commandcode') return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
     const clientKey = process.env.CPA_CLIENT_KEY?.trim()
     if (!clientKey) { fail(event, path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
     await requireModule('cpa')
     const selected = await resolveCpaGroupPolicy(model, groupIds, key.id)
-    if (!selected) { fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return }
+    if (!selected) {
+      if (route.deferredError) throw route.deferredError
+      fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return
+    }
     body.model = model
+    if (countTokens) {
+      // Token counting is not a generation: no preset stack, billing policy or
+      // request log, only the same group-scoped CPA sources as /messages.
+      body.model = selected.model
+      const policy = selected.legacyPrefix ? undefined : await registerCpaGroupPolicy({ keyId: key.id,
+        allowedAuthIDs: selected.allowedAuthIDs, allowedPluginIDs: selected.allowedPluginIDs })
+      return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey, policy)
+    }
     const presets = await resolveKeyPresetStack(key.id, [selected.selectedGroupId])
     const generationType = resolvePresetGenerationType(body, event.node.req.headers)
     if (presets.length) {
@@ -269,7 +278,12 @@ export async function handleNexusInference(event: H3Event) {
     }
   } catch (error) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }
-    const status = Number((error as { statusCode?: number }).statusCode) || (/timeout/i.test(String(error)) ? 504 : 502)
-    fail(event, path, status, status < 500 && error instanceof Error ? error.message : 'CPA request failed; check the core connection')
+    // Platform errors carry an explicit status and an already-redacted, actionable
+    // message (module stopped, kernel needs the group-policy patch, catalog down).
+    // Only bare transport failures fall back to the generic connection message.
+    const explicit = Number((error as { statusCode?: number }).statusCode)
+    const status = explicit || (/timeout/i.test(String(error)) ? 504 : 502)
+    fail(event, path, status, explicit && error instanceof Error && error.message ? redactSensitiveText(error.message) : 'CPA request failed; check the core connection',
+      status === 422 ? 'preset_route_error' : undefined)
   }
 }

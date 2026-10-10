@@ -2,7 +2,7 @@ import { getRequestURL, type H3Event } from 'h3'
 import { requireModule } from '../modules'
 import { insertRequestLog } from '../logs'
 import { forwardDevin2Api } from './forward'
-import { listDevin2ApiGroupModels, resolveDevin2ApiModel } from './routing'
+import { listDevin2ApiGroupModels, resolveDevin2ApiModel, type Devin2ApiSelection } from './routing'
 import { resolveKeyPresetStack } from '../presets'
 import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
@@ -19,7 +19,12 @@ function pathFor(event: H3Event, explicit?: string) {
   return path
 }
 
-export async function handleDevin2ApiInference(event: H3Event, input: { keyId: string; groupIds: string[]; protocolPath?: string; body?: JsonObject }) {
+/**
+ * `selection` is the account the platform router already resolved for this
+ * exact model and key; passing it avoids a second catalog lookup that could
+ * pick a different account (or fail) between routing and forwarding.
+ */
+export async function handleDevin2ApiInference(event: H3Event, input: { keyId: string; groupIds: string[]; protocolPath?: string; body?: JsonObject; selection?: Devin2ApiSelection }) {
   await requireModule('devin2api')
   const path = pathFor(event, input.protocolPath)
   if (path === 'models') {
@@ -31,7 +36,7 @@ export async function handleDevin2ApiInference(event: H3Event, input: { keyId: s
   }
   let body: JsonObject = { ...(input.body || {}) }
   if (typeof body.model !== 'string' || !body.model.trim()) throw fail(400, 'model must be a non-empty string')
-  const selected = await resolveDevin2ApiModel(body.model, input.groupIds)
+  const selected = input.selection || await resolveDevin2ApiModel(body.model, input.groupIds)
   if (!selected) throw fail(404, '当前 Key 的分组中没有可调用的这个 Devin 模型')
   event.node.res.setHeader('x-nexus-module', 'devin2api')
   event.node.res.setHeader('x-nexus-source-id', selected.account.id)

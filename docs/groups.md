@@ -8,7 +8,7 @@
 
 1. 在「调用分组」点击「创建分组」，也可在 CPA 凭证的分组编辑弹窗中直接新建。
 2. 在「CPA 内核 → 凭证管理」的「调用分组」列点击「编辑分组」，选择一个或多个组并保存；同一文件展开的虚拟凭证共享来源分组。
-3. 「CPA 凭证分组」「CommandCode 账号分组」和「Devin 账号分组」分别显示所属模块的来源。
+3. 侧栏中「CPA 内核 → 凭证分组」「CommandCode 模块 → 账号分组」和「Devin 模块 → 账号分组」分别显示所属模块的来源。
 4. 在 API Key 页面选择相同组：只选 CommandCode 调用该组账号，只选 CPA 调用该组凭证；同时选择可跨模块调用。
 
 使用 Basis Points 等独立执行器时，插件来源和它需要读取的底层账号凭证应加入该 Key 所选分组。账号凭证内容不会因修改分组而改变。
@@ -24,6 +24,19 @@
 - 酒馆模块按分组管理：选择经过酒馆的模型 Key，先使用自己的组内来源，再按该 Key 所选启用分组的预设开关、顺序和覆盖配置叠加。没有分组覆盖时继承全局预设库；多个分组同时启用时按分组创建时间和 ID 合并，同一预设只取第一个分组的配置。
 
 两个模块同时提供相同模型 ID 时，当前入口优先使用有可用组内账号的 CommandCode 官方 Provider ID；否则匹配组内 CPA 来源。需要明确指定 CPA 来源时，可以使用该来源允许的原始前缀模型名。多个组内 CPA 来源同名时轮换，所有选择均不越过授权分组。
+
+### `devin/` 模型：CPA 原生 Devin 渠道与 Devin 模块
+
+CPA 内核自带的 Devin 渠道（OAuth/凭证管理里的 `devin` 凭证）和 Devin 模块都使用 `devin/<模型>` 这个命名空间，两者互不依赖：
+
+1. Key 绑定 Devin 模块（`devin2api`）时，所有请求都交给 Devin 模块。
+2. `auto` Key 调用 `devin/` 模型时，只有 Devin 模块已启用，且 Key 的某个启用分组里有能提供该模型的 Devin 模块账号，才进入 Devin 模块，并使用命中分组的酒馆预设。
+3. 其他情况（Devin 模块停用、Key 未选择 Devin 分组、绑定 CPA 的 Key）都留在 CPA 内核，由 CPA 原生 Devin 渠道按组内凭证执行。
+4. Devin 模块目录暂时不可用、而 CPA 也没有这个模型时，返回 Devin 模块自己的错误，便于排查。
+
+`POST /v1/messages/count_tokens` 也接受 `ccm_` 模型 Key：它与 `/v1/messages` 使用相同的组内 CPA 来源，不叠加预设、不记账；只由 Devin 模块或 CommandCode 提供的模型不支持计数，返回 404。
+
+平台拒绝的请求按 HTTP 状态返回对应的错误类型（OpenAI 格式：`invalid_api_key`、`permission_denied`、`model_not_found`、`service_unavailable` 等；Anthropic 格式：`authentication_error`、`permission_error`、`not_found_error`、`overloaded_error` 等）。只有酒馆预设无法应用（HTTP 422）时才是 `preset_route_error`。
 
 ## CPA 来源与原生功能
 

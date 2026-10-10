@@ -42,6 +42,15 @@ describe('legacy manager ingress via local CPA', () => {
   const post = (url: string, body: Record<string, unknown> = { model: 'claude-test', messages: [{ role: 'user', content: 'hello' }] }, headers: Record<string, string> = {}) => actualFetch(url + '/chat/completions', {
     method: 'POST', headers: { authorization: 'Bearer ccm_original-client-key', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
   })
+  it('returns a protocol-shaped error when a platform precondition fails', async () => {
+    fixture.module.mockRejectedValue(Object.assign(new Error('此模块已停用，请在模块管理中启用'), { statusCode: 503 }))
+    const chat = await post(url)
+    expect(chat.status).toBe(503)
+    expect(await chat.json()).toEqual({ error: { type: 'server_error', code: 'service_unavailable', message: '此模块已停用，请在模块管理中启用' } })
+    const messages = await actualFetch(url + '/messages', { method: 'POST', headers: { authorization: 'Bearer ccm_original-client-key', 'content-type': 'application/json' }, body: '{"model":"claude-test"}' })
+    expect(await messages.json()).toEqual({ type: 'error', error: { type: 'overloaded_error', message: '此模块已停用，请在模块管理中启用' } })
+    expect(fixture.upstream).not.toHaveBeenCalled()
+  })
   it('aliases the exact model once, isolates credentials and signs the authenticated original key ID', async () => {
     for (const model of ['claude-test', 'commandcode/claude-test']) {
       fixture.upstream.mockResolvedValueOnce(new Response('{}', { headers: { 'x-request-id': 'inner-request' } }))
