@@ -1,0 +1,164 @@
+diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
+index e734569748bdc33ed23ad9174b485672e33a441c..c876540affa491a838df7ecd46ecd864ed44062d 100644
+--- a/internal/runtime/executor/helps/devin_wire.go
++++ b/internal/runtime/executor/helps/devin_wire.go
+@@ -1035,7 +1035,7 @@ func ParseDevinTrailerError(payload []byte) (statusCode int, err error) {
+ 	case "permission_denied":
+ 		if strings.Contains(msgLower, "high demand") {
+ 			httpCode = http.StatusTooManyRequests
+-		} else if strings.Contains(msgLower, "internal error") {
++		} else if strings.HasPrefix(strings.TrimSpace(msgLower), "an internal error occurred") {
+ 			// Devin occasionally reports a transient backend failure with the
+ 			// permission_denied Connect code. Keep it on the retryable upstream
+ 			// error path instead of treating it as a credential entitlement failure.
+diff --git a/internal/runtime/executor/helps/nexus_devin_errors_test.go b/internal/runtime/executor/helps/nexus_devin_errors_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e69cdbc59324020ca1f6ed42a11e2b87a2dd59f
+--- /dev/null
++++ b/internal/runtime/executor/helps/nexus_devin_errors_test.go
+@@ -0,0 +1,35 @@
++package helps
++
++import (
++	"net/http"
++	"strings"
++	"testing"
++)
++
++func TestNexusDevinInternalPermissionErrorIsTransient(t *testing.T) {
++	cases := []struct {
++		name, trailer string
++		want          int
++	}{
++		{"masked internal permission error", `{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: synthetic-trace)"}}`, http.StatusBadGateway},
++		{"case insensitive internal permission error", `{"error":{"code":"PERMISSION_DENIED","message":"An Internal Error Occurred (trace ID: synthetic-trace)"}}`, http.StatusBadGateway},
++		{"leading whitespace internal template", `{"error":{"code":"permission_denied","message":"  an internal error occurred (trace ID: synthetic-trace)"}}`, http.StatusBadGateway},
++		{"existing masked invalid argument error", `{"error":{"code":"invalid_argument","message":"an internal error occurred (trace ID: synthetic-trace)"}}`, http.StatusBadGateway},
++		{"actual permission denial", `{"error":{"code":"permission_denied","message":"model access is not allowed for this account"}}`, http.StatusForbidden},
++		{"permission message only mentions internal template", `{"error":{"code":"permission_denied","message":"model access is not allowed; a previous unrelated failure reported an internal error occurred"}}`, http.StatusForbidden},
++		{"other permission errors keep classification", `{"error":{"code":"permission_denied","message":"Unable to process request due to an MCP configuration issue."}}`, http.StatusForbidden},
++		{"high demand keeps classification", `{"error":{"code":"permission_denied","message":"The model is currently in high demand, please try again later"}}`, http.StatusTooManyRequests},
++		{"unrelated authentication error", `{"error":{"code":"unauthenticated","message":"invalid credentials"}}`, http.StatusUnauthorized},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			status, err := ParseDevinTrailerError([]byte(tc.trailer))
++			if status != tc.want || err == nil {
++				t.Fatalf("status/error = %d/%v, want %d/non-nil", status, err, tc.want)
++			}
++			if strings.Contains(tc.trailer, "synthetic-trace") && !strings.Contains(err.Error(), "synthetic-trace") {
++				t.Fatalf("upstream diagnostic was lost: %v", err)
++			}
++		})
++	}
++}
+diff --git a/sdk/api/handlers/nexus_devin_errors_test.go b/sdk/api/handlers/nexus_devin_errors_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..4b7d87a61d88144c88e7e0985c059af8a553e3e3
+--- /dev/null
++++ b/sdk/api/handlers/nexus_devin_errors_test.go
+@@ -0,0 +1,104 @@
++package handlers
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++type nexusDevinErrorTransport func(*http.Request) (*http.Response, error)
++
++func (f nexusDevinErrorTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func TestNexusDevinInternalFailureCooldown(t *testing.T) {
++	for _, tc := range []struct {
++		name, message            string
++		wantStatus               int
++		minCooldown, maxCooldown time.Duration
++	}{
++		{"internal", "an internal error occurred (trace ID: synthetic-trace)", http.StatusBadGateway, 45 * time.Second, 75 * time.Second},
++		{"genuine permission", "model access is not allowed for this account", http.StatusForbidden, 29 * time.Minute, 31 * time.Minute},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			const model = "devin/claude-opus-5-5"
++			id := "synthetic-nexus-devin-error-" + tc.name
++			manager := coreauth.NewManager(nil, nil, nil)
++			manager.SetRetryConfig(0, 0, 0)
++			manager.RegisterExecutor(executor.NewDevinExecutor(&config.Config{}))
++			_, err := manager.Register(context.Background(), &coreauth.Auth{ID: id, Provider: "devin", Status: coreauth.StatusActive, Attributes: map[string]string{"session_token": "synthetic-token"}})
++			if err != nil {
++				t.Fatal(err)
++			}
++			modelInfo := registry.LookupDevinModel(model)
++			if modelInfo == nil {
++				t.Fatal("missing pinned Opus model metadata")
++			}
++			registry.GetGlobalRegistry().RegisterClient(id, "devin", []*registry.ModelInfo{modelInfo})
++			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++			calls := 0
++			wire := helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{"error":{"code":"permission_denied","message":"`+tc.message+`"}}`))
++			rt := nexusDevinErrorTransport(func(r *http.Request) (*http.Response, error) {
++				calls++
++				if r.Header.Get("Authorization") != "Basic synthetic-token-synthetic-token" {
++					t.Fatal("unexpected synthetic credential header")
++				}
++				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/connect+proto"}}, Body: io.NopCloser(bytes.NewReader(wire))}, nil
++			})
++			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", rt)
++			payload := []byte(`{"model":"devin/claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`)
++			req := coreexecutor.Request{Model: model, Payload: payload}
++			opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload}
++			_, err = manager.Execute(ctx, []string{"devin"}, req, opts)
++			if statusFromError(err) != tc.wantStatus {
++				t.Fatalf("first request status = %d (%v), want %d", statusFromError(err), err, tc.wantStatus)
++			}
++			updated, ok := manager.GetByID(id)
++			if !ok || updated == nil {
++				t.Fatal("missing registered synthetic auth")
++			}
++			state := updated.ModelStates[model]
++			if state == nil {
++				t.Fatalf("missing model failure state: %#v", updated.ModelStates)
++			}
++			cooldown := time.Until(state.NextRetryAfter)
++			if cooldown < tc.minCooldown || cooldown > tc.maxCooldown {
++				t.Fatalf("model cooldown = %s, expected %s..%s", cooldown, tc.minCooldown, tc.maxCooldown)
++			}
++			if state.Quota.Exceeded {
++				t.Fatal("internal/permission error incorrectly became a quota error")
++			}
++			if updated.Disabled {
++				t.Fatal("upstream rejection disabled the entire credential")
++			}
++			_, err = manager.Execute(ctx, []string{"devin"}, req, opts)
++			err = enrichAuthSelectionError(err, []string{"devin"}, model)
++			var authErr *coreauth.Error
++			if !errors.As(err, &authErr) || authErr.Code != "auth_unavailable" || statusFromError(err) != 503 {
++				t.Fatalf("cooled request error = %v, want auth_unavailable/503", err)
++			}
++			for _, part := range []string{"providers=devin", "model=" + model, "last upstream error:", "permission_denied", tc.message} {
++				if !strings.Contains(err.Error(), part) {
++					t.Fatalf("missing %q in cooled request error: %v", part, err)
++				}
++			}
++			if calls != 1 {
++				t.Fatalf("cooled credential made %d upstream calls, want 1", calls)
++			}
++			t.Logf("first upstream status=%d; cooldown=%s; next request=%v", tc.wantStatus, cooldown, err)
++		})
++	}
++}

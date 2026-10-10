@@ -11,6 +11,8 @@ import { makeInternalBridgeHeaders, readJsonBodyLimited, writeWithBackpressure }
 import { ORIGINAL_KEY_ID_HEADER, ORIGINAL_KEY_SIGNATURE_HEADER, signOriginalGatewayKey } from './commandcode-identity'
 import { assertCpaGroupRoutingSafe, resolveCommandcodeBridgePolicy } from './cpa/group-routing'
 import { registerCpaGroupPolicy, CPA_GROUP_POLICY_HEADER } from './cpa/group-policy'
+import { DiagnosticResponseFilter } from './diagnostic-response'
+import { redactLogValue } from '../../shared/log-privacy'
 
 const PROTOCOLS = ['chat/completions', 'messages', 'responses']
 const IDLE_MS = 120_000
@@ -19,7 +21,7 @@ function error(event: H3Event, protocol: string, status: number, code: string, m
   if (response.destroyed || response.writableEnded) return
   response.statusCode = status
   response.setHeader('content-type', 'application/json; charset=utf-8')
-  response.end(JSON.stringify(protocol === 'messages' ? { type: 'error', error: { type: code, message } } : { error: { type: code, code, message } }))
+  response.end(JSON.stringify(redactLogValue(protocol === 'messages' ? { type: 'error', error: { type: code, message } } : { error: { type: code, code, message } })))
 }
 
 /** Legacy manager keys enter CPA for protocol conversion; CPA returns to /v1 for native account execution. */
@@ -93,6 +95,7 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
     if (timer) clearTimeout(timer)
     if (!upstream.body) throw new Error('CPA response has no body')
     reader = upstream.body.getReader()
+    const filter = new DiagnosticResponseFilter(upstream.status, upstream.headers.get('content-type') || 'application/json')
     event.node.res.statusCode = upstream.status
     event.node.res.setHeader('content-type', upstream.headers.get('content-type') || 'application/json; charset=utf-8')
     event.node.res.setHeader('cache-control', 'no-store')
@@ -104,8 +107,9 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
       if (timer) clearTimeout(timer)
       if (controller.signal.aborted) throw controller.signal.reason
       if (next.done) break
-      await writeWithBackpressure(event.node.res, next.value, controller.signal)
+      for (const safe of filter.push(next.value)) await writeWithBackpressure(event.node.res, safe, controller.signal)
     }
+    for (const safe of filter.end()) await writeWithBackpressure(event.node.res, safe, controller.signal)
     event.node.res.end()
   } catch (failure) {
     if (!controller.signal.aborted) controller.abort(failure)

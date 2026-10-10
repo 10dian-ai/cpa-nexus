@@ -1,5 +1,6 @@
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
+import { createBrotliDecompress, createUnzip } from 'node:zlib'
 import { getRequestURL, type H3Event } from 'h3'
 import { CPA_DEFAULT_URL, validateCpaBaseUrl } from './client'
 import { handleCommandcodeCompatibility } from '../commandcode-compat'
@@ -23,6 +24,9 @@ import { handleDevin2ApiInference } from '../devin2api/inference'
 import { listDevin2ApiGroupModels } from '../devin2api/routing'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
 import { insertRequestLog } from '../logs'
+import { DiagnosticResponseFilter } from '../diagnostic-response'
+import { writeWithBackpressure } from '../gateway/transport'
+import { redactLogValue, redactSensitiveText } from '../../../shared/log-privacy'
 
 const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
 const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
@@ -40,9 +44,9 @@ function fail(event: H3Event, protocol: string, status: number, message: string)
   if (event.node.res.destroyed || event.node.res.writableEnded) return
   event.node.res.statusCode = status
   event.node.res.setHeader('content-type', 'application/json; charset=utf-8')
-  event.node.res.end(JSON.stringify(protocol === 'messages'
+  event.node.res.end(JSON.stringify(redactLogValue(protocol === 'messages'
     ? { type: 'error', error: { type: 'invalid_request_error', message } }
-    : { error: { type: 'invalid_request_error', code: 'preset_route_error', message } }))
+    : { error: { type: 'invalid_request_error', code: 'preset_route_error', message } })))
 }
 
 function requestHeaders(event: H3Event, clientKey?: string): IncomingHttpHeaders {
@@ -64,6 +68,8 @@ export async function forwardNativeCpa(event: H3Event, path: string, body?: Reco
   usageObserver?: BillingUsageObserver) {
   const url = destination(path)
   const headers = requestHeaders(event, clientKey)
+  // Inspect diagnostics as text even when the caller advertises compression.
+  headers['accept-encoding'] = 'identity'
   if (groupPolicy) headers[CPA_GROUP_POLICY_HEADER] = groupPolicy
   let transformed: Buffer | undefined
   if (body) {
@@ -75,25 +81,47 @@ export async function forwardNativeCpa(event: H3Event, path: string, body?: Reco
   const request = url.protocol === 'https:' ? httpsRequest : httpRequest
   await new Promise<void>((resolve, reject) => {
     let reply: IncomingMessage | undefined
+    const downstream = new AbortController()
     const upstream = request(url, { method: event.method, headers }, response => {
       reply = response
-      event.node.res.statusCode = response.statusCode || 502
+      const status = response.statusCode || 502
+      const contentType = response.headers['content-type'] || ''
+      const inspect = status >= 400 || /^(?:text\/event-stream|application\/(?:[\w.+-]*\+)?json)(?:;|$)/i.test(contentType)
+      event.node.res.statusCode = status
       for (const [name, value] of Object.entries(copyHeaders(response.headers))) {
+        if (inspect && ['content-length', 'content-encoding', 'etag', 'last-modified', 'content-md5', 'digest'].includes(name)) continue
         if (value !== undefined && name !== BILLING_USAGE_POLICY_HEADER) event.node.res.setHeader(name, value)
       }
       event.node.res.setHeader('x-accel-buffering', 'no')
       response.on('error', reject)
       response.on('aborted', () => reject(new Error('CPA response interrupted')))
-      if (usageObserver) {
-        response.on('data', chunk => usageObserver.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-        response.on('end', () => usageObserver.end())
+      if (!inspect) {
+        if (usageObserver) {
+          response.on('data', chunk => usageObserver.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+          response.on('end', () => usageObserver.end())
+        }
+        response.pipe(event.node.res)
+        return
       }
-      response.pipe(event.node.res)
+      const filter = new DiagnosticResponseFilter(status, contentType)
+      const encoding = String(response.headers['content-encoding'] || '').toLowerCase()
+      const source = encoding === 'br' ? response.pipe(createBrotliDecompress())
+        : ['gzip', 'deflate'].includes(encoding) ? response.pipe(createUnzip()) : response
+      void (async () => {
+        for await (const chunk of source) {
+          const raw = Buffer.from(chunk)
+          usageObserver?.push(raw)
+          for (const safe of filter.push(raw)) await writeWithBackpressure(event.node.res, safe, downstream.signal)
+        }
+        usageObserver?.end()
+        for (const safe of filter.end()) await writeWithBackpressure(event.node.res, safe, downstream.signal)
+        event.node.res.end()
+      })().catch(reject)
     })
     const cleanup = () => { event.node.res.off('close', closed); event.node.res.off('finish', finished) }
     const finished = () => { cleanup(); resolve() }
     const closed = () => {
-      if (!event.node.res.writableFinished) { upstream.destroy(); reply?.destroy() }
+      if (!event.node.res.writableFinished) { downstream.abort(); upstream.destroy(); reply?.destroy() }
       cleanup(); resolve()
     }
     event.node.res.once('close', closed)
@@ -225,7 +253,7 @@ export async function handleNexusInference(event: H3Event) {
         streaming: String(event.node.res.getHeader('content-type') || '').includes('text/event-stream'), usage: usageWithMetadata,
         errorMessage: statusCode >= 400 ? `CPA core returned HTTP ${statusCode}` : null,
         requestBody: body, responseBody: null, responseTruncated: false,
-      }).catch(error => console.error('[cpa] Request log could not be persisted', error instanceof Error ? error.message : 'Storage unavailable'))
+      }).catch(error => console.error('[cpa] Request log could not be persisted', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable')))
       return
     } catch (error) {
       const partialUsage = usageObserver.value()

@@ -380,6 +380,21 @@ describe('gateway over real HTTP connections', () => {
       expect(fixture.recordAllowed).toHaveBeenCalledWith('account-a', 'fixture/model')
     })
   })
+  it('redacts upstream HTTP and SSE errors before clients see them without changing real answer deltas', async () => {
+    const failure = { error: { type: 'authentication_error', message: 'Anthropic HTTPS://upstream.example rejected' } }
+    fixture.upstream.mockResolvedValueOnce(new Response(JSON.stringify(failure), { status: 401, headers: { 'content-type': 'application/json' } }))
+    const rejected = await post(url)
+    expect(rejected.status).toBe(401)
+    expect(await rejected.json()).toEqual({ error: { type: 'authentication_error', message: '*** *** rejected' } })
+    const answer = 'data: {"choices":[{"delta":{"content":"Gemini https://answer.example"}}]}\n\n'
+    fixture.upstream.mockResolvedValueOnce(new Response(answer + 'event: error\ndata: ' + JSON.stringify(failure) + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }))
+    const streamed = await (await post(url, true)).text()
+    expect(streamed.startsWith(answer)).toBe(true)
+    expect(streamed).toContain('"message":"*** *** rejected"')
+    expect(streamed).not.toContain('Anthropic')
+    expect(streamed).not.toContain('upstream.example')
+    expect(fixture.recordFailure).toHaveBeenCalledWith('account-a', 'fixture/model', expect.objectContaining({ category: 'authentication', message: 'authentication_error | Anthropic HTTPS://upstream.example rejected' }))
+  })
   it('pauses the upstream idle timer while waiting for downstream backpressure', async () => {
     const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
     const clearSpy = vi.spyOn(globalThis, 'clearTimeout')

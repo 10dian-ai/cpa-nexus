@@ -3,6 +3,7 @@ import { CpaClientError, cpaPathSegments, createCpaClient } from '../../../lib/c
 import { cpaDownstreamAbort } from '../../../lib/cpa/http'
 import { applyCpaPrivacyAfterResponse } from '../../../lib/cpa/privacy-hooks'
 import { parseClientKeyList, parseJsonAccessKeyPayload, withReservedClientKey } from '../../../lib/cpa/access-keys'
+import { redactManagementResponse, resolveDiagnosticDownloadPath } from '../../../lib/diagnostic-response'
 
 const PREFIX = '/api/cpa/management/'
 const ACCESS_KEYS_PATH = 'config/access/api-keys'
@@ -25,7 +26,8 @@ export default defineEventHandler(async event => {
   const downstream = cpaDownstreamAbort(event)
   try {
     const rawBody = ['GET', 'HEAD'].includes(event.method) ? undefined : await readRawBody(event, false)
-    const path = cpaPathSegments(pathname.slice(PREFIX.length)).join('/')
+    const client = createCpaClient()
+    const path = await resolveDiagnosticDownloadPath(cpaPathSegments(pathname.slice(PREFIX.length)).join('/'), index => client.request({ path: index, signal: downstream.signal }))
     const reservedKey = process.env.CPA_CLIENT_KEY?.trim()
     const protectAccessKeys = path === ACCESS_KEYS_PATH && !!reservedKey
     if (protectAccessKeys && /[\r\n]/.test(reservedKey)) throw new CpaClientError('invalid_configuration', 'CPA_CLIENT_KEY 配置无效', 503)
@@ -38,7 +40,7 @@ export default defineEventHandler(async event => {
       // credential used by unified model keys and CommandCode protocol conversion.
       method = 'PUT'
     }
-    const response = await createCpaClient().request({
+    const response = await client.request({
       path, method,
       query: new URLSearchParams(question < 0 ? '' : target.slice(question + 1)),
       body,
@@ -46,6 +48,7 @@ export default defineEventHandler(async event => {
       signal: downstream.signal,
     })
     await applyCpaPrivacyAfterResponse(path, event.method, response)
+    redactManagementResponse(path, response)
     setResponseStatus(event, response.status)
     for (const [key, value] of response.headers) setHeader(event, key, value)
     if (path === ACCESS_KEYS_PATH && event.method === 'GET' && response.status >= 200 && response.status < 300) {

@@ -3,6 +3,8 @@ import { isModuleEnabled, requireModule } from '../modules'
 import { getDb } from '../db'
 import { getDevin2ApiRuntimeCount, isDevin2ApiBinaryAvailable } from './runtime'
 import { listDevin2ApiModels } from './catalog'
+import { redactLogFields } from '../logs'
+import { redactSensitiveText } from '../../../shared/log-privacy'
 import {
   createDevin2ApiAccount, deleteDevin2ApiAccount, getDevin2ApiAccount,
   listDevin2ApiAccounts, patchDevin2ApiAccount,
@@ -44,10 +46,11 @@ export async function listDevinModels() {
 export async function listDevinLogs(query: { page: number; pageSize: number; model?: string; status?: string }) {
   const db = getDb(); const offset = (query.page - 1) * query.pageSize
   const model = (query.model || '').slice(0, 200); const status = query.status || ''; const pattern = `%${model.replace(/[\\%_]/g, '\\$&')}%`
-  const condition = db`WHERE l.module_id='devin2api' AND (${model}='' OR l.model ILIKE ${pattern}) AND (${status}='' OR l.status=${status})`
+  const safePattern = `%${redactSensitiveText(model).replace(/[\\%_]/g, '\\$&')}%`
+  const condition = db`WHERE l.module_id='devin2api' AND (${model}='' OR l.model ILIKE ${pattern} OR l.model ILIKE ${safePattern}) AND (${status}='' OR l.status=${status})`
   const [rows, count] = await Promise.all([
     db`SELECT l.id,l.account_id,l.source_id,a.label AS account_label,k.name AS key_name,l.model,l.protocol,l.status,l.http_status,l.duration_ms,l.streaming,l.usage,l.error_message,l.response_truncated,l.created_at FROM request_logs l LEFT JOIN devin2api_accounts a ON a.id::text=l.source_id LEFT JOIN gateway_keys k ON k.id=l.key_id ${condition} ORDER BY l.created_at DESC,l.id DESC LIMIT ${query.pageSize} OFFSET ${offset}`,
     db`SELECT count(*)::int AS total FROM request_logs l ${condition}`,
   ])
-  return { items: rows.map((r: any) => ({ id: r.id, accountId: r.account_id || r.source_id || null, accountLabel: r.account_label, keyName: r.key_name, model: r.model, protocol: r.protocol, status: r.status, httpStatus: r.http_status, durationMs: r.duration_ms, streaming: r.streaming, usage: r.usage, errorMessage: r.error_message, responseTruncated: r.response_truncated, createdAt: new Date(r.created_at).toISOString() })), total: Number(count[0]?.total || 0), page: query.page, pageSize: query.pageSize }
+  return { items: rows.map((r: any) => redactLogFields({ id: r.id, accountId: r.account_id || r.source_id || null, accountLabel: r.account_label, keyName: r.key_name, model: r.model, protocol: r.protocol, status: r.status, httpStatus: r.http_status, durationMs: r.duration_ms, streaming: r.streaming, usage: r.usage, errorMessage: r.error_message, responseTruncated: r.response_truncated, createdAt: new Date(r.created_at).toISOString() })), total: Number(count[0]?.total || 0), page: query.page, pageSize: query.pageSize }
 }

@@ -46,10 +46,12 @@ jobs:
           git -C "$core_source" fetch --depth 1 origin "$CPA_UPSTREAM_REF"
           git -C "$core_source" checkout --detach FETCH_HEAD
           test "$(git -C "$core_source" rev-parse HEAD)" = "$CPA_UPSTREAM_REF"
-          git -C "$core_source" apply --check "$GITHUB_WORKSPACE/ops/cpa-nexus/nexus-plugins.patch"
-          git -C "$core_source" apply "$GITHUB_WORKSPACE/ops/cpa-nexus/nexus-plugins.patch"
+          for patch in nexus-plugins.patch nexus-log-redaction.patch nexus-devin-errors.patch; do
+            git -C "$core_source" apply --check "$GITHUB_WORKSPACE/ops/cpa-nexus/$patch"
+            git -C "$core_source" apply "$GITHUB_WORKSPACE/ops/cpa-nexus/$patch"
+          done
           cd "$core_source"
-          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./internal/pluginhost ./internal/api ./internal/runtime/executor/helps -count=1
+          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./sdk/api/handlers/claude ./sdk/api/handlers/openai ./internal/pluginhost ./internal/api ./internal/logging ./internal/runtime/executor/helps -count=1
           CGO_ENABLED=1 go build -buildvcs=false -ldflags="-X main.Version=8.0.15 -X main.Commit=${CPA_UPSTREAM_REF}+nexus -X main.BuildDate=source-pinned" -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
           echo "TEST_CPA_BINARY=$RUNNER_TEMP/cli-proxy-api-nexus" >> "$GITHUB_ENV"
       - run: npm ci

@@ -1,0 +1,1147 @@
+diff --git a/internal/api/handlers/management/auth_files_provider_oauth.go b/internal/api/handlers/management/auth_files_provider_oauth.go
+index 48fc4ef4f32ff16ae8c08dec75468f0ec5366433..de488e8508f83a01dc93a84000da2855df065a28 100644
+--- a/internal/api/handlers/management/auth_files_provider_oauth.go
++++ b/internal/api/handlers/management/auth_files_provider_oauth.go
+@@ -38,7 +38,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
+ 
+-	fmt.Println("Initializing Claude authentication...")
++	log.Info("Initializing Claude authentication...")
+ 
+ 	// Generate PKCE codes
+ 	pkceCodes, err := claude.GeneratePKCECodes()
+@@ -114,7 +114,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ 			}
+ 		}
+ 
+-		fmt.Println("Waiting for authentication callback...")
++		log.Info("Waiting for authentication callback...")
+ 		// Wait up to 5 minutes
+ 		resultMap, errWait := waitForFile(waitFile, 5*time.Minute)
+ 		if errWait != nil {
+@@ -184,11 +184,11 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ 			return
+ 		}
+ 
+-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
++		log.Infof("Authentication successful! Token saved to %s\n", savedPath)
+ 		if bundle.APIKey != "" {
+-			fmt.Println("API key obtained and saved")
++			log.Info("API key obtained and saved")
+ 		}
+-		fmt.Println("You can now use Claude services through this CLI")
++		log.Info("You can now use Claude services through this CLI")
+ 		CompleteOAuthSession(state)
+ 	}()
+ 
+@@ -199,7 +199,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
+ 
+-	fmt.Println("Initializing Codex authentication...")
++	log.Info("Initializing Codex authentication...")
+ 
+ 	// Generate PKCE codes
+ 	pkceCodes, err := codex.GeneratePKCECodes()
+@@ -345,11 +345,11 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
+ 			log.Errorf("Failed to save authentication tokens: %v", errSave)
+ 			return
+ 		}
+-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
++		log.Infof("Authentication successful! Token saved to %s\n", savedPath)
+ 		if bundle.APIKey != "" {
+-			fmt.Println("API key obtained and saved")
++			log.Info("API key obtained and saved")
+ 		}
+-		fmt.Println("You can now use Codex services through this CLI")
++		log.Info("You can now use Codex services through this CLI")
+ 		CompleteOAuthSession(state)
+ 	}()
+ 
+@@ -360,7 +360,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
+ 
+-	fmt.Println("Initializing Antigravity authentication...")
++	log.Info("Initializing Antigravity authentication...")
+ 
+ 	authSvc := antigravity.NewAntigravityAuth(h.cfg, nil)
+ 
+@@ -513,11 +513,11 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+ 		}
+ 
+ 		CompleteOAuthSession(state)
+-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
++		log.Infof("Authentication successful! Token saved to %s\n", savedPath)
+ 		if projectID != "" {
+-			fmt.Printf("Using GCP project: %s\n", util.HideAPIKey(projectID))
++			log.Infof("Using GCP project: %s\n", util.HideAPIKey(projectID))
+ 		}
+-		fmt.Println("You can now use Antigravity services through this CLI")
++		log.Info("You can now use Antigravity services through this CLI")
+ 	}()
+ 
+ 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+@@ -527,7 +527,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
+ 
+-	fmt.Println("Initializing xAI authentication...")
++	log.Info("Initializing xAI authentication...")
+ 
+ 	state := fmt.Sprintf("xai-%d", time.Now().UnixNano())
+ 	authSvc := xaiauth.NewXAIAuth(h.cfg)
+@@ -550,7 +550,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
+ 		defer cancelPoll()
+ 		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "xai")
+ 
+-		fmt.Println("Waiting for xAI authentication...")
++		log.Info("Waiting for xAI authentication...")
+ 		bundle, errWaitForAuthorization := authSvc.WaitForAuthorization(pollCtx, deviceFlow)
+ 		if errWaitForAuthorization != nil {
+ 			if !IsOAuthSessionPending(state, "xai") {
+@@ -620,8 +620,8 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
+ 		}
+ 
+ 		CompleteOAuthSession(state)
+-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+-		fmt.Println("You can now use xAI services through this CLI")
++		log.Infof("Authentication successful! Token saved to %s\n", savedPath)
++		log.Info("You can now use xAI services through this CLI")
+ 	}()
+ 
+ 	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
+@@ -640,7 +640,7 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
+ 
+-	fmt.Println("Initializing Meta authentication...")
++	log.Info("Initializing Meta authentication...")
+ 
+ 	state := fmt.Sprintf("meta-%d", time.Now().UnixNano())
+ 	authSvc := metaauth.NewMetaAuth(h.cfg)
+@@ -663,7 +663,7 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
+ 		defer cancelPoll()
+ 		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "meta")
+ 
+-		fmt.Println("Waiting for Meta authentication...")
++		log.Info("Waiting for Meta authentication...")
+ 		bundle, errWaitForAuthorization := authSvc.WaitForAuthorization(pollCtx, deviceFlow)
+ 		if errWaitForAuthorization != nil {
+ 			if !IsOAuthSessionPending(state, "meta") {
+@@ -696,8 +696,8 @@ func (h *Handler) RequestMetaToken(c *gin.Context) {
+ 		}
+ 
+ 		CompleteOAuthSession(state)
+-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+-		fmt.Println("You can now use Meta services through this CLI")
++		log.Infof("Authentication successful! Token saved to %s\n", savedPath)
++		log.Info("You can now use Meta services through this CLI")
+ 	}()
+ 
+ 	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
+@@ -811,7 +811,7 @@ func (h *Handler) requestKimiTokenWithDomain(c *gin.Context, domain string) {
+ 		baseURL = kimi.KimiAIAPIBaseURL
+ 	}
+ 
+-	fmt.Printf("Initializing %s authentication...\n", displayName)
++	log.Infof("Initializing %s authentication...\n", displayName)
+ 
+ 	state := fmt.Sprintf("%s-%d", statePrefix, time.Now().UnixNano())
+ 	// Initialize Kimi auth service
+@@ -836,14 +836,14 @@ func (h *Handler) requestKimiTokenWithDomain(c *gin.Context, domain string) {
+ 		defer cancelPoll()
+ 		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, providerName)
+ 
+-		fmt.Printf("Waiting for %s authentication...\n", displayName)
++		log.Infof("Waiting for %s authentication...\n", displayName)
+ 		authBundle, errWaitForAuthorization := kimiAuth.WaitForAuthorization(pollCtx, deviceFlow)
+ 		if errWaitForAuthorization != nil {
+ 			if !IsOAuthSessionPending(state, providerName) {
+ 				return
+ 			}
+ 			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errWaitForAuthorization))
+-			fmt.Printf("%s authentication failed: %v\n", displayName, errWaitForAuthorization)
++			log.Errorf("%s authentication failed: %v\n", displayName, errWaitForAuthorization)
+ 			return
+ 		}
+ 		if !IsOAuthSessionPending(state, providerName) {
+@@ -897,8 +897,8 @@ func (h *Handler) requestKimiTokenWithDomain(c *gin.Context, domain string) {
+ 			return
+ 		}
+ 
+-		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+-		fmt.Printf("You can now use %s services through this CLI\n", displayName)
++		log.Infof("Authentication successful! Token saved to %s\n", savedPath)
++		log.Infof("You can now use %s services through this CLI\n", displayName)
+ 		CompleteOAuthSession(state)
+ 	}()
+ 
+diff --git a/internal/api/nexus_log_privacy.go b/internal/api/nexus_log_privacy.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee8d8417216057a47ed8462ceb2b3ce2983173ab
+--- /dev/null
++++ b/internal/api/nexus_log_privacy.go
+@@ -0,0 +1,108 @@
++package api
++
++import (
++	"bytes"
++	"compress/gzip"
++	"compress/zlib"
++	"io"
++	"net/http"
++	"strings"
++
++	"github.com/andybalholm/brotli"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++)
++
++// Only failed HTTP responses are buffered. Successful streaming and upgrades
++// retain the original writer, flushing, and hijacking behavior.
++type nexusPublicErrorWriter struct {
++	gin.ResponseWriter
++	body bytes.Buffer
++}
++
++func (w *nexusPublicErrorWriter) WriteHeader(status int) {
++	if !w.Written() {
++		w.ResponseWriter.WriteHeader(status)
++	}
++}
++
++func (w *nexusPublicErrorWriter) Write(body []byte) (int, error) {
++	if w.Status() >= http.StatusBadRequest {
++		return w.body.Write(body)
++	}
++	return w.ResponseWriter.Write(body)
++}
++
++func (w *nexusPublicErrorWriter) WriteString(body string) (int, error) {
++	return w.Write([]byte(body))
++}
++
++func (w *nexusPublicErrorWriter) WriteHeaderNow() {
++	if w.Status() < http.StatusBadRequest {
++		w.ResponseWriter.WriteHeaderNow()
++	}
++}
++
++func (w *nexusPublicErrorWriter) Flush() {
++	if w.Status() < http.StatusBadRequest {
++		w.ResponseWriter.Flush()
++	}
++}
++
++func (w *nexusPublicErrorWriter) Written() bool {
++	return w.body.Len() > 0 || w.ResponseWriter.Written()
++}
++
++func (w *nexusPublicErrorWriter) Size() int {
++	if w.body.Len() > 0 {
++		return w.body.Len()
++	}
++	return w.ResponseWriter.Size()
++}
++
++func nexusDecodeErrorBody(body []byte, encoding string) ([]byte, error) {
++	var reader io.Reader = bytes.NewReader(body)
++	switch strings.ToLower(strings.TrimSpace(encoding)) {
++	case "gzip":
++		decoder, err := gzip.NewReader(reader)
++		if err != nil {
++			return nil, err
++		}
++		defer func() { _ = decoder.Close() }()
++		reader = decoder
++	case "deflate":
++		decoder, err := zlib.NewReader(reader)
++		if err != nil {
++			return nil, err
++		}
++		defer func() { _ = decoder.Close() }()
++		reader = decoder
++	case "br":
++		reader = brotli.NewReader(reader)
++	case "", "identity":
++		return body, nil
++	default:
++		return nil, http.ErrNotSupported
++	}
++	return io.ReadAll(reader)
++}
++
++func nexusPublicErrorMiddleware() gin.HandlerFunc {
++	return func(c *gin.Context) {
++		writer := &nexusPublicErrorWriter{ResponseWriter: c.Writer}
++		c.Writer = writer
++		c.Next()
++		if writer.Status() < http.StatusBadRequest || writer.ResponseWriter.Written() {
++			return
++		}
++		body, err := nexusDecodeErrorBody(writer.body.Bytes(), writer.Header().Get("Content-Encoding"))
++		if err != nil {
++			body = []byte(`{"error":{"type":"upstream_error","message":"Upstream request failed"}}`)
++			writer.Header().Set("Content-Type", "application/json")
++		}
++		writer.Header().Del("Content-Encoding")
++		writer.Header().Del("Content-Length")
++		writer.Header().Del("ETag")
++		_, _ = writer.ResponseWriter.Write(logging.RedactPublicErrorBody(body))
++	}
++}
+diff --git a/internal/api/nexus_log_privacy_test.go b/internal/api/nexus_log_privacy_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9890145f7a416d3468d1b3ec6151e365cb1cc569
+--- /dev/null
++++ b/internal/api/nexus_log_privacy_test.go
+@@ -0,0 +1,60 @@
++package api
++
++import (
++	"bytes"
++	"compress/gzip"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++)
++
++func TestNexusNativeHTTPErrorRedaction(t *testing.T) {
++	for _, compressed := range []bool{false, true} {
++		engine := gin.New()
++		engine.Use(nexusPublicErrorMiddleware())
++		engine.GET("/v1beta/test", func(c *gin.Context) {
++			body := []byte(`{"error":{"message":"Anthropic https://host.test/path Gemini","code":"permission_denied"}}`)
++			if compressed {
++				var encoded bytes.Buffer
++				writer := gzip.NewWriter(&encoded)
++				_, _ = writer.Write(body)
++				_ = writer.Close()
++				body = encoded.Bytes()
++				c.Header("Content-Encoding", "gzip")
++			}
++			c.Header("Content-Type", "application/json")
++			c.Header("Content-Length", "9999")
++			c.Status(http.StatusForbidden)
++			for _, b := range body {
++				_, _ = c.Writer.Write([]byte{b})
++				c.Writer.Flush()
++			}
++		})
++		recorder := httptest.NewRecorder()
++		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1beta/test", nil))
++		if recorder.Code != http.StatusForbidden || !json.Valid(recorder.Body.Bytes()) || strings.Contains(recorder.Body.String(), "https:") || strings.Contains(recorder.Body.String(), "Anthropic") || !strings.Contains(recorder.Body.String(), "permission_denied") || recorder.Header().Get("Content-Encoding") != "" || recorder.Header().Get("Content-Length") != "" {
++			t.Fatalf("native error leaked or changed: %d %s %s", recorder.Code, recorder.Header(), recorder.Body.String())
++		}
++	}
++}
++
++func TestNexusNativeSuccessfulStreamStaysUnchanged(t *testing.T) {
++	engine := gin.New()
++	engine.Use(nexusPublicErrorMiddleware())
++	text := "data: {\"choices\":[{\"delta\":{\"content\":\"Anthropic https://host.test/path\"}}]}\n\n"
++	engine.GET("/v1/test", func(c *gin.Context) {
++		c.Header("Content-Type", "text/event-stream")
++		c.Status(http.StatusOK)
++		_, _ = c.Writer.WriteString(text)
++		c.Writer.Flush()
++	})
++	recorder := httptest.NewRecorder()
++	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/test", nil))
++	if recorder.Code != http.StatusOK || recorder.Body.String() != text || !recorder.Flushed {
++		t.Fatalf("successful stream changed: %d %q", recorder.Code, recorder.Body.String())
++	}
++}
+diff --git a/internal/api/server.go b/internal/api/server.go
+index 024cec035411394d7a6143f7720e829085ae1e3e..cde13eeb52a1459dc986c8f30a3180a7e1dd3d2e 100644
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -147,6 +147,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
+ 	engine.Use(logging.GinLogrusLogger())
+ 	engine.Use(logging.GinLogrusRecovery())
+ 	engine.Use(logging.CPATraceIDMiddleware())
++	engine.Use(nexusPublicErrorMiddleware())
+ 	for _, mw := range optionState.extraMiddleware {
+ 		engine.Use(mw)
+ 	}
+diff --git a/internal/api/server_reload.go b/internal/api/server_reload.go
+index 64b7ee9bd4dccfb61e2454df3a7f35ad6d6e8fc4..da3fbfc9aa43007dc6d93652cbbcf0583884e087 100644
+--- a/internal/api/server_reload.go
++++ b/internal/api/server_reload.go
+@@ -2,7 +2,6 @@ package api
+ 
+ import (
+ 	"context"
+-	"fmt"
+ 	"reflect"
+ 	"time"
+ 
+@@ -229,7 +228,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
+ 	}
+ 
+ 	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + metaAPIKeyCount + vertexAICompatCount + openAICompatCount
+-	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d xAI keys + %d Meta API keys + %d Vertex-compat + %d OpenAI-compat)\n",
++	log.Infof("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d xAI keys + %d Meta API keys + %d Vertex-compat + %d OpenAI-compat)",
+ 		total,
+ 		authEntries,
+ 		geminiAPIKeyCount,
+diff --git a/internal/api/server_test.go b/internal/api/server_test.go
+index 4bc7e162b7b9d6e9a957fa09710083ededf7e7be..161b218d89c7eea038fa881a33c243ce2b8f79ce 100644
+--- a/internal/api/server_test.go
++++ b/internal/api/server_test.go
+@@ -3109,10 +3109,10 @@ func TestServerResponsesStreamingRequestLogCapturesUpstreamSections(t *testing.T
+ 	}
+ 	apiRequestSection := logText[apiRequestIdx:apiResponseIdx]
+ 	apiResponseSection := logText[apiResponseIdx:downstreamResponseIdx]
+-	if !strings.Contains(apiRequestSection, "https://api.example.com/v1/responses") {
+-		t.Fatalf("API REQUEST section missing upstream URL:\n%s", apiRequestSection)
++	if !strings.Contains(apiRequestSection, "Upstream URL: ***") || strings.Contains(apiRequestSection, "https://api.example.com") {
++		t.Fatalf("API REQUEST section must redact upstream URL:\n%s", apiRequestSection)
+ 	}
+-	if !strings.Contains(apiRequestSection, `"gpt-5-codex"`) {
++	if !strings.Contains(apiRequestSection, `"gpt-5-***"`) {
+ 		t.Fatalf("API REQUEST section missing request body:\n%s", apiRequestSection)
+ 	}
+ 	if !strings.Contains(apiResponseSection, "response.output_item.added") {
+@@ -3227,10 +3227,10 @@ func TestServerCodexAPIKeyResponsesStreamingRequestLog(t *testing.T) {
+ 	}
+ 	apiRequestSection := logText[apiRequestIdx:apiResponseIdx]
+ 	apiResponseSection := logText[apiResponseIdx:downstreamResponseIdx]
+-	if !strings.Contains(apiRequestSection, mockUpstream.URL) {
+-		t.Fatalf("API REQUEST section missing upstream URL %s:\n%s", mockUpstream.URL, apiRequestSection)
++	if !strings.Contains(apiRequestSection, "Upstream URL: ***") || strings.Contains(apiRequestSection, mockUpstream.URL) {
++		t.Fatalf("API REQUEST section must redact upstream URL:\n%s", apiRequestSection)
+ 	}
+-	if !strings.Contains(apiRequestSection, `"gpt-5-codex"`) {
++	if !strings.Contains(apiRequestSection, `"gpt-5-***"`) {
+ 		t.Fatalf("API REQUEST section missing request body:\n%s", apiRequestSection)
+ 	}
+ 	if !strings.Contains(apiResponseSection, "response.output_item.added") {
+diff --git a/internal/logging/global_logger.go b/internal/logging/global_logger.go
+index 928fc25014c7f2fdf45e45c8523564e448a160af..3d8e18cb7646d7c847807a0932c65a4fbd175d01 100644
+--- a/internal/logging/global_logger.go
++++ b/internal/logging/global_logger.go
+@@ -39,7 +39,7 @@ func logV8MigrationWarning(section, msg string) {
+ 	if logWriter != nil {
+ 		consoleMu.Lock()
+ 		if consoleWriter != nil {
+-			_, _ = fmt.Fprintf(consoleWriter, "WARNING: %s\n", msg)
++			_, _ = fmt.Fprintf(consoleWriter, "WARNING: %s\n", RedactPublicText(msg))
+ 		}
+ 		consoleMu.Unlock()
+ 	}
+@@ -138,7 +138,7 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
+ 	} else {
+ 		formatted = fmt.Sprintf("[%s] [%s] [%s] %s%s\n", timestamp, reqID, levelStr, message, fieldsStr)
+ 	}
+-	buffer.WriteString(formatted)
++	buffer.WriteString(RedactPublicText(formatted))
+ 
+ 	return buffer.Bytes(), nil
+ }
+diff --git a/internal/logging/nexus_public_redaction.go b/internal/logging/nexus_public_redaction.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..4edf865a456ed36deeec207d0b3fc6bb5450d8c3
+--- /dev/null
++++ b/internal/logging/nexus_public_redaction.go
+@@ -0,0 +1,189 @@
++package logging
++
++import (
++	"bytes"
++	"encoding/json"
++	"io"
++	"regexp"
++	"strings"
++	"unicode/utf8"
++)
++
++var nexusPublicURL = regexp.MustCompile("(?i)https?:(?:/|\\\\/|\\\\u002f){2}(?:\\\\/|\\\\u[0-9a-f]{4}|[^\\s<>\"'`\\\\])*")
++var nexusPublicProvider = regexp.MustCompile(`(?i)chat[\s_-]*gpt|open[\s_-]*ai|anthropic|gemini|claude|codex|deep[\s_-]*seek|x[\s_-]*ai|grok|qwen|zhipu|moonshot|kimi|mistral|cohere|perplexity|nvidia|vertex[\s_-]*ai|vertex|microsoft|azure|bedrock|amazon|mini[\s_-]*max|baidu|doubao|byte[\s_-]*dance|tencent|hunyuan|devin|codeium|windsurf|goat|cognition|augment|antigravity|kiro|command[\s_-]*code|谷歌|阿里巴巴|阿里|通义千问|智谱|腾讯|字节跳动|豆包|百度|文心一言|文心|英伟达|微软|亚马逊`)
++var nexusPublicShortProvider = regexp.MustCompile(`(?i)meta|llama|glm|aws|google`)
++
++func nexusASCIIAlphaNumeric(c byte) bool {
++	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
++}
++
++// RedactPublicText filters only an output copy, never routing or authentication data.
++func RedactPublicText(text string) string {
++	text = nexusPublicURL.ReplaceAllString(text, "***")
++	text = nexusPublicProvider.ReplaceAllString(text, "***")
++	var out strings.Builder
++	last := 0
++	for _, match := range nexusPublicShortProvider.FindAllStringIndex(text, -1) {
++		if match[0] > 0 && nexusASCIIAlphaNumeric(text[match[0]-1]) || match[1] < len(text) && nexusASCIIAlphaNumeric(text[match[1]]) {
++			continue
++		}
++		out.WriteString(text[last:match[0]])
++		out.WriteString("***")
++		last = match[1]
++	}
++	if last == 0 {
++		return text
++	}
++	out.WriteString(text[last:])
++	return out.String()
++}
++
++func nexusRedactJSON(value any, changed *bool) any {
++	switch v := value.(type) {
++	case string:
++		filtered := RedactPublicText(v)
++		*changed = *changed || filtered != v
++		return filtered
++	case []any:
++		for i := range v {
++			v[i] = nexusRedactJSON(v[i], changed)
++		}
++	case map[string]any:
++		out := make(map[string]any, len(v))
++		for key, item := range v {
++			filtered := RedactPublicText(key)
++			*changed = *changed || filtered != key
++			out[filtered] = nexusRedactJSON(item, changed)
++		}
++		return out
++	}
++	return value
++}
++
++// RedactPublicErrorBody decodes JSON before filtering so escaping stays valid.
++func RedactPublicErrorBody(body []byte) []byte {
++	if json.Valid(body) {
++		var value any
++		decoder := json.NewDecoder(bytes.NewReader(body))
++		decoder.UseNumber()
++		if decoder.Decode(&value) == nil {
++			changed := false
++			value = nexusRedactJSON(value, &changed)
++			if !changed {
++				return body
++			}
++			if result, err := json.Marshal(value); err == nil {
++				return result
++			}
++		}
++	}
++	return []byte(RedactPublicText(string(body)))
++}
++
++// publicLogWriter keeps bounded lookbehind across file-backed sections and chunks.
++// Long URLs are suppressed incrementally rather than buffered in full.
++type publicLogWriter struct {
++	destination io.Writer
++	pending     []byte
++	inURL       bool
++	previous    byte
++}
++
++func (w *publicLogWriter) emit(text string, next byte) error {
++	if len(text) == 0 {
++		return nil
++	}
++	guard, suffix := "", ""
++	if nexusASCIIAlphaNumeric(w.previous) {
++		guard = "0"
++	}
++	if nexusASCIIAlphaNumeric(next) {
++		suffix = "0"
++	}
++	filtered := RedactPublicText(guard + text + suffix)
++	w.previous = text[len(text)-1]
++	_, err := io.WriteString(w.destination, filtered[len(guard):len(filtered)-len(suffix)])
++	return err
++}
++
++func nexusURLDelimiter(c byte) bool {
++	return c <= ' ' || c == '<' || c == '>' || c == '"' || c == '\'' || c == '`'
++}
++
++func (w *publicLogWriter) drain(final bool) error {
++	if w.inURL {
++		i := 0
++		for i < len(w.pending) && !nexusURLDelimiter(w.pending[i]) {
++			if w.pending[i] == '\\' {
++				if i+1 == len(w.pending) && !final {
++					w.pending = w.pending[i:]
++					return nil
++				}
++				if i+1 < len(w.pending) && (w.pending[i+1] == '"' || w.pending[i+1] == '\'' || w.pending[i+1] == '`') {
++					break
++				}
++			}
++			i++
++		}
++		w.pending = w.pending[i:]
++		if len(w.pending) == 0 {
++			return nil
++		}
++		w.inURL = false
++		w.previous = ' '
++	}
++	cut := len(w.pending)
++	if !final {
++		cut -= 128
++		if cut <= 0 {
++			return nil
++		}
++		for cut > 0 && !utf8.RuneStart(w.pending[cut]) {
++			cut--
++		}
++		for _, pattern := range []*regexp.Regexp{nexusPublicURL, nexusPublicProvider, nexusPublicShortProvider} {
++			for _, match := range pattern.FindAllIndex(w.pending, -1) {
++				if pattern == nexusPublicURL && match[0] < cut && match[1] == len(w.pending) {
++					if err := w.emit(string(w.pending[:match[0]]), w.pending[match[0]]); err != nil {
++						return err
++					}
++					if _, err := io.WriteString(w.destination, "***"); err != nil {
++						return err
++					}
++					w.pending = w.pending[:0]
++					w.inURL = true
++					w.previous = ' '
++					return nil
++				}
++				if match[0] < cut && match[1] > cut {
++					cut = match[0]
++				}
++			}
++		}
++	}
++	var next byte
++	if cut < len(w.pending) {
++		next = w.pending[cut]
++	}
++	if err := w.emit(string(w.pending[:cut]), next); err != nil {
++		return err
++	}
++	w.pending = append(w.pending[:0], w.pending[cut:]...)
++	return nil
++}
++
++func (w *publicLogWriter) Write(body []byte) (int, error) {
++	written := 0
++	for len(body) > 0 {
++		n := min(len(body), 32*1024)
++		w.pending = append(w.pending, body[:n]...)
++		if err := w.drain(false); err != nil {
++			return written, err
++		}
++		body = body[n:]
++		written += n
++	}
++	return written, nil
++}
++
++func (w *publicLogWriter) Flush() error { return w.drain(true) }
+diff --git a/internal/logging/nexus_public_redaction_test.go b/internal/logging/nexus_public_redaction_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0bcf702b47cdc233272ad9b546e787c8a7fc18c
+--- /dev/null
++++ b/internal/logging/nexus_public_redaction_test.go
+@@ -0,0 +1,120 @@
++package logging
++
++import (
++	"bytes"
++	"encoding/json"
++	"strings"
++	"testing"
++
++	log "github.com/sirupsen/logrus"
++)
++
++func TestNexusPublicRedaction(t *testing.T) {
++	for _, text := range []string{
++		`ChatGPT Gemini Anthropic CLAUDE OpenAI Devin`,
++		`Devin upstream_host=server.codeium.com Windsurf GOAT`,
++		`HTTP://host.test/path?token=private HTTPS://host.test/path`,
++		`https:\/\/host.test\/path?token=private`,
++		`https:\u002f\u002fhost.test\u002fpath?token=private`,
++		`chat-gpt chat_gpt chat gpt open-ai deep_seek Command-Code`,
++		`Google google/model meta-provider glm_model 阿里巴巴 通义千问`,
++	} {
++		filtered := RedactPublicText(text)
++		if strings.Contains(strings.ToLower(filtered), "http") || nexusPublicProvider.MatchString(filtered) {
++			t.Fatalf("sensitive output survived: %q", filtered)
++		}
++		if !strings.Contains(filtered, "***") {
++			t.Fatalf("no replacement in %q", filtered)
++		}
++	}
++	if got := RedactPublicText("metadata metallurgy glamorous crawl AWSOME"); got != "metadata metallurgy glamorous crawl AWSOME" {
++		t.Fatalf("ordinary text was changed: %q", got)
++	}
++}
++
++func TestNexusErrorJSONPreservesEscapingAndClassification(t *testing.T) {
++	body := []byte(`{"error":{"message":"\u0041nthropic rejected https:\/\/host.test\/path\"; Gemini","type":"authentication_error","code":"upstream_authentication_required","retryable":false},"sequence":9007199254740993}`)
++	filtered := RedactPublicErrorBody(body)
++	if !json.Valid(filtered) {
++		t.Fatalf("invalid error JSON: %s", filtered)
++	}
++	var decoded struct {
++		Error struct {
++			Message   string `json:"message"`
++			Type      string `json:"type"`
++			Code      string `json:"code"`
++			Retryable bool   `json:"retryable"`
++		} `json:"error"`
++		Sequence json.Number `json:"sequence"`
++	}
++	if err := json.Unmarshal(filtered, &decoded); err != nil {
++		t.Fatal(err)
++	}
++	if decoded.Error.Message != `*** rejected ***"; ***` || decoded.Error.Type != "authentication_error" || decoded.Error.Code != "upstream_authentication_required" || decoded.Error.Retryable || decoded.Sequence != "9007199254740993" {
++		t.Fatalf("error classification or escaping changed: %s", filtered)
++	}
++	plain := []byte(" {\"error\":\"ordinary failure\"} \n")
++	if !bytes.Equal(RedactPublicErrorBody(plain), plain) {
++		t.Fatal("unrelated error payload changed")
++	}
++}
++
++func TestNexusFileWriterRedactsAcrossEveryChunkBoundary(t *testing.T) {
++	text := strings.Repeat("x", 137) + " metadata Google/ Gemini Chat GPT 阿里巴巴 https://host.test/" + strings.Repeat("sensitive-", 10000) + " Anthropic \n" + strings.Repeat("z", 300) + " claude-sonnet metadata\n"
++	want := RedactPublicText(text)
++	for _, size := range []int{1, 2, 3, 4, 7, 31, 127, 128, 129, 1024, 32768} {
++		var out bytes.Buffer
++		writer := &publicLogWriter{destination: &out}
++		for start := 0; start < len(text); start += size {
++			end := min(start+size, len(text))
++			if _, err := writer.Write([]byte(text[start:end])); err != nil {
++				t.Fatal(err)
++			}
++			if len(writer.pending) > 128+64 {
++				t.Fatalf("unbounded pending buffer for chunk %d: %d", size, len(writer.pending))
++			}
++		}
++		if err := writer.Flush(); err != nil {
++			t.Fatal(err)
++		}
++		if out.String() != want {
++			t.Fatalf("chunk %d changed the redacted output: %q", size, out.String())
++		}
++	}
++}
++
++func TestNexusFileWriterKeepsJSONEscapeBoundaries(t *testing.T) {
++	text := `{"message":"https://host.test/` + strings.Repeat("private", 10000) + `\" and Gemini"}`
++	for _, size := range []int{1, 2, 127, 1024, 32768} {
++		var out bytes.Buffer
++		writer := &publicLogWriter{destination: &out}
++		for start := 0; start < len(text); start += size {
++			_, _ = writer.Write([]byte(text[start:min(start+size, len(text))]))
++		}
++		if err := writer.Flush(); err != nil {
++			t.Fatal(err)
++		}
++		if !json.Valid(out.Bytes()) || out.String() != RedactPublicText(text) {
++			t.Fatalf("chunk %d broke JSON escapes: %q", size, out.String())
++		}
++	}
++}
++
++func TestNexusGlobalLogRedactsStructuredFields(t *testing.T) {
++	entry := &log.Entry{Message: "Provider rejected https://host.test/path", Level: log.ErrorLevel,
++		Data: log.Fields{"provider": "Anthropic", "model": "claude-sonnet", "error": "Gemini quota"}}
++	body, err := (&LogFormatter{}).Format(entry)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if nexusPublicProvider.Match(body) || nexusPublicURL.Match(body) || !bytes.Contains(body, []byte("provider=***")) {
++		t.Fatalf("structured log leaked: %s", body)
++	}
++	logger := &FileRequestLogger{}
++	if filename := logger.generateFilename("/v1beta/models/gemini-pro:streamGenerateContent", "abc12345"); nexusPublicProvider.MatchString(filename) {
++		t.Fatalf("filename leaked: %s", filename)
++	}
++	if filename := logger.generateFilename("/v1/responses", "Gemini12"); nexusPublicProvider.MatchString(filename) || strings.Contains(filename, "*") {
++		t.Fatalf("request ID leaked or produced an invalid filename: %s", filename)
++	}
++}
+diff --git a/internal/logging/request_logger_format.go b/internal/logging/request_logger_format.go
+index 6026bb9e07b5e4aa145504a55bc3667d37b0e3e3..bd8c0428a732a4c427be0581afa6063262f6ef9a 100644
+--- a/internal/logging/request_logger_format.go
++++ b/internal/logging/request_logger_format.go
+@@ -40,7 +40,14 @@ func (l *FileRequestLogger) writeNonStreamingLog(
+ 	decompressErr error,
+ 	requestTimestamp time.Time,
+ 	apiResponseTimestamp time.Time,
+-) error {
++) (err error) {
++	filtered := &publicLogWriter{destination: w}
++	w = filtered
++	defer func() {
++		if errFlush := filtered.Flush(); err == nil {
++			err = errFlush
++		}
++	}()
+ 	if requestTimestamp.IsZero() {
+ 		requestTimestamp = time.Now()
+ 	}
+diff --git a/internal/logging/request_logger_home.go b/internal/logging/request_logger_home.go
+index c29865ea6ff59c086fba47e2e94f10faa4ac32ee..76a416dfba0f46bd7c4ddeb52a17e04efe954d39 100644
+--- a/internal/logging/request_logger_home.go
++++ b/internal/logging/request_logger_home.go
+@@ -59,7 +59,7 @@ func (l *FileRequestLogger) forwardRequestLogToHome(ctx context.Context, headers
+ 	payload := homeRequestLogPayload{
+ 		Headers:    cloneHeaders(headers),
+ 		RequestID:  strings.TrimSpace(requestID),
+-		RequestLog: logText,
++		RequestLog: RedactPublicText(logText),
+ 	}
+ 	raw, errMarshal := json.Marshal(&payload)
+ 	if errMarshal != nil {
+diff --git a/internal/logging/request_logger_streaming.go b/internal/logging/request_logger_streaming.go
+index 089843b268938abe5126957d03d0b889e838176f..1ba3017de23b50d0d9501df48c6d78c4675a842e 100644
+--- a/internal/logging/request_logger_streaming.go
++++ b/internal/logging/request_logger_streaming.go
+@@ -3,6 +3,7 @@ package logging
+ import (
+ 	"bytes"
+ 	"fmt"
++	"io"
+ 	"os"
+ 	"time"
+ 
+@@ -276,7 +277,14 @@ func (w *FileStreamingLogWriter) asyncWriter() {
+ 	w.responseBodyFile = nil
+ }
+ 
+-func (w *FileStreamingLogWriter) writeFinalLog(logFile *os.File) error {
++func (w *FileStreamingLogWriter) writeFinalLog(logFile io.Writer) (err error) {
++	filtered := &publicLogWriter{destination: logFile}
++	logFile = filtered
++	defer func() {
++		if errFlush := filtered.Flush(); err == nil {
++			err = errFlush
++		}
++	}()
+ 	if errWrite := writeRequestInfoWithBody(logFile, w.url, w.method, w.requestHeaders, nil, w.requestBodyPath, w.timestamp, "http", inferUpstreamTransport(w.apiRequest, w.apiRequestSource, w.apiResponse, w.apiResponseSource, w.apiWebsocketTimeline, nil, nil), true); errWrite != nil {
+ 		return errWrite
+ 	}
+diff --git a/internal/logging/request_logger_writer.go b/internal/logging/request_logger_writer.go
+index cb15d5d55c10093969b3ec050ace5f72dba58aa6..ce1c2dd97fb54fb8a80d8c3445e5f223b2e63e70 100644
+--- a/internal/logging/request_logger_writer.go
++++ b/internal/logging/request_logger_writer.go
+@@ -281,9 +281,9 @@ func (l *FileRequestLogger) ensureLogsDir() error {
+ //   - string: A sanitized filename for the log file
+ func (l *FileRequestLogger) generateFilename(url string, requestID ...string) string {
+ 	// Extract path from URL
+-	path := url
++	path := RedactPublicText(url)
+ 	if strings.Contains(url, "?") {
+-		path = strings.Split(url, "?")[0]
++		path = strings.Split(path, "?")[0]
+ 	}
+ 
+ 	// Remove leading slash
+@@ -300,7 +300,7 @@ func (l *FileRequestLogger) generateFilename(url string, requestID ...string) st
+ 	// Use request ID if provided, otherwise use sequential ID
+ 	var idPart string
+ 	if len(requestID) > 0 && requestID[0] != "" {
+-		idPart = ShortRequestID(requestID[0])
++		idPart = l.sanitizeForFilename(RedactPublicText(ShortRequestID(requestID[0])))
+ 	} else {
+ 		id := requestLogID.Add(1)
+ 		idPart = fmt.Sprintf("%d", id)
+diff --git a/sdk/api/handlers/claude/code_handlers.go b/sdk/api/handlers/claude/code_handlers.go
+index 08d37bfe8003fdb254ded33e57c1dcbfb5c37765..e8551a4cd81356591f873def4bdb79ceee1b8a88 100644
+--- a/sdk/api/handlers/claude/code_handlers.go
++++ b/sdk/api/handlers/claude/code_handlers.go
+@@ -23,6 +23,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+ 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+@@ -360,8 +361,8 @@ func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claud
+ 	response := claudeErrorResponse{
+ 		Type: "error",
+ 		Error: claudeErrorDetail{
+-			Type:    errType,
+-			Message: message,
++			Type:    logging.RedactPublicText(errType),
++			Message: logging.RedactPublicText(message),
+ 		},
+ 	}
+ 	if clienterror.IsClaudeThreadNotFound(status, errors.New(errText)) {
+@@ -394,6 +395,8 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
+ 				body = markedBody
+ 			}
+ 		}
++		body = logging.RedactPublicErrorBody(body)
++		c.Writer.Header().Del("Content-Length")
+ 		appendClaudeAPIResponse(c, body)
+ 		if !c.Writer.Written() && c.Writer.Header().Get("Content-Type") == "" {
+ 			c.Writer.Header().Set("Content-Type", "application/json")
+diff --git a/sdk/api/handlers/claude/nexus_log_privacy_test.go b/sdk/api/handlers/claude/nexus_log_privacy_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e002944c150d924fc10b3503a7a64b143f8b264
+--- /dev/null
++++ b/sdk/api/handlers/claude/nexus_log_privacy_test.go
+@@ -0,0 +1,32 @@
++package claude
++
++import (
++	"encoding/json"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++)
++
++func TestNexusClaudeErrorRedactsStructuredProviderNames(t *testing.T) {
++	const original = `{"error":{"type":"AnthropicAuthenticationError","message":"ChatGPT rejected https://private.example/error"}}`
++	msg := &interfaces.ErrorMessage{StatusCode: 503, Error: errors.New(original)}
++	handler := &ClaudeCodeAPIHandler{}
++	response := handler.toClaudeError(msg)
++	body, err := json.Marshal(response)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, private := range []string{"Anthropic", "ChatGPT", "https://"} {
++		if strings.Contains(string(body), private) {
++			t.Fatalf("private string %q remained in Claude error: %s", private, body)
++		}
++	}
++	if response.Error.Type != "***AuthenticationError" || response.Error.Message != "*** rejected ***" {
++		t.Fatalf("unexpected public error: %s", body)
++	}
++	if msg.Error.Error() != original {
++		t.Fatal("output redaction modified the internal error")
++	}
++}
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+index 9397de0c09f3647d5743c8c4920a0bd220d40f27..a43c669bef59b10c9bb05ed5223e4521818d7603 100644
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -71,7 +71,8 @@ func BuildErrorResponseBody(status int, errText string) []byte {
+ // BuildErrorResponseBodyWithError builds an OpenAI-compatible JSON error response body,
+ // preserving structured classifications (such as terminal upstream auth failures and retryable flags)
+ // present in err.
+-func BuildErrorResponseBodyWithError(status int, errText string, err error) []byte {
++func BuildErrorResponseBodyWithError(status int, errText string, err error) (body []byte) {
++	defer func() { body = logging.RedactPublicErrorBody(body) }()
+ 	if status <= 0 {
+ 		status = http.StatusInternalServerError
+ 	}
+diff --git a/sdk/api/handlers/handlers_errors.go b/sdk/api/handlers/handlers_errors.go
+index a35f2110d082c35242a2720d1ce08a9141a8ce1c..df1804a566e598187531b97061ab4350ff0de9f3 100644
+--- a/sdk/api/handlers/handlers_errors.go
++++ b/sdk/api/handlers/handlers_errors.go
+@@ -10,6 +10,7 @@ import (
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	"golang.org/x/net/context"
+ )
+@@ -186,7 +187,8 @@ func writeDirectErrorResponse(c *gin.Context, status int, msg *interfaces.ErrorM
+ 			c.Writer.Header().Add(key, value)
+ 		}
+ 	}
+-	body := bytes.Clone(msg.Body)
++	body := logging.RedactPublicErrorBody(bytes.Clone(msg.Body))
++	c.Writer.Header().Del("Content-Length")
+ 	appendAPIResponse(c, body)
+ 	if !c.Writer.Written() && c.Writer.Header().Get("Content-Type") == "" {
+ 		c.Writer.Header().Set("Content-Type", "application/json")
+diff --git a/sdk/api/handlers/nexus_log_privacy.go b/sdk/api/handlers/nexus_log_privacy.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1154b17ed1957774ab7fd7717e49571d5db53ef9
+--- /dev/null
++++ b/sdk/api/handlers/nexus_log_privacy.go
+@@ -0,0 +1,16 @@
++package handlers
++
++import (
++	"encoding/json"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++)
++
++func (detail ErrorDetail) MarshalJSON() ([]byte, error) {
++	type errorDetail ErrorDetail
++	filtered := errorDetail(detail)
++	filtered.Message = logging.RedactPublicText(filtered.Message)
++	filtered.Type = logging.RedactPublicText(filtered.Type)
++	filtered.Code = logging.RedactPublicText(filtered.Code)
++	return json.Marshal(filtered)
++}
+diff --git a/sdk/api/handlers/openai/nexus_log_privacy.go b/sdk/api/handlers/openai/nexus_log_privacy.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4d9c2ed2d51592567c1b6b67762a733c56cbda6
+--- /dev/null
++++ b/sdk/api/handlers/openai/nexus_log_privacy.go
+@@ -0,0 +1,20 @@
++package openai
++
++import (
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++	"github.com/tidwall/gjson"
++)
++
++func redactResponsesWebsocketError(payload []byte) []byte {
++	event := gjson.GetBytes(payload, "type").String()
++	for _, path := range []string{"error", "response.error"} {
++		value := gjson.GetBytes(payload, path)
++		if value.Exists() && value.Type != gjson.Null && value.Type != gjson.False && value.Raw != "0" && value.Raw != `""` {
++			return logging.RedactPublicErrorBody(payload)
++		}
++	}
++	if event == "error" || event == "response.failed" || gjson.GetBytes(payload, "response.status").String() == "failed" {
++		return logging.RedactPublicErrorBody(payload)
++	}
++	return payload
++}
+diff --git a/sdk/api/handlers/openai/nexus_log_privacy_test.go b/sdk/api/handlers/openai/nexus_log_privacy_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..33807c722d9096cfd3971da56133b528c0804e4a
+--- /dev/null
++++ b/sdk/api/handlers/openai/nexus_log_privacy_test.go
+@@ -0,0 +1,45 @@
++package openai
++
++import (
++	"errors"
++	"net/http"
++	"strings"
++	"testing"
++
++	"github.com/gorilla/websocket"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++	"github.com/tidwall/gjson"
++)
++
++func TestNexusWebsocketErrorRedaction(t *testing.T) {
++	body, err := buildResponsesWebsocketErrorPayload(&interfaces.ErrorMessage{
++		StatusCode: http.StatusUnauthorized,
++		Error:      errors.New("Anthropic failed at https://host.test/path"),
++		Addon:      http.Header{"Location": {"https://host.test/path"}, "X-Provider": {"Gemini"}, "Retry-After": {"3"}},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.Contains(string(body), "Anthropic") || strings.Contains(string(body), "Gemini") || strings.Contains(string(body), "https:") || gjson.GetBytes(body, "status").Int() != 401 || gjson.GetBytes(body, "type").String() != "error" || gjson.GetBytes(body, "headers.Retry-After").String() != "3" {
++		t.Fatalf("websocket error leaked or changed classification: %s", body)
++	}
++}
++
++func TestNexusWebsocketPassthroughOnlyChangesErrors(t *testing.T) {
++	success := []byte(`{"type":"response.created","response":{"error":null,"model":"codex","text":"Anthropic https://host.test/path"}}`)
++	if string(redactResponsesWebsocketError(success)) != string(success) {
++		t.Fatal("normal WebSocket payload changed")
++	}
++	failure := []byte(`{"type":"response.failed","response":{"error":{"message":"Gemini https://host.test/path"}}}`)
++	filtered := string(redactResponsesWebsocketError(failure))
++	if strings.Contains(filtered, "Gemini") || strings.Contains(filtered, "https:") || !strings.Contains(filtered, "response.failed") {
++		t.Fatalf("raw WebSocket failure leaked: %s", filtered)
++	}
++}
++
++func TestNexusWebsocketCloseReasonRedaction(t *testing.T) {
++	matched, payload := websocketClosePayloadForUpstreamError(&websocket.CloseError{Code: websocket.CloseMessageTooBig, Text: "Anthropic https://host.test/path"})
++	if !matched || len(payload) < 2 || strings.Contains(string(payload[2:]), "Anthropic") || strings.Contains(string(payload[2:]), "https:") {
++		t.Fatalf("close reason leaked: %q", payload)
++	}
++}
+diff --git a/sdk/api/handlers/openai/openai_images_handlers_test.go b/sdk/api/handlers/openai/openai_images_handlers_test.go
+index d21a31dbf2faa6d80ec303eec848769631a17e88..de47b29b178d4076c78ec2c5fd9dfbe720addea1 100644
+--- a/sdk/api/handlers/openai/openai_images_handlers_test.go
++++ b/sdk/api/handlers/openai/openai_images_handlers_test.go
+@@ -46,7 +46,7 @@ func assertUnsupportedImagesModelResponse(t *testing.T, resp *httptest.ResponseR
+ 	}
+ 
+ 	message := gjson.GetBytes(resp.Body.Bytes(), "error.message").String()
+-	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + gptImage15Model + ", " + defaultImagesToolModel + ", " + gptImage25FlareModel + ", " + gptImage25SunburstModel + ", " + gptImage25Model + ", " + defaultXAIImagesModel + ", " + xaiImagesQualityModel + ", " + xaiImages20Model + ", or a configured openai-compatibility image model."
++	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + gptImage15Model + ", " + defaultImagesToolModel + ", " + gptImage25FlareModel + ", " + gptImage25SunburstModel + ", " + gptImage25Model + ", ***-imagine-image, ***-imagine-image-quality, ***-imagine-image-2.0, or a configured ***-compatibility image model."
+ 	if message != expectedMessage {
+ 		t.Fatalf("error message = %q, want %q", message, expectedMessage)
+ 	}
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
+index 280c3f55d064f88969215deb55e1c9748b60e397..e493503b7f7b2252970b532944f3c0aa3c295f0e 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/google/uuid"
+ 	"github.com/gorilla/websocket"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+@@ -100,7 +101,7 @@ func websocketClosePayloadForUpstreamError(err error) (bool, []byte) {
+ 	if reason == "" {
+ 		reason = "message too big"
+ 	}
+-	reason = truncateWebsocketCloseReason(reason, wsCloseReasonMaxBytes)
++	reason = truncateWebsocketCloseReason(logging.RedactPublicText(reason), wsCloseReasonMaxBytes)
+ 	return true, websocket.FormatCloseMessage(code, reason)
+ }
+ 
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_forward.go b/sdk/api/handlers/openai/openai_responses_websocket_forward.go
+index 4bcdfd685aea0476e1f1750523ca5834ced8017a..7033cb0217ad5fe7c42332b9cddbf1a75ea66781 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket_forward.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_forward.go
+@@ -14,6 +14,7 @@ import (
+ 	"github.com/gorilla/websocket"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	log "github.com/sirupsen/logrus"
+@@ -290,6 +291,7 @@ func writeResponsesWebsocketTerminalError(
+ 		}
+ 	}
+ 
++	payload = logging.RedactPublicErrorBody(payload)
+ 	wrote, errClose := writer.closeWithPayload(payload)
+ 	if wrote && wsTimelineLog != nil {
+ 		wsTimelineLog.Append("response", payload, time.Now())
+@@ -651,7 +653,7 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
+ 		}
+ 	}
+ 
+-	return payload, nil
++	return logging.RedactPublicErrorBody(payload), nil
+ }
+ 
+ func writeResponsesWebsocketError(writer *responsesWebsocketWriter, wsTimelineLog websocketTimelineAppender, errMsg *interfaces.ErrorMessage) ([]byte, error) {
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_timeline.go b/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
+index 77187a793eb955642eeb956826c4cb210bb8dafd..7285e5d4fbe68c449176b49f2e2fb927cf174629 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
+@@ -278,6 +278,7 @@ func setWebsocketBody(c *gin.Context, key string, body string) {
+ }
+ 
+ func writeResponsesWebsocketPayload(writer *responsesWebsocketWriter, wsTimelineLog websocketTimelineAppender, payload []byte, timestamp time.Time) error {
++	payload = redactResponsesWebsocketError(payload)
+ 	if wsTimelineLog != nil {
+ 		wsTimelineLog.Append("response", payload, timestamp)
+ 	}
+diff --git a/sdk/api/handlers/openai/openai_videos_handlers_test.go b/sdk/api/handlers/openai/openai_videos_handlers_test.go
+index b4941d8e0b4c3828c3c5406923d52c90a3262383..4b9a796421e88f46056e4ccf9c2f4852262a5e83 100644
+--- a/sdk/api/handlers/openai/openai_videos_handlers_test.go
++++ b/sdk/api/handlers/openai/openai_videos_handlers_test.go
+@@ -728,7 +728,7 @@ func TestXAIVideosNativeRejectsUnsupportedModel(t *testing.T) {
+ 		t.Fatalf("status = %d, want %d: %s", resp.Code, http.StatusBadRequest, resp.Body.String())
+ 	}
+ 	message := gjson.GetBytes(resp.Body.Bytes(), "error.message").String()
+-	expectedMessage := "Model sora-2 is not supported on " + xaiVideosGenerationsAPI + ", " + xaiVideosEditsAPI + ", or " + xaiVideosExtensionsAPI + ". Use " + defaultXAIVideosModel + "."
++	expectedMessage := "Model sora-2 is not supported on " + xaiVideosGenerationsAPI + ", " + xaiVideosEditsAPI + ", or " + xaiVideosExtensionsAPI + ". Use ***-imagine-video."
+ 	if message != expectedMessage {
+ 		t.Fatalf("error message = %q, want %q", message, expectedMessage)
+ 	}

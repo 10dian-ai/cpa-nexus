@@ -1,5 +1,6 @@
 import type { CpaStatus } from '../../../shared/cpa'
 import { resolveCpaPluginRequest, type CpaPluginRequest, type CpaPluginRoute } from './plugins'
+import { redactSensitiveText } from '../../../shared/log-privacy'
 
 export const CPA_DEFAULT_URL = 'http://cpa:8317'
 export const CPA_MANAGEMENT_PREFIX = '/v8/management/'
@@ -9,7 +10,7 @@ const MAX_RESPONSE_BYTES = Number.POSITIVE_INFINITY
 
 export class CpaClientError extends Error {
   constructor(public readonly code: string, message: string, public readonly statusCode: number) {
-    super(message)
+    super(redactSensitiveText(message))
     this.name = 'CpaClientError'
   }
 }

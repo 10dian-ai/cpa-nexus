@@ -4,6 +4,7 @@ import { cpaDownstreamAbort } from './http'
 import { requireAdmin } from '../auth'
 import { applyCpaPrivacyAfterResponse } from './privacy-hooks'
 import { parseClientKeyList, parseJsonAccessKeyPayload, withReservedClientKey } from './access-keys'
+import { redactManagementResponse, resolveDiagnosticDownloadPath } from '../diagnostic-response'
 
 const PREFIX = '/api/cpa/console/'
 /** The official UI keeps its own preferences and never receives the actual management key. */
@@ -50,9 +51,10 @@ export async function proxyCpaConsole(event: H3Event) {
   // Some upstream resource scripts prepend their saved API base to absolute
   // resource paths. Canonicalize that duplicated base within this fixed scope.
   for (let depth = 0; depth < 3 && relativePath.startsWith('api/cpa/console/'); depth++) relativePath = relativePath.slice('api/cpa/console/'.length)
-  const path = cpaPathSegments(relativePath).join('/')
+  let path = cpaPathSegments(relativePath).join('/')
   const downstream = cpaDownstreamAbort(event)
   try {
+    path = await resolveDiagnosticDownloadPath(path, index => createCpaClient().consoleRequest({ path: index, signal: downstream.signal }))
     const raw = ['GET', 'HEAD'].includes(event.method) ? undefined : await readRawBody(event, false)
     let method = event.method, body = raw ? new Uint8Array(raw).buffer : undefined
     const reserved = process.env.CPA_CLIENT_KEY?.trim()
@@ -93,6 +95,7 @@ export async function proxyCpaConsole(event: H3Event) {
     }
     const response = await createCpaClient().consoleRequest({ path, method, query: new URLSearchParams(question < 0 ? '' : target.slice(question + 1)), body, headers: { 'content-type': getHeader(event, 'content-type') || 'application/json', accept: getHeader(event, 'accept') || '*/*' }, signal: downstream.signal })
     await applyCpaPrivacyAfterResponse(path, method, response)
+    redactManagementResponse(path, response)
     if (path.startsWith('v0/resource/plugins/')) {
       response.body = adaptNativePluginAsset(response.body, response.headers.get('content-type') || '')
       response.headers.delete('etag'); response.headers.delete('last-modified')

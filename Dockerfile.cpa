@@ -6,6 +6,8 @@ WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN git init --quiet && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && git fetch --depth 1 origin "${CPA_UPSTREAM_REF}" && git checkout --detach FETCH_HEAD && test "$(git rev-parse HEAD)" = "${CPA_UPSTREAM_REF}"
 COPY ops/cpa-nexus/nexus-plugins.patch /nexus-patches/0001-nexus-plugins.patch
+COPY ops/cpa-nexus/nexus-log-redaction.patch /nexus-patches/0002-nexus-log-redaction.patch
+COPY ops/cpa-nexus/nexus-devin-errors.patch /nexus-patches/0003-nexus-devin-errors.patch
 RUN for change in /nexus-patches/*.patch; do git apply --check "$change" && git apply "$change"; done
 RUN go mod download
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X main.Version=${CPA_UPSTREAM_VERSION} -X main.Commit=${CPA_UPSTREAM_REF}+nexus -X main.BuildDate=source-pinned" -o /CLIProxyAPI ./cmd/server/

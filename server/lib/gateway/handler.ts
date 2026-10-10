@@ -23,6 +23,8 @@ import { resolveKeyPresetStack } from '../presets'
 import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
 import { resolveAccountRoutingGroupId } from '../groups'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, normalizeBillingRequest } from '../billing'
+import { DiagnosticResponseFilter } from '../diagnostic-response'
+import { redactLogValue, redactSensitiveText } from '../../../shared/log-privacy'
 
 type Protocol = ProviderProtocol
 const PROTOCOLS: readonly Protocol[] = PROVIDER_PROTOCOLS
@@ -38,7 +40,7 @@ function gatewayError(event: H3Event, protocol: string, status: number, code: st
   const error = protocol === 'messages'
     ? { type: 'error', error: { type: code, message, ...details } }
     : { error: { type: code, code, message, ...details } }
-  res.end(JSON.stringify(error))
+  res.end(JSON.stringify(redactLogValue(error)))
 }
 function copyResponseHeaders(event: H3Event, upstream: Response) {
   const res = event.node.res
@@ -257,6 +259,10 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
         httpStatus = upstream.status
         if (!upstream.body) throw new Error('Upstream response has no body')
         reader = upstream.body.getReader()
+        const outputFilter = new DiagnosticResponseFilter(upstream.status, upstream.headers.get('content-type') || 'application/json')
+        const forwardChunk = async (chunk: Uint8Array) => {
+          for (const safe of outputFilter.push(chunk)) await writeWithBackpressure(event.node.res, safe, controller.signal)
+        }
         const pendingError: Uint8Array[] = []
         let pendingErrorBytes = 0
         let responseStarted = false
@@ -276,22 +282,22 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
           if (!responseStarted) {
             copyResponseHeaders(event, upstream)
             responseStarted = true
-            for (const chunk of pendingError) await writeWithBackpressure(event.node.res, chunk, controller.signal)
+            for (const chunk of pendingError) await forwardChunk(chunk)
             pendingError.length = 0
           }
-          await writeWithBackpressure(event.node.res, next.value, controller.signal)
+          await forwardChunk(next.value)
           if (streaming && inspection.completed && !inspection.incomplete && !inspection.failure) completionForwarded = true
         }
         if (!upstream.ok) {
           upstreamFailure = classifyFailure(upstream.status, capture.truncated ? capture.text() : capture.value(false))
           // A stream is never replayed, and an ambiguous error is never retried.
           // A retry requires an explicit rejection and zero bytes sent downstream.
-          await recordFailure(accountId, model, upstreamFailure).catch(error => console.error('[gateway] Model/error observation could not be saved', error instanceof Error ? error.message : 'Storage unavailable'))
+          await recordFailure(accountId, model, upstreamFailure).catch(error => console.error('[gateway] Model/error observation could not be saved', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable')))
           if (!streaming && !responseStarted && !capture.truncated && upstreamFailure.safeToRetry &&
               attempt + 1 < MAX_ATTEMPTS && candidates.some(candidate => candidate.id !== accountId)) continue
           if (!responseStarted) {
             copyResponseHeaders(event, upstream)
-            for (const chunk of pendingError) await writeWithBackpressure(event.node.res, chunk, controller.signal)
+            for (const chunk of pendingError) await forwardChunk(chunk)
           }
           errorMessage = upstreamFailure.message.replaceAll(upstreamKey, '[redacted]')
           status = 'error'
@@ -311,7 +317,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
           }
           if (inspection.failure) {
             upstreamFailure = inspection.failure
-            await recordFailure(accountId, model, upstreamFailure).catch(error => console.error('[gateway] Model/error observation could not be saved', error instanceof Error ? error.message : 'Storage unavailable'))
+            await recordFailure(accountId, model, upstreamFailure).catch(error => console.error('[gateway] Model/error observation could not be saved', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable')))
             errorMessage = upstreamFailure.message.replaceAll(upstreamKey, '[redacted]')
             status = 'error'
           } else if (inspection.incomplete || !inspection.hasOutput || (streaming && !inspection.completed)) {
@@ -322,9 +328,10 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
           } else {
             status = 'success'
           }
-          if (inspection.hasOutput && !inspection.failure) await recordModelAllowed(accountId, model).catch(error => console.error('[gateway] Model access observation could not be saved', error instanceof Error ? error.message : 'Storage unavailable'))
+          if (inspection.hasOutput && !inspection.failure) await recordModelAllowed(accountId, model).catch(error => console.error('[gateway] Model access observation could not be saved', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable')))
           if (!responseStarted) copyResponseHeaders(event, upstream)
         }
+        for (const safe of outputFilter.end()) await writeWithBackpressure(event.node.res, safe, controller.signal)
         if (!event.node.res.writableEnded) event.node.res.end()
         break
       } finally {
@@ -334,9 +341,9 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
           try { await reader.cancel() } catch { /* Request may have already ended. */ }
         }
         try { await releaseLease(getRedis(), lease) }
-        catch (error) { console.error('[gateway] Lease release failed; its TTL will reclaim it', error instanceof Error ? error.message : 'Redis unavailable') }
+        catch (error) { console.error('[gateway] Lease release failed; its TTL will reclaim it', redactSensitiveText(error instanceof Error ? error.message : 'Redis unavailable')) }
         try { await enqueueAccountRefresh(account.id, { reason: 'request', force: false }) }
-        catch (error) { console.error('[gateway] Account refresh could not be queued', error instanceof Error ? error.message : 'Queue unavailable') }
+        catch (error) { console.error('[gateway] Account refresh could not be queued', redactSensitiveText(error instanceof Error ? error.message : 'Queue unavailable')) }
       }
     }
   } catch (error) {
@@ -347,7 +354,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
     status = deliveredCompletion ? 'success' : disconnected && !leaseLost ? 'cancelled' : 'error'
     errorMessage = deliveredCompletion ? null : error instanceof Error ? error.message : 'Gateway request failed'
     if (leaseLost) errorMessage = 'Concurrency lease renewal failed; upstream request was cancelled'
-    if (deliveredCompletion && accountId) await recordModelAllowed(accountId, model).catch(failure => console.error('[gateway] Model access observation could not be saved', failure instanceof Error ? failure.message : 'Storage unavailable'))
+    if (deliveredCompletion && accountId) await recordModelAllowed(accountId, model).catch(failure => console.error('[gateway] Model access observation could not be saved', redactSensitiveText(failure instanceof Error ? failure.message : 'Storage unavailable')))
     if (!controller.signal.aborted) controller.abort(error)
     if (!event.node.res.headersSent && !disconnected) {
       const failureMessage = errorMessage || 'Gateway request failed'
@@ -368,7 +375,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
       })
       await publishUpdate({ type: 'request', ...(accountId ? { accountId } : {}) })
     } catch (error) {
-      console.error('[gateway] Request log could not be persisted', error instanceof Error ? error.message : 'Storage unavailable')
+      console.error('[gateway] Request log could not be persisted', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable'))
     }
   }
 }

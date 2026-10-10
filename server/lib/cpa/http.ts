@@ -1,5 +1,6 @@
 import { createError, getHeader, readRawBody, send, setHeader, setResponseStatus, type H3Event } from 'h3'
 import { CpaClientError, createCpaClient } from './client'
+import { redactManagementResponse } from '../diagnostic-response'
 
 
 export function cpaDownstreamAbort(event: H3Event) {
@@ -42,6 +43,7 @@ export async function proxyCpaPlugin(event: H3Event, kind: 'resource' | 'managem
       headers: { 'content-type': getHeader(event, 'content-type') || 'application/json', accept: getHeader(event, 'accept') || '*/*' },
       signal: downstream.signal,
     })
+    redactManagementResponse(pathname.slice(prefix.length), response)
     if (kind === 'resource') {
       const adapted = adaptCpaResourceBody(response.body, response.headers.get('content-type') || '')
       if (adapted !== response.body) { response.body = adapted; response.headers.delete('etag'); response.headers.delete('last-modified') }

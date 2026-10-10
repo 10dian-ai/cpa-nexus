@@ -1,7 +1,9 @@
+import { redactSensitiveText } from '#shared/log-privacy'
+
 export function apiErrorMessage(error: unknown): string {
   const value = error as { data?: { statusMessage?: string; message?: string; error?: string | { message?: string }; data?: { message?: string } }; statusMessage?: string; message?: string }
   const upstream = typeof value?.data?.error === 'string' ? value.data.error : value?.data?.error?.message
-  return value?.data?.data?.message || value?.data?.message || value?.data?.statusMessage || upstream || value?.statusMessage || value?.message || '操作失败，请稍后重试'
+  return redactSensitiveText(value?.data?.data?.message || value?.data?.message || value?.data?.statusMessage || upstream || value?.statusMessage || value?.message || '操作失败，请稍后重试')
 }
 export function isPlatformAuthenticationError(error: unknown): boolean {
   const value = error as { statusCode?: number; status?: number; response?: { headers?: { get(name: string): string | null } } }

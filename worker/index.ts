@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { redactSensitiveText } from '../shared/log-privacy'
 import { Worker, DelayedError } from 'bullmq'
 import { createRedisConnection, getRedis, closeRedis } from '../server/lib/redis'
 import { getSettings } from '../server/lib/settings'
@@ -29,7 +30,7 @@ async function main() {
   })
   const timer=setInterval(()=>{void isModuleEnabled('commandcode').then(enabled=>enabled?getSettings().then(s=>{refresher.concurrency=s.refreshConcurrency;return schedulerTick()}):undefined).catch(()=>{console.error('Worker scheduler check failed')})},10_000)
   timer.unref()
-  const bridgeTimer=setInterval(()=>{void refreshCommandcodeBridge().catch(()=>{console.error('CommandCode CPA channel refresh failed; existing channel was preserved')})},120_000)
+  const bridgeTimer=setInterval(()=>{void refreshCommandcodeBridge().catch(()=>{console.error(redactSensitiveText('CommandCode CPA channel refresh failed; existing channel was preserved'))})},120_000)
   bridgeTimer.unref()
   let privacyPending = false
   const privacyTimer = setInterval(() => {

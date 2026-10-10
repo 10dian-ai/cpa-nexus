@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
+import { redactSensitiveText } from '../../shared/log-privacy'
 export interface RequestLogInput {
   id?: string; keyId: string | null; accountId: string | null; model: string
   moduleId?: string | null; sourceId?: string | null
@@ -11,8 +12,8 @@ export interface RequestLogInput {
 export function redactLogFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactLogFields)
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
-    [key, /^(authorization|proxy-authorization|cookie|set-cookie|(?:x-)?api[_-]?key|password|(?:access|refresh|session)[_-]?token)$/i.test(key) ? '[redacted]' : redactLogFields(item)]))
-  return value
+    [redactSensitiveText(key), /^(authorization|proxy-authorization|cookie|set-cookie|(?:x-)?api[_-]?key|password|(?:access|refresh|session)[_-]?token)$/i.test(key) ? '[redacted]' : redactLogFields(item)]))
+  return typeof value === 'string' ? redactSensitiveText(value) : value
 }
 // Unicode-mode matching excludes valid surrogate pairs (for example emoji).
 // PostgreSQL JSONB rejects NUL and isolated surrogates in both keys and values.
@@ -37,8 +38,8 @@ export async function insertRequestLog(input: RequestLogInput) {
   const write = async (keyId: string | null, accountId: string | null) => {
     await db`INSERT INTO request_logs(id,key_id,account_id,module_id,source_id,model,protocol,session_id,status,http_status,duration_ms,streaming,usage,error_message,request_body,response_body,response_truncated)
       VALUES(${id},(SELECT id FROM gateway_keys WHERE id=${keyId}),(SELECT id FROM managed_accounts WHERE id=${accountId}),
-      ${input.moduleId ?? null},${input.sourceId ?? null},${input.model},${input.protocol},${input.sessionId},${input.status},${input.httpStatus},${input.durationMs},${input.streaming},
-      ${json(input.usage)}::jsonb,${input.errorMessage},${json(input.requestBody)}::jsonb,${json(input.responseBody)}::jsonb,${input.responseTruncated})
+      ${input.moduleId ?? null},${input.sourceId ?? null},${redactSensitiveText(input.model)},${input.protocol},${input.sessionId ? redactSensitiveText(input.sessionId) : input.sessionId},${input.status},${input.httpStatus},${input.durationMs},${input.streaming},
+      ${json(input.usage)}::jsonb,${input.errorMessage ? redactSensitiveText(input.errorMessage) : input.errorMessage},${json(input.requestBody)}::jsonb,${json(input.responseBody)}::jsonb,${input.responseTruncated})
       ON CONFLICT(id) DO NOTHING`
   }
   try { await write(input.keyId, input.accountId) }

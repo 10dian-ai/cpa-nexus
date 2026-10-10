@@ -8,6 +8,7 @@ import type { AccountView, AccountSnapshot, ModelView } from '../../shared/types
 import { accountGroupBindings, setAccountGroups, ensureAccountGroups } from './groups'
 import { listAvailableCommandcodeModels } from './gateway/accounts'
 import { getOfficialCatalog } from './official-catalog'
+import { redactSensitiveText } from '../../shared/log-privacy'
 const iso = (value: unknown): string | null => value == null ? null : new Date(value as string).toISOString()
 export async function accountViews(rows: Record<string, any>[]): Promise<AccountView[]> {
   const pipeline = getRedis().pipeline()
@@ -29,7 +30,7 @@ export async function getAccount(id: string): Promise<AccountView | null> {
   if (!rows.length) return null
   const account=(await accountViews(rows))[0]!
   const models=await sql`SELECT * FROM account_models WHERE account_id=${id} AND observation_scope='official-provider' ORDER BY model_id`
-  return { ...account, observedModels: models.map(m=>({modelId:m.model_id,status:m.status,reason:m.reason,cooldownUntil:iso(m.cooldown_until),lastCheckedAt:iso(m.last_checked_at)!})) }
+  return { ...account, observedModels: models.map(m=>({modelId:m.model_id,status:m.status,reason:typeof m.reason === 'string' ? redactSensitiveText(m.reason) : m.reason,cooldownUntil:iso(m.cooldown_until),lastCheckedAt:iso(m.last_checked_at)!})) }
 }
 export async function listAccounts(input: { q?:string; status?:string; group?:string; page:number; pageSize:number }) {
   const sql=getDb(), pattern=`%${(input.q??'').replace(/[\\%_]/g,'\\$&')}%`
