@@ -7,7 +7,7 @@ const metrics = computed(() => data.value ? [
   { label: '管理账号', value: data.value.counts.total, icon: 'i-ph-users-three-bold', hint: '已导入的账号' },
   { label: '正常账号', value: data.value.counts.ready, icon: 'i-ph-check-circle-bold', hint: '最近同步状态正常' },
   { label: '需要处理', value: data.value.counts.needsAttention, icon: 'i-ph-warning-circle-bold', hint: '凭证或同步出现问题', warning: true },
-  { label: '当前并发', value: data.value.requests.inFlight, icon: 'i-ph-pulse-bold', hint: '正在转发的请求' },
+  { label: '进行中请求', value: data.value.requests.inFlight, icon: 'i-ph-pulse-bold', hint: '正在转发的请求' },
 ] : [])
 const quotaMetrics = computed(() => data.value ? [
   { label: '5h 限额', value: data.value.quota.fiveHour },

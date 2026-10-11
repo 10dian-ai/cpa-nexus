@@ -13,21 +13,22 @@ export interface AccountSnapshot {
 export interface AccountView extends Partial<GroupBinding> {
   id: string; label: string; email: string | null; groupName: string; note: string
   enabled: boolean; quotaPaused: boolean; quotaResumeAt: string | null; status: 'pending' | 'ready' | 'credential_expired' | 'sync_error'
-  maxConcurrency: number; inFlight: number; hasApiKey: boolean
+  inFlight: number; hasApiKey: boolean
   observedModels?: {modelId:string;status:"allowed"|"denied"|"cooldown";reason:string|null;cooldownUntil:string|null;lastCheckedAt:string}[]; snapshot: AccountSnapshot | null; syncError: string | null
   lastSyncAt: string | null; lastUsedAt: string | null; createdAt: string
 }
 export interface SystemSettings {
-  globalConcurrency: number; defaultAccountConcurrency: number
   activeRefreshSeconds: number; idleRefreshSeconds: number; activeWindowSeconds: number
   refreshConcurrency: number; refreshRatePerSecond: number
   logRetentionDays: number; affinityTtlSeconds: number; maxRequestBodyMb: number
+  /** Upstream silence (seconds) tolerated before a model request is aborted. */
+  upstreamTimeoutSeconds: number
 }
 export const DEFAULT_SETTINGS: SystemSettings = {
-  globalConcurrency: 20, defaultAccountConcurrency: 2,
   activeRefreshSeconds: 60, idleRefreshSeconds: 300, activeWindowSeconds: 300,
   refreshConcurrency: 2, refreshRatePerSecond: 2,
   logRetentionDays: 30, affinityTtlSeconds: 86400, maxRequestBodyMb: 0,
+  upstreamTimeoutSeconds: 600,
 }
 export interface GatewayKeyView extends Partial<GroupBinding> { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; createdAt: string; lastUsedAt: string | null }
 export interface RequestLogView {

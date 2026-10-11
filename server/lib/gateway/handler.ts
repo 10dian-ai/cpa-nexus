@@ -9,6 +9,7 @@ import { decryptSecret } from '../crypto'
 import { verifyOriginalGatewayKey } from '../commandcode-identity'
 import { getRedis } from '../redis'
 import { getSettings } from '../settings'
+import { upstreamIdleTimeoutMs } from '../timeouts'
 import { enqueueAccountRefresh } from '../queues'
 import { insertRequestLog } from '../logs'
 import { publishUpdate } from '../events'
@@ -30,7 +31,6 @@ import { modelErrorShape } from '../model-errors'
 type Protocol = ProviderProtocol
 const PROTOCOLS: readonly Protocol[] = PROVIDER_PROTOCOLS
 const MAX_ATTEMPTS = 2
-const UPSTREAM_IDLE_MS = 120_000
 
 function gatewayError(event: H3Event, protocol: string, status: number, code: string, message: string, retryAfter?: number, details?: Record<string, unknown>) {
   const res = event.node.res
@@ -202,15 +202,14 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
       if (controller.signal.aborted) throw controller.signal.reason
       const candidates = allCandidates.filter(candidate => !attempted.has(candidate.id))
       const result = await acquireLease(getRedis(), {
-        candidates, globalLimit: settings.globalConcurrency,
-        affinityHash: affinity.affinityHash, affinityTtlSeconds: settings.affinityTtlSeconds,
+        candidates, affinityHash: affinity.affinityHash, affinityTtlSeconds: settings.affinityTtlSeconds,
       })
       if (!result.ok) {
         httpStatus = result.reason === 'no_accounts' ? 503 : 429
         errorMessage = result.reason === 'no_accounts'
           ? 'No enabled account with usable credentials, quota and model access is currently available'
-          : result.reason === 'global_capacity' ? 'Gateway global concurrency is full' : 'All eligible accounts are busy or temporarily cooling down'
-        gatewayError(event, protocol, httpStatus, result.reason === 'no_accounts' ? 'no_available_accounts' : 'gateway_capacity', errorMessage, 5)
+          : 'All eligible accounts are temporarily cooling down'
+        gatewayError(event, protocol, httpStatus, result.reason === 'no_accounts' ? 'no_available_accounts' : 'accounts_cooling_down', errorMessage, 5)
         return
       }
       const lease = result.lease
@@ -222,7 +221,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
       let idleTimer: ReturnType<typeof setTimeout> | undefined
       const resetIdle = () => {
         if (idleTimer) clearTimeout(idleTimer)
-        idleTimer = setTimeout(() => controller.abort(new Error('Upstream idle timeout')), UPSTREAM_IDLE_MS)
+        idleTimer = setTimeout(() => controller.abort(new Error('Upstream idle timeout')), upstreamIdleTimeoutMs(settings))
         idleTimer.unref()
       }
       try {

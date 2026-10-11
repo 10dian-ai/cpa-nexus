@@ -9,20 +9,21 @@ const ROUND_ROBIN_KEY = GATEWAY_REDIS_PREFIX + 'round-robin'
 export const LEASE_MS = 60_000
 export const RENEW_INTERVAL_MS = 15_000
 
-// Redis TIME makes every web process use the same clock. Cleanup, both capacity
-// checks, selection, affinity migration, and reservation happen in one operation.
+// Redis TIME makes every web process use the same clock. There is no
+// concurrency cap: leases only track in-flight work so selection can prefer
+// the least-loaded account, keep session affinity and skip cooling accounts.
+// Cleanup, selection, affinity and reservation happen in one operation.
 const ACQUIRE = `
 local tm=redis.call('TIME')
 local now=tonumber(tm[1])*1000+math.floor(tonumber(tm[2])/1000)
 local ttl=tonumber(ARGV[2])
 redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',now)
 redis.call('ZREMRANGEBYSCORE',KEYS[4],'-inf',now)
-if redis.call('ZCARD',KEYS[1]) >= tonumber(ARGV[3]) then return {'global_capacity'} end
-local candidates=cjson.decode(ARGV[5])
+local candidates=cjson.decode(ARGV[4])
 local n=#candidates
 if n==0 then return {'no_accounts'} end
 local preferred=nil
-if ARGV[6]=='1' then preferred=redis.call('GET',KEYS[2]) end
+if ARGV[5]=='1' then preferred=redis.call('GET',KEYS[2]) end
 local offset=redis.call('INCR',KEYS[3]) % n
 redis.call('PEXPIRE',KEYS[3],604800000)
 local best=nil
@@ -32,15 +33,14 @@ for step=0,n-1 do
   local account=candidates[i]
   local accountKey=KEYS[i+4]
   redis.call('ZREMRANGEBYSCORE',accountKey,'-inf',now)
-  local count=redis.call('ZCARD',accountKey)
   local cooldown=redis.call('ZSCORE',KEYS[4],account.id)
-  if (not cooldown or tonumber(cooldown)<=now) and count<account.limit then
+  if not cooldown or tonumber(cooldown)<=now then
     if account.id==preferred then best=i;break end
-    local score=count/account.limit
-    if score<bestScore then best=i;bestScore=score end
+    local count=redis.call('ZCARD',accountKey)
+    if count<bestScore then best=i;bestScore=count end
   end
 end
-if not best then return {'account_capacity'} end
+if not best then return {'cooling_down'} end
 local id=candidates[best].id
 local accountKey=KEYS[best+4]
 local expires=now+ttl
@@ -48,7 +48,7 @@ redis.call('ZADD',KEYS[1],expires,ARGV[1])
 redis.call('ZADD',accountKey,expires,ARGV[1])
 redis.call('PEXPIRE',KEYS[1],ttl*2)
 redis.call('PEXPIRE',accountKey,ttl*2)
-if ARGV[6]=='1' then redis.call('SET',KEYS[2],id,'PX',ARGV[4]) end
+if ARGV[5]=='1' then redis.call('SET',KEYS[2],id,'PX',ARGV[3]) end
 return {'acquired',id,ARGV[1],tostring(expires)}
 `
 
@@ -86,24 +86,26 @@ end
 return 1
 `
 
-export interface Candidate { id: string; limit: number }
+/** `limit` is accepted for older callers and ignored: accounts have no concurrency cap. */
+export interface Candidate { id: string; limit?: number }
 export interface Lease { accountId: string; token: string; expiresAt: number }
 export type AcquireResult = { ok: true; lease: Lease } |
-  { ok: false; reason: 'global_capacity' | 'account_capacity' | 'no_accounts' }
+  { ok: false; reason: 'cooling_down' | 'no_accounts' }
 
 export async function acquireLease(redis: Redis, input: {
-  candidates: Candidate[]; globalLimit: number; affinityHash: string | null
+  candidates: Candidate[]; affinityHash: string | null
   affinityTtlSeconds: number; leaseMs?: number
+  /** Ignored. Retained so older callers still compile. */
+  globalLimit?: number
 }): Promise<AcquireResult> {
-  const candidates = input.candidates.filter(a => Number.isInteger(a.limit) && a.limit > 0).map(a => ({ id: a.id, limit: a.limit }))
+  const candidates = input.candidates.map(a => ({ id: a.id }))
   if (!candidates.length) return { ok: false, reason: 'no_accounts' }
   const token = randomUUID()
   const keys = [GLOBAL_LEASE_KEY, GATEWAY_REDIS_PREFIX + 'affinity:' + (input.affinityHash || 'unused'),
     ROUND_ROBIN_KEY, ACCOUNT_COOLDOWN_KEY, ...candidates.map(a => accountLeaseKey(a.id))]
   const result = await redis.eval(ACQUIRE, keys.length, ...keys, token, input.leaseMs ?? LEASE_MS,
-    Math.max(1, input.globalLimit), Math.max(1000, input.affinityTtlSeconds * 1000),
-    JSON.stringify(candidates), input.affinityHash ? '1' : '0') as string[]
-  if (result[0] !== 'acquired') return { ok: false, reason: result[0] as 'global_capacity' | 'account_capacity' | 'no_accounts' }
+    Math.max(1000, input.affinityTtlSeconds * 1000), JSON.stringify(candidates), input.affinityHash ? '1' : '0') as string[]
+  if (result[0] !== 'acquired') return { ok: false, reason: result[0] as 'cooling_down' | 'no_accounts' }
   return { ok: true, lease: { accountId: result[1]!, token: result[2]!, expiresAt: Number(result[3]) } }
 }
 

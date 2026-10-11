@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
 import { getRedis } from './redis'
-import { readAccountConcurrencyForImport } from './settings'
 import { publishUpdate } from './events'
 import { enqueueAccountRefresh } from './queues'
 import type { AccountView, AccountSnapshot, ModelView } from '../../shared/types'
@@ -19,7 +18,7 @@ export async function accountViews(rows: Record<string, any>[]): Promise<Account
   return rows.map((row,index) => ({
     id: row.id, label: row.label, email: row.email, groupName: row.group_name, note: row.note,
     ...(bindings.get(row.id) ?? { groupIds: [], groupNames: [] }),
-    enabled: row.enabled, quotaPaused: !!row.quota_paused, quotaResumeAt: iso(row.quota_resume_at), status: row.status, maxConcurrency: row.max_concurrency,
+    enabled: row.enabled, quotaPaused: !!row.quota_paused, quotaResumeAt: iso(row.quota_resume_at), status: row.status,
     inFlight: Number(counts?.[index]?.[1] ?? 0), hasApiKey: !!row.api_key_ciphertext,
     snapshot: row.snapshot as AccountSnapshot | null, syncError: row.sync_error,
     lastSyncAt: iso(row.last_sync_at), lastUsedAt: iso(row.last_used_at), createdAt: iso(row.created_at)!,
@@ -43,9 +42,9 @@ export async function listAccounts(input: { q?:string; status?:string; group?:st
   ])
   return {items:await accountViews(rows),total:count[0]!.total,page:input.page,pageSize:input.pageSize,groups:groups.map(g=>g.group_name)}
 }
-export async function patchAccount(id:string, values: {label?:string;groupName?:string;groupIds?:string[];note?:string;enabled?:boolean;maxConcurrency?:number}) {
+export async function patchAccount(id:string, values: {label?:string;groupName?:string;groupIds?:string[];note?:string;enabled?:boolean}) {
   const sql=getDb(), updates: Record<string, string|number|boolean|Date|null|string[]>={updated_at:new Date()}
-  for (const [key,column] of Object.entries({label:'label',groupName:'group_name',note:'note',maxConcurrency:'max_concurrency'})) {
+  for (const [key,column] of Object.entries({label:'label',groupName:'group_name',note:'note'})) {
     const value=values[key as keyof typeof values]
     if (value !== undefined && !Array.isArray(value)) updates[column]=value
   }
@@ -64,9 +63,8 @@ export async function patchAccount(id:string, values: {label?:string;groupName?:
 export async function createPendingAccount(fingerprint:string,ciphertext:string,groupName?:string,groupIds?:string[]) {
   const sql=getDb(), id=randomUUID()
   const rows=await sql.begin(async tx => {
-    const maxConcurrency = await readAccountConcurrencyForImport(tx)
-    const inserted=await tx`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext,group_name,max_concurrency)
-      VALUES(${id},${fingerprint},${ciphertext},${groupName??''},${maxConcurrency})
+    const inserted=await tx`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext,group_name)
+      VALUES(${id},${fingerprint},${ciphertext},${groupName??''})
       ON CONFLICT(credential_fingerprint) DO UPDATE SET updated_at=managed_accounts.updated_at RETURNING *`
     if (groupIds !== undefined) await setAccountGroups(tx, 'commandcode', inserted[0]!.id, groupIds)
     else await ensureAccountGroups(tx, 'commandcode', inserted[0]!.id)

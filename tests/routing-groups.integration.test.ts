@@ -155,11 +155,11 @@ describe.skipIf(!databaseUrl)('group routing on real PostgreSQL data', () => {
     await Promise.all([redis.connect(), raw.connect()])
     try {
       const affinityHash = 'group-change-session'
-      const first = await acquireLease(redis, { candidates: await listCandidates('same/model', keyA), globalLimit: 10, affinityHash, affinityTtlSeconds: 60 })
+      const first = await acquireLease(redis, { candidates: await listCandidates('same/model', keyA), affinityHash, affinityTtlSeconds: 60 })
       expect(first.ok).toBe(true); if (!first.ok) return
       expect(first.lease.accountId).toBe(accountA); await releaseLease(redis, first.lease)
       await sql.begin(tx => setKeyGroups(tx, keyA, [groupB]))
-      const second = await acquireLease(redis, { candidates: await listCandidates('same/model', keyA), globalLimit: 10, affinityHash, affinityTtlSeconds: 60 })
+      const second = await acquireLease(redis, { candidates: await listCandidates('same/model', keyA), affinityHash, affinityTtlSeconds: 60 })
       expect(second.ok).toBe(true); if (!second.ok) return
       expect(second.lease.accountId).toBe(accountB); await releaseLease(redis, second.lease)
     } finally {

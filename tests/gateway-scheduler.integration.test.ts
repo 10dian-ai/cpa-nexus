@@ -30,34 +30,34 @@ describe.skipIf(!redisUrl)('Redis concurrency leases (integration)', () => {
     raw?.disconnect()
     redis?.disconnect()
   })
-  const options = (candidates = [{ id: 'a', limit: 2 }, { id: 'b', limit: 2 }, { id: 'c', limit: 2 }]) =>
-    ({ candidates, globalLimit: 5, affinityHash: null, affinityTtlSeconds: 60 })
+  const options = (candidates = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]) =>
+    ({ candidates, affinityHash: null, affinityTtlSeconds: 60 })
 
-  it('atomically enforces both capacities under simultaneous acquisitions', async () => {
+  it('never refuses work for capacity and spreads simultaneous requests by load', async () => {
     const results = await Promise.all(Array.from({ length: 40 }, () => acquireLease(redis, options())))
-    const leases = results.filter(result => result.ok).map(result => (result as { ok: true; lease: Lease }).lease)
-    expect(leases).toHaveLength(5)
+    expect(results.every(result => result.ok)).toBe(true)
+    const leases = results.map(result => (result as { ok: true; lease: Lease }).lease)
     const counts = await readInflightCounts(redis, ['a', 'b', 'c'])
-    expect(counts.total).toBe(5)
-    expect(Object.values(counts.accounts).every(value => value <= 2)).toBe(true)
-    expect(Object.values(counts.accounts).reduce((sum, value) => sum + value, 0)).toBe(5)
+    expect(counts.total).toBe(40)
+    const values = Object.values(counts.accounts)
+    expect(Math.max(...values) - Math.min(...values)).toBeLessThanOrEqual(1)
     await Promise.all(leases.flatMap(lease => [releaseLease(redis, lease), releaseLease(redis, lease)]))
     expect((await readInflightCounts(redis, ['a', 'b', 'c'])).total).toBe(0)
   })
   it('renews long-running work beyond its initial expiry', async () => {
-    const input = { ...options([{ id: 'a', limit: 1 }]), leaseMs: 600 }
+    const input = { ...options([{ id: 'a' }]), leaseMs: 600 }
     const first = await acquireLease(redis, input)
     expect(first.ok).toBe(true)
     if (!first.ok) return
     await delay(300)
     expect(await renewLease(redis, first.lease, 600)).toBe(true)
     await delay(400)
-    expect((await acquireLease(redis, input)).ok).toBe(false)
+    expect((await readInflightCounts(redis, ['a'])).accounts.a).toBe(1)
     await releaseLease(redis, first.lease)
-    expect((await acquireLease(redis, input)).ok).toBe(true)
+    expect((await readInflightCounts(redis, ['a'])).accounts.a).toBe(0)
   })
   it('reclaims an expired crashed request, without stale release deleting its replacement', async () => {
-    const input = { ...options([{ id: 'a', limit: 1 }]), leaseMs: 80 }
+    const input = { ...options([{ id: 'a' }]), leaseMs: 80 }
     const first = await acquireLease(redis, input)
     expect(first.ok).toBe(true)
     if (!first.ok) return
@@ -68,24 +68,17 @@ describe.skipIf(!redisUrl)('Redis concurrency leases (integration)', () => {
     await releaseLease(redis, first.lease)
     expect((await readInflightCounts(redis, ['a'])).accounts.a).toBe(1)
   })
-  it('migrates a busy session while retaining the original request and binding the new account', async () => {
-    const input = { ...options([{ id: 'a', limit: 1 }, { id: 'b', limit: 1 }]), affinityHash: 'same-session' }
+  it('keeps a session on its account even while that account is busy', async () => {
+    const input = { ...options([{ id: 'a' }, { id: 'b' }]), affinityHash: 'same-session' }
     const first = await acquireLease(redis, input)
     const second = await acquireLease(redis, input)
     expect(first.ok && second.ok).toBe(true)
     if (!first.ok || !second.ok) return
-    expect(second.lease.accountId).not.toBe(first.lease.accountId)
-    expect((await readInflightCounts(redis, ['a', 'b'])).total).toBe(2)
-    await releaseLease(redis, second.lease)
-    const third = await acquireLease(redis, input)
-    expect(third.ok).toBe(true)
-    if (!third.ok) return
-    expect(third.lease.accountId).toBe(second.lease.accountId)
-    expect(await renewLease(redis, first.lease)).toBe(true)
+    expect(second.lease.accountId).toBe(first.lease.accountId)
     expect((await readInflightCounts(redis, ['a', 'b'])).total).toBe(2)
   })
   it('fails closed when either half of a lease disappears', async () => {
-    const result = await acquireLease(redis, options([{ id: 'a', limit: 1 }]))
+    const result = await acquireLease(redis, options([{ id: 'a' }]))
     expect(result.ok).toBe(true)
     if (!result.ok) return
     await redis.del(accountLeaseKey('a'))
@@ -94,10 +87,10 @@ describe.skipIf(!redisUrl)('Redis concurrency leases (integration)', () => {
   })
   it('temporarily excludes an account without marking its model denied', async () => {
     await cooldownAccount(redis, 'a', 1)
-    const input = options([{ id: 'a', limit: 1 }, { id: 'b', limit: 1 }])
+    const input = options([{ id: 'a' }, { id: 'b' }])
     const result = await acquireLease(redis, input)
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.lease.accountId).toBe('b')
-    expect((await acquireLease(redis, options([{ id: 'a', limit: 1 }]))).ok).toBe(false)
+    expect(await acquireLease(redis, options([{ id: 'a' }]))).toEqual({ ok: false, reason: 'cooling_down' })
   })
 })

@@ -2,6 +2,7 @@ import type { H3Event } from 'h3'
 import { getRequestURL } from 'h3'
 import { authenticateGatewayKey } from './auth'
 import { getSettings } from './settings'
+import { upstreamIdleTimeoutMs } from './timeouts'
 import { requireModule } from './modules'
 import { CPA_DEFAULT_URL, validateCpaBaseUrl } from './cpa/client'
 import { handleGateway } from './gateway/handler'
@@ -16,7 +17,6 @@ import { redactLogValue, redactSensitiveText } from '../../shared/log-privacy'
 import { modelErrorBody } from './model-errors'
 
 const PROTOCOLS = ['chat/completions', 'messages', 'responses']
-const IDLE_MS = 120_000
 function error(event: H3Event, protocol: string, status: number, code: string, message: string) {
   const response = event.node.res
   if (response.destroyed || response.writableEnded) return
@@ -105,7 +105,8 @@ async function handleCompatibility(event: H3Event, path: string, options?: { pro
   if (event.node.res.destroyed) onClose()
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  const resetIdle = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => controller.abort(new Error('CPA upstream idle timeout')), IDLE_MS); timer.unref() }
+  const idleMs = upstreamIdleTimeoutMs(await getSettings())
+  const resetIdle = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => controller.abort(new Error('CPA upstream idle timeout')), idleMs); timer.unref() }
   try {
     resetIdle()
     const upstream = await fetch(destination, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal, redirect: 'error' })

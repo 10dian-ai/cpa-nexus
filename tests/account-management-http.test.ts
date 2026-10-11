@@ -3,7 +3,6 @@ import type { AddressInfo } from 'node:net'
 import { createApp, createRouter, toNodeListener } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiErrorMessage } from '../app/composables/useApiAction'
-import { MAX_ACCOUNT_CONCURRENCY } from '../shared/concurrency'
 
 const fixture = vi.hoisted(() => ({ patch: vi.fn() }))
 vi.mock('../server/lib/accounts', () => ({ patchAccount: fixture.patch }))
@@ -30,14 +29,14 @@ describe('account edit HTTP validation', () => {
   })
   it('allows saving an unnamed pending account and explicitly clearing an optional label', async () => {
     for (const label of ['', '  ']) {
-      const response = await update({ label, groupName: '', note: '', enabled: false, maxConcurrency: 2 })
+      const response = await update({ label, groupName: '', note: '', enabled: false })
       expect(response.status).toBe(200)
       expect(await response.json()).toMatchObject({ id: ID, label: '', enabled: false })
-      expect(fixture.patch).toHaveBeenLastCalledWith(ID, { label: '', groupName: '', note: '', enabled: false, maxConcurrency: 2 })
+      expect(fixture.patch).toHaveBeenLastCalledWith(ID, { label: '', groupName: '', note: '', enabled: false })
     }
   })
   it('accepts the documented upper form limits', async () => {
-    const fields = { label: 'a'.repeat(200), groupName: 'g'.repeat(100), note: 'n'.repeat(5000), maxConcurrency: MAX_ACCOUNT_CONCURRENCY }
+    const fields = { label: 'a'.repeat(200), groupName: 'g'.repeat(100), note: 'n'.repeat(5000) }
     const response = await update(fields)
     expect(response.status).toBe(200)
     await response.arrayBuffer()
@@ -55,8 +54,7 @@ describe('account edit HTTP validation', () => {
     expect(fixture.patch).not.toHaveBeenCalled()
   })
   it('rejects empty, unknown and out-of-range changes before updating storage', async () => {
-    for (const fields of [{}, { ignored: true }, { maxConcurrency: 0 }, { maxConcurrency: MAX_ACCOUNT_CONCURRENCY + 1 },
-      { maxConcurrency: 2.5 }, { maxConcurrency: '2' }, { enabled: 'false' }, { label: 'a'.repeat(201) }, { note: 'n'.repeat(5001) }]) {
+    for (const fields of [{}, { ignored: true }, { maxConcurrency: 2 }, { enabled: 'false' }, { label: 'a'.repeat(201) }, { note: 'n'.repeat(5001) }]) {
       const response = await update(fields)
       expect(response.status).toBe(400)
       await response.arrayBuffer()

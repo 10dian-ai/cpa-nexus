@@ -8,7 +8,7 @@ import { getOfficialCatalog, OfficialCatalogUnavailableError } from '../official
 import { commandcodePlanScope, isProviderModelForPlan } from '../../../shared/official-catalog'
 import type { OfficialCatalogView } from '../../../shared/official-catalog'
 
-export interface GatewayAccount { id: string; apiKeyCiphertext: string; limit: number }
+export interface GatewayAccount { id: string; apiKeyCiphertext: string }
 export async function listCandidates(model: string, keyId?: string): Promise<GatewayAccount[]> {
   const official = await getOfficialCatalog()
   const metadata = official.models.find(item => item.id === model)
@@ -21,8 +21,8 @@ export async function listCandidates(model: string, keyId?: string): Promise<Gat
       EXISTS(SELECT 1 FROM nexus_key_groups kg JOIN gateway_keys k ON k.id=kg.key_id AND k.enabled=true WHERE kg.key_id=${keyId} AND kg.group_id=ag.group_id)
       OR (ag.group_id IN (SELECT group_id FROM nexus_module_group_defaults WHERE module_id='commandcode') AND EXISTS(SELECT 1 FROM gateway_keys k WHERE k.id=${keyId} AND k.enabled=true AND left(k.prefix,10)='ccm_nexus_'))
     ))` : sql`AND EXISTS (SELECT 1 FROM nexus_account_groups ag JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true WHERE ag.module_id='commandcode' AND ag.account_id=a.id::text)`
-  const rows = await sql<{ id: string; api_key_ciphertext: string; max_concurrency: number; snapshot: AccountSnapshot | null }[]>`
-    SELECT a.id, a.api_key_ciphertext, a.max_concurrency, a.snapshot
+  const rows = await sql<{ id: string; api_key_ciphertext: string; snapshot: AccountSnapshot | null }[]>`
+    SELECT a.id, a.api_key_ciphertext, a.snapshot
     FROM managed_accounts a
     LEFT JOIN account_models m ON m.account_id = a.id AND m.model_id = ${model} AND m.observation_scope='official-provider'
     WHERE a.enabled = TRUE AND a.status = 'ready' AND a.api_key_ciphertext IS NOT NULL
@@ -32,7 +32,7 @@ export async function listCandidates(model: string, keyId?: string): Promise<Gat
     ORDER BY a.last_used_at ASC NULLS FIRST, a.id
   `
   return rows.filter(row => !snapshotIsLimited(row.snapshot) && isProviderModelForPlan(metadata, commandcodePlanScope(row.snapshot?.subscription.planId, planIds).id)).map(row => ({
-    id: row.id, apiKeyCiphertext: row.api_key_ciphertext, limit: row.max_concurrency,
+    id: row.id, apiKeyCiphertext: row.api_key_ciphertext,
   }))
 }
 export async function touchAccount(accountId: string) {

@@ -22,7 +22,7 @@ vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: fixture.pro
 vi.mock('../server/lib/crypto', () => ({ decryptSecret: () => 'fixture-upstream-key' }))
 vi.mock('../server/lib/redis', () => ({ getRedis: () => ({}) }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({
-  maxRequestBodyMb: fixture.maxRequestBodyMb, globalConcurrency: 10, affinityTtlSeconds: 60,
+  maxRequestBodyMb: fixture.maxRequestBodyMb, affinityTtlSeconds: 60,
 }) }))
 vi.mock('../server/lib/queues', () => ({ enqueueAccountRefresh: fixture.refresh }))
 vi.mock('../server/lib/logs', () => ({ insertRequestLog: fixture.log }))
@@ -418,7 +418,7 @@ describe('gateway over real HTTP connections', () => {
     }))
     const pending = post(url, true)
     await blocked
-    const timers = timeoutSpy.mock.calls.flatMap((call, index) => call[1] === 120_000 ? [timeoutSpy.mock.results[index]!.value] : [])
+    const timers = timeoutSpy.mock.calls.flatMap((call, index) => call[1] === 600_000 ? [timeoutSpy.mock.results[index]!.value] : [])
     expect(timers.length).toBeGreaterThan(0)
     for (const timer of timers) expect(clearSpy).toHaveBeenCalledWith(timer)
     responseSocket!.emit('drain')
