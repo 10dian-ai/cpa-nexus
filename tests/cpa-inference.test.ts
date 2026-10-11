@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const fixture = vi.hoisted(() => ({
   presets: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), compat: vi.fn(), internal: vi.fn(), routing: vi.fn(),
   offers: vi.fn(), ccModels: vi.fn(), candidates: vi.fn(), provider: vi.fn(), policy: vi.fn(), log: vi.fn(), bindings: vi.fn(),
-  capabilities: vi.fn(), devinLevels: vi.fn(), invalidate: vi.fn(), limit: 1, stalePolicyOnce: false,
+  capabilities: vi.fn(), devinLevels: vi.fn(), invalidate: vi.fn(), limit: 1, stalePolicyOnce: false, maxBody: 0,
   /** Core behaviour per model sent to CPA: status and JSON body. */
   core: new Map<string, { status: number; body: unknown }>(),
 }))
@@ -38,7 +38,7 @@ describe('unified model key router', () => {
   let received: { path: string; headers: Record<string, unknown>; raw: string; body: any }[]
   let release: (() => void) | undefined, cancelled: boolean
   beforeEach(async () => {
-    vi.resetAllMocks(); resetGlobalModelCache(); fixture.limit = 1; fixture.core.clear(); fixture.stalePolicyOnce = false
+    vi.resetAllMocks(); resetGlobalModelCache(); fixture.limit = 1; fixture.core.clear(); fixture.stalePolicyOnce = false; fixture.maxBody = 0
     fixture.presets.mockResolvedValue([]); fixture.module.mockResolvedValue(undefined)
     fixture.enabled.mockResolvedValue(true); fixture.routing.mockResolvedValue({ groupIds: ['group-a'], strategy: 'failover' })
     fixture.policy.mockResolvedValue('server-generated-private-policy')
@@ -64,6 +64,7 @@ describe('unified model key router', () => {
         fixture.stalePolicyOnce = false
         res.writeHead(403, { 'content-type': 'application/json' }); res.end('{"error":{"code":"nexus_group_policy_invalid","message":"Invalid or expired group policy"}}'); return
       }
+      if (fixture.maxBody && raw.length > fixture.maxBody) { res.writeHead(413, { 'content-type': 'text/html' }); res.end('<html><title>413 Request Entity Too Large</title></html>'); return }
       const scripted = fixture.core.get(body?.model)
       if (scripted) { res.writeHead(scripted.status, { 'content-type': 'application/json' }); res.end(JSON.stringify(scripted.body)); return }
       if (raw.includes('"stream":true')) {
@@ -283,6 +284,35 @@ describe('unified model key router', () => {
       const forwarded = generations()[0]!.body.messages[0].content[0].image_url.url as string
       expect(forwarded.length).toBeLessThan(image.length / 2)
       expect(fixture.log.mock.calls.at(-1)![0].usage.nexus.images).toMatchObject({ images: 1, compressed: 1 })
+    })
+
+    it('retries the same source with smaller images when a proxy answers 413', async () => {
+      fixture.limit = 0
+      const { default: sharp } = await import('sharp')
+      const raw = Buffer.alloc(3000 * 2000 * 3); let seed = 9
+      for (let i = 0; i < raw.length; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; raw[i] = ((i / 3 % 3000) * 255 / 3000 + (seed >> 24)) & 255 }
+      const image = (await sharp(raw, { raw: { width: 3000, height: 2000, channels: 3 } }).jpeg({ quality: 98 }).toBuffer()).toString('base64')
+      const content = Array(4).fill({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + image } })
+      fixture.maxBody = 1024 * 1024
+      const response = await post({ model: 'native-model', messages: [{ role: 'user', content }] }, 'ccm_KA')
+      expect(response.status).toBe(200); await response.text()
+      expect(generations().at(-1)!.raw.length).toBeLessThanOrEqual(1024 * 1024)
+      const log = fixture.log.mock.calls.at(-1)![0]
+      expect(log.usage.nexus.images.steps).toBeGreaterThan(0)
+      expect(log.usage.nexus.failover[0]).toMatchObject({ status: 413 })
+    })
+
+    it('explains how far images were shrunk when even the smallest size is too large', async () => {
+      fixture.limit = 0
+      const { default: sharp } = await import('sharp')
+      const raw = Buffer.alloc(1200 * 900 * 3); let seed = 11
+      for (let i = 0; i < raw.length; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; raw[i] = (seed >> 23) & 255 }
+      const image = (await sharp(raw, { raw: { width: 1200, height: 900, channels: 3 } }).jpeg({ quality: 98 }).toBuffer()).toString('base64')
+      fixture.maxBody = 20 * 1024
+      const response = await post({ model: 'native-model', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + image } }] }] }, 'ccm_KA')
+      expect(response.status).toBe(413)
+      const message = (await response.json()).error.message as string
+      expect(message).toContain('已从'); expect(message).toContain('最长边 768px')
     })
 
     it('records the credential CPA actually used', async () => {

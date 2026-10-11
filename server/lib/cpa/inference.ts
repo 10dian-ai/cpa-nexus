@@ -182,7 +182,9 @@ interface ModelRequest {
   logProtocol: string
   cpaPathFor: (nativeModel: string) => string
   /** Inline image resizing applied before routing, for logs. */
-  images?: ImageCompressionStats
+  images?: ImageCompressionStats & { maxEdge?: number; quality?: number; steps?: number }
+  /** The client's body before image resizing, kept for stronger retries after HTTP 413. */
+  originalBody?: JsonObject
 }
 interface AttemptRecord { kind: 'cpa' | 'commandcode'; groupId: string; model?: string; status: number; error: string }
 
@@ -219,8 +221,11 @@ async function runModelRequest(request: ModelRequest) {
   // (and every proxy on the way) receives the smaller request.
   if (request.settings.imageMaxEdge > 0) {
     const compressed = await compressRequestImages(request.body, { maxEdge: request.settings.imageMaxEdge, quality: request.settings.imageQuality })
+    if (compressed.stats.images) {
+      request.originalBody = request.body
+      request.images = { ...compressed.stats, maxEdge: request.settings.imageMaxEdge, quality: request.settings.imageQuality, steps: 0 }
+    }
     request.body = compressed.body
-    if (compressed.stats.images) request.images = compressed.stats
   }
   const failures: AttemptRecord[] = []
   const startedAt = Date.now()
@@ -231,7 +236,9 @@ async function runModelRequest(request: ModelRequest) {
       if (isCommandcodeFailure(result)) { failures.push({ kind: 'commandcode', groupId: attempt.groupId, status: result.status, error: result.message }); continue }
       return
     }
-    const outcome = await runCpaAttempt(request, attempt, last, failures, startedAt)
+    let outcome = await runCpaAttempt(request, attempt, last, failures, startedAt)
+    // The same source rejected the body size: try it again with smaller images first.
+    while (outcome === 'retry') outcome = await runCpaAttempt(request, attempt, last, failures, startedAt)
     if (outcome === 'done') return
   }
   // Every attempt failed over; report the last one.
@@ -241,7 +248,26 @@ async function runModelRequest(request: ModelRequest) {
   await logRequest(request, { status, startedAt, failures, error: lastFailure?.error || 'All sources failed', body: request.body })
 }
 
-async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, last: boolean, failures: AttemptRecord[], startedAt: number): Promise<'done' | 'next'> {
+/**
+ * Stronger image settings tried in turn when a proxy rejects the body (HTTP 413).
+ * nginx's default limit is 1 MB, so the last step aims at roughly 100–200 KB per photo.
+ */
+const SHRINK_STEPS = [{ maxEdge: 1536, quality: 80 }, { maxEdge: 1024, quality: 75 }, { maxEdge: 768, quality: 70 }]
+async function shrinkAfterTooLarge(request: ModelRequest): Promise<boolean> {
+  if (!request.originalBody || !request.images) return false
+  for (let step = request.images.steps ?? 0; step < SHRINK_STEPS.length; step++) {
+    const settings = SHRINK_STEPS[step]!
+    if (request.images.maxEdge && settings.maxEdge >= request.images.maxEdge && settings.quality >= (request.images.quality ?? 100)) continue
+    const result = await compressRequestImages(request.originalBody, { ...settings, minBytes: 0 })
+    if (!result.stats.compressed || result.stats.afterBytes >= request.images.afterBytes) continue
+    request.body = result.body
+    request.images = { ...result.stats, ...settings, steps: step + 1 }
+    return true
+  }
+  return false
+}
+
+async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, last: boolean, failures: AttemptRecord[], startedAt: number): Promise<'done' | 'next' | 'retry'> {
   const { event, key, protocol, settings } = request
   let body: JsonObject = { ...request.body }
   let presetIds: string[] = []
@@ -294,10 +320,14 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
   const status = upstream.response.statusCode || 502
   if (status >= 400 && (!last || errorText !== undefined || status === 413)) {
     const text = errorText ?? await readUpstreamText(upstream.response)
+    if (status === 413 && await shrinkAfterTooLarge(request)) {
+      record(status, `请求体过大，缩小图片后重试（最长边 ${request.images!.maxEdge}px）`)
+      return 'retry'
+    }
     if (!last && isFailoverResponse(status, text)) { record(status, errorMessageFrom(text)); return 'next' }
     if (status === 413) {
       // Usually an nginx in front of the provider: explain instead of relaying its HTML page.
-      const message = tooLargeMessage(body)
+      const message = tooLargeMessage(body, request.images)
       fail(event, request.logProtocol, 413, message, 'request_too_large')
       await logRequest(request, { status, startedAt, failures, error: message, body, attempt, presetIds, devin, responseBody: parseLogBody(text) })
       return 'done'
@@ -328,9 +358,15 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
   return 'done'
 }
 
-function tooLargeMessage(body: JsonObject): string {
-  const megabytes = (Buffer.byteLength(JSON.stringify(body)) / 1024 / 1024).toFixed(1)
-  return `上游拒绝了过大的请求（约 ${megabytes} MB）：模型服务前面的代理限制了请求体大小。请减少或压缩图片，或让该上游调高请求体上限（nginx 的 client_max_body_size）。`
+function tooLargeMessage(body: JsonObject, images?: ModelRequest['images']): string {
+  const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1)
+  const size = mb(Buffer.byteLength(JSON.stringify(body)))
+  const detail = images?.images
+    ? images.compressed
+      ? `其中 ${images.images} 张图片已从 ${mb(images.beforeBytes)} MB 压缩到 ${mb(images.afterBytes)} MB（最长边 ${images.maxEdge}px）。`
+      : `其中 ${images.images} 张图片无法压缩（可能是 HEIC 等格式），已按原样发送。`
+    : ''
+  return `上游拒绝了过大的请求（约 ${size} MB）。${detail}模型服务前面的代理限制了请求体大小，请让该上游调高请求体上限（nginx 的 client_max_body_size），或减少图片数量。`
 }
 
 function parseLogBody(text: string): unknown {

@@ -61,7 +61,7 @@ Devin 有时把后端临时故障报告为 `permission_denied: an internal error
 
 请求里的 base64 图片（OpenAI `image_url`、Responses `input_image`、Anthropic `source.type: base64`、Gemini `inline_data`）超过 512 KB 或最长边超过设定值时，CPAN 会先等比缩小（默认最长边 2048 px、质量 85，带透明通道的转 WebP，其余转 JPEG），再发给任何来源。模型看到的清晰度基本不变，四张手机照片通常从几十 MB 降到几 MB。网络图片链接、动图和无法解析的数据原样转发。可在「API Key → 调用设置」修改或关闭；日志的 `usage.nexus.images` 记录压缩前后大小。
 
-上游代理（常见是 nginx 默认的 1 MB 请求体上限）返回 413 时，CPAN 会先尝试其他来源和分组；都不接受时返回 `request_too_large`，并说明请求大小和处理办法，而不是转发 nginx 的 HTML 错误页。
+上游代理（常见是 nginx 默认的 1 MB 请求体上限）返回 413 时，CPAN 先对同一个来源依次用更小的图片重试（最长边 1536 / 1024 / 768 px，质量 80 / 75 / 70，从原图重新压缩），仍被拒绝再尝试其他来源和分组；都不接受时返回 `request_too_large`，说明请求大小和图片压缩情况，而不是转发 nginx 的 HTML 错误页。
 
 ### 支持的入口
 
