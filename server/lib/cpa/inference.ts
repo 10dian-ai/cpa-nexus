@@ -19,8 +19,6 @@ import { listGatewayModels } from '../gateway/accounts'
 import { privacyHeaders } from '../privacy-headers'
 import { getConfig } from '../config'
 import { CPA_GROUP_POLICY_HEADER, registerCpaGroupPolicy } from './group-policy'
-import { handleDevin2ApiInference } from '../devin2api/inference'
-import { listDevin2ApiGroupModels } from '../devin2api/routing'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
 import { insertRequestLog } from '../logs'
 import { DiagnosticResponseFilter } from '../diagnostic-response'
@@ -138,10 +136,8 @@ export async function forwardNativeCpa(event: H3Event, path: string, body?: Reco
 async function listModelGroups(event: H3Event, keyId: string, groupIds: string[], moduleId: string) {
   const catalogs: Array<Promise<Array<{ id: string }>>> = []
   const includeCommandcode = (moduleId === 'commandcode' || moduleId === 'auto') && await isModuleEnabled('commandcode')
-  const includeDevin = (moduleId === 'devin2api' || moduleId === 'auto') && await isModuleEnabled('devin2api')
   if (moduleId === 'cpa' || moduleId === 'auto') catalogs.push(listCpaGroupModels(groupIds))
   if (includeCommandcode) catalogs.push(listGatewayModels(keyId).then(result => result.data))
-  if (includeDevin) catalogs.push(listDevin2ApiGroupModels(groupIds))
   const results = await Promise.allSettled(catalogs)
   if (results.every(result => result.status === 'rejected')) throw Object.assign(new Error('模型目录暂不可用'), { statusCode: 503 })
   const models = new Map<string, Record<string, unknown>>()
@@ -210,18 +206,12 @@ export async function handleNexusInference(event: H3Event) {
     const route = await resolveInferenceRoute({ moduleId, model, keyId: key.id, groupIds })
     if (route.target === 'reject') { fail(event, path, route.status, route.message); return }
     if (route.target !== 'cpa' && countTokens) { fail(event, path, 404, 'Token counting is only available for CPA sources', 'unsupported_endpoint'); return }
-    if (route.target === 'devin2api') {
-      return await handleDevin2ApiInference(event, { keyId: key.id, groupIds, protocolPath: path, body, selection: route.selection })
-    }
     if (route.target === 'commandcode') return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
     const clientKey = process.env.CPA_CLIENT_KEY?.trim()
     if (!clientKey) { fail(event, path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
     await requireModule('cpa')
     const selected = await resolveCpaGroupPolicy(model, groupIds, key.id)
-    if (!selected) {
-      if (route.deferredError) throw route.deferredError
-      fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return
-    }
+    if (!selected) { fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return }
     body.model = model
     if (countTokens) {
       // Token counting is not a generation: no preset stack, billing policy or

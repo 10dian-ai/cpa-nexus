@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // Devin module and CommandCode for unified ccm_ model keys.
 const fixture = vi.hoisted(() => ({
   authenticate: vi.fn(), enabled: vi.fn(), module: vi.fn(), groups: vi.fn(), cpaRoute: vi.fn(), cpaModels: vi.fn(),
-  devinResolve: vi.fn(), devinModels: vi.fn(), devinHandle: vi.fn(), compat: vi.fn(), provider: vi.fn(), candidates: vi.fn(),
+  compat: vi.fn(), provider: vi.fn(), candidates: vi.fn(),
   presets: vi.fn(), policy: vi.fn(), log: vi.fn(),
 }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
@@ -15,8 +15,6 @@ vi.mock('../server/lib/modules', () => ({ isModuleEnabled: fixture.enabled, requ
 vi.mock('../server/lib/groups', () => ({ resolveEnabledKeyGroupIds: fixture.groups }))
 vi.mock('../server/lib/cpa/group-routing', () => ({ listCpaGroupModels: fixture.cpaModels, resolveCpaGroupPolicy: fixture.cpaRoute }))
 vi.mock('../server/lib/cpa/group-policy', () => ({ CPA_GROUP_POLICY_HEADER: 'x-nexus-group-policy', registerCpaGroupPolicy: fixture.policy }))
-vi.mock('../server/lib/devin2api/routing', () => ({ resolveDevin2ApiModel: fixture.devinResolve, listDevin2ApiGroupModels: fixture.devinModels }))
-vi.mock('../server/lib/devin2api/inference', () => ({ handleDevin2ApiInference: fixture.devinHandle }))
 vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: fixture.compat }))
 vi.mock('../server/lib/gateway/handler', () => ({ handleGateway: vi.fn() }))
 vi.mock('../server/lib/gateway/accounts', () => ({ listGatewayModels: vi.fn(async () => ({ data: [] })), listCandidates: fixture.candidates }))
@@ -29,7 +27,6 @@ import { handleNexusInference } from '../server/lib/cpa/inference'
 import { resolveInferenceRoute } from '../server/lib/inference-route'
 import { modelErrorBody } from '../server/lib/model-errors'
 
-const devinSelection = { model: 'claude-opus-5-5', matchedGroupId: 'group-devin', account: { id: 'devin-account' } }
 
 describe('unified model key routing', () => {
   let core: Server, app: Server, url: string
@@ -43,12 +40,9 @@ describe('unified model key routing', () => {
     } as Record<string, unknown>)[secret] ?? null)
     fixture.enabled.mockResolvedValue(true)
     fixture.module.mockResolvedValue(undefined)
-    fixture.groups.mockResolvedValue(['group-cpa', 'group-devin'])
+    fixture.groups.mockResolvedValue(['group-cpa', 'group-b'])
     fixture.cpaRoute.mockImplementation(async (model: string) => ({ model, selectedGroupId: 'group-cpa', allowedAuthIDs: ['devin-native-auth'], allowedPluginIDs: [] }))
     fixture.cpaModels.mockResolvedValue([])
-    fixture.devinResolve.mockResolvedValue(null)
-    fixture.devinModels.mockResolvedValue([])
-    fixture.devinHandle.mockImplementation(event => { event.node.res.end('devin module') })
     fixture.compat.mockImplementation(event => { event.node.res.end('commandcode') })
     fixture.provider.mockResolvedValue(null)
     fixture.candidates.mockResolvedValue([])
@@ -76,46 +70,19 @@ describe('unified model key routing', () => {
     method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' }, body: JSON.stringify(body),
   })
 
-  it('keeps CPA native Devin models on the kernel when the Devin module is disabled', async () => {
-    fixture.enabled.mockImplementation(async (id: string) => id !== 'devin2api')
-    const response = await post('ccm_auto', { model: 'devin/claude-opus-5-5', messages: [] })
-    expect(response.status).toBe(200)
-    expect(received).toHaveLength(1)
-    expect(received[0]).toMatchObject({ path: '/v1/chat/completions', body: { model: 'devin/claude-opus-5-5' } })
-    expect(received[0]!.headers['x-nexus-group-policy']).toBe('signed-policy')
-    expect(fixture.devinResolve).not.toHaveBeenCalled()
-    expect(fixture.devinHandle).not.toHaveBeenCalled()
+  it('sends CPA native Devin models to the kernel for every key type', async () => {
+    for (const key of ['ccm_auto', 'ccm_cpa']) {
+      const response = await post(key, { model: 'devin/swe-1-6', messages: [] })
+      expect(response.status).toBe(200)
+      expect(received.at(-1)?.body.model).toBe('devin/swe-1-6')
+      expect(received.at(-1)!.headers['x-nexus-group-policy']).toBe('signed-policy')
+    }
   })
 
-  it('lets CPA-bound keys call the native Devin provider instead of rejecting devin/ models', async () => {
-    const response = await post('ccm_cpa', { model: 'devin/swe-1-6', messages: [] })
-    expect(response.status).toBe(200)
-    expect(received[0]?.body.model).toBe('devin/swe-1-6')
-    expect(fixture.devinResolve).not.toHaveBeenCalled()
-  })
-
-  it('falls back to the CPA native Devin provider when no Devin module account serves the model', async () => {
-    const response = await post('ccm_auto', { model: 'devin/claude-opus-5-5', messages: [] })
-    expect(response.status).toBe(200)
-    expect(fixture.devinResolve).toHaveBeenCalledWith('devin/claude-opus-5-5', ['group-cpa', 'group-devin'])
-    expect(received).toHaveLength(1)
-    expect(fixture.devinHandle).not.toHaveBeenCalled()
-  })
-
-  it('hands the resolved Devin module selection to the module without resolving twice', async () => {
-    fixture.devinResolve.mockResolvedValue(devinSelection)
-    const response = await post('ccm_auto', { model: 'devin/claude-opus-5-5', messages: [] })
-    expect(await response.text()).toBe('devin module')
-    expect(received).toHaveLength(0)
-    expect(fixture.devinHandle.mock.calls[0]![1]).toMatchObject({ keyId: 'auto', selection: devinSelection, protocolPath: 'chat/completions' })
-  })
-
-  it('reports the Devin module failure when CPA does not serve the model either', async () => {
-    fixture.devinResolve.mockRejectedValue(Object.assign(new Error('Devin runtime model catalog returned HTTP 502'), { statusCode: 502 }))
-    fixture.cpaRoute.mockResolvedValue(null)
-    const response = await post('ccm_auto', { model: 'devin/claude-opus-5-5', messages: [] })
-    expect(response.status).toBe(502)
-    expect((await response.json()).error).toMatchObject({ type: 'server_error', code: 'upstream_error', message: expect.stringContaining('runtime model catalog returned HTTP 502') })
+  it('refuses token counting for CommandCode-only keys', async () => {
+    const legacy = await post('ccm_legacy', { model: 'cc', messages: [] }, 'messages/count_tokens')
+    expect(legacy.status).toBe(404)
+    expect(fixture.compat).not.toHaveBeenCalled()
   })
 
   it('uses status-specific error codes instead of labelling everything a preset error', async () => {
@@ -147,30 +114,17 @@ describe('unified model key routing', () => {
     expect(fixture.log).not.toHaveBeenCalled()
   })
 
-  it('refuses token counting for module-only sources', async () => {
-    fixture.devinResolve.mockResolvedValue(devinSelection)
-    const devin = await post('ccm_auto', { model: 'devin/claude-opus-5-5', messages: [] }, 'messages/count_tokens')
-    expect(devin.status).toBe(404)
-    expect(fixture.devinHandle).not.toHaveBeenCalled()
-    const legacy = await post('ccm_legacy', { model: 'cc', messages: [] }, 'messages/count_tokens')
-    expect(legacy.status).toBe(404)
-    expect(fixture.compat).not.toHaveBeenCalled()
-  })
 })
 
 describe('resolveInferenceRoute', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     fixture.enabled.mockResolvedValue(true)
-    fixture.devinResolve.mockResolvedValue(null)
     fixture.provider.mockResolvedValue(null)
     fixture.candidates.mockResolvedValue([])
   })
-  const route = (moduleId: 'auto' | 'cpa' | 'devin2api', model: string) => resolveInferenceRoute({ moduleId, model, keyId: 'key', groupIds: ['g'] })
+  const route = (moduleId: 'auto' | 'cpa', model: string) => resolveInferenceRoute({ moduleId, model, keyId: 'key', groupIds: ['g'] })
 
-  it('sends every request of a Devin-bound key to the module', async () => {
-    expect(await route('devin2api', 'devin/x')).toEqual({ target: 'devin2api' })
-  })
   it('keeps commandcode/ aliases off CPA-bound keys', async () => {
     expect(await route('auto', 'commandcode/x')).toEqual({ target: 'commandcode' })
     expect(await route('cpa', 'commandcode/x')).toMatchObject({ target: 'reject', status: 403 })
@@ -181,10 +135,6 @@ describe('resolveInferenceRoute', () => {
     fixture.candidates.mockResolvedValue([{ id: 'account' }])
     expect(await route('auto', 'glm')).toEqual({ target: 'commandcode' })
     expect(await route('cpa', 'glm')).toEqual({ target: 'cpa' })
-  })
-  it('does not treat bare names that merely contain devin as Devin models', async () => {
-    expect(await route('auto', 'devin-like-model')).toEqual({ target: 'cpa' })
-    expect(fixture.devinResolve).not.toHaveBeenCalled()
   })
 })
 

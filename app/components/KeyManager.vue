@@ -13,7 +13,7 @@ const [gateway, service, modules, presetRoutes, routingGroups] = await Promise.a
   useFetch<{ items: GatewayKeyView[] }>('/api/service-keys'),
   useFetch<{ modules: ModuleView[] }>('/api/modules', { key: 'nexus-modules' }),
   useFetch<{ bindings: KeyPresetBinding[] }>('/api/presets/routes', { key: 'nexus-preset-routes' }),
-  useFetch<{ items: RoutingGroupView[]; defaultGroupId: string; defaultGroupIds?: string[]; moduleDefaultGroupIds?: { cpa?: string; commandcode?: string; devin2api?: string } }>('/api/groups', { key: 'nexus-routing-groups' }),
+  useFetch<{ items: RoutingGroupView[]; defaultGroupId: string; defaultGroupIds?: string[]; moduleDefaultGroupIds?: { cpa?: string; commandcode?: string } }>('/api/groups', { key: 'nexus-routing-groups' }),
 ])
 const commandcodeEnabled = computed(() => modules.data.value?.modules.find(module => module.id === 'commandcode')?.enabled === true)
 const presetModuleEnabled = computed(() => modules.data.value?.modules.find(module => module.id === 'presets')?.enabled === true)
@@ -68,11 +68,7 @@ function groupNames(key: ManagedKey) {
   const ids = key.groupIds || []
   return ids.map((id, index) => routingGroups.data.value?.items.find(group => group.id === id)?.name || key.groupNames?.[index] || '未读取分组').join('、') || '默认分组'
 }
-/**
- * New model keys retain the historical CPA + CommandCode defaults. Devin is
- * opt-in: including every module default here would silently grant an
- * existing key access to Devin after the module migration.
- */
+/** New model keys default to the CPA and CommandCode module groups. */
 function modelDefaultGroupIds() {
   const value = routingGroups.data.value
   if (!value) return []

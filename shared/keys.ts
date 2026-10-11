@@ -1,10 +1,8 @@
 /**
- * A model key may be unrestricted (`auto`) or bound to one extension
- * module.  `devin2api` is intentionally distinct from CPA's native Devin
- * provider: the latter still runs inside the CPA kernel while this module
- * fronts the standalone devin-2api adapter.
+ * A model key may be unrestricted (`auto`) or bound to one source module.
+ * CPA's native providers, including Devin, belong to `cpa`.
  */
-export type ModelModuleId = 'auto' | 'cpa' | 'commandcode' | 'devin2api'
+export type ModelModuleId = 'auto' | 'cpa' | 'commandcode'
 
 export interface AuthenticatedModelKey {
   id: string

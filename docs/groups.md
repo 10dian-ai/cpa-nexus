@@ -8,7 +8,7 @@
 
 1. 在「调用分组」点击「创建分组」，也可在 CPA 凭证的分组编辑弹窗中直接新建。
 2. 在「CPA 内核 → 凭证管理」的「调用分组」列点击「编辑分组」，选择一个或多个组并保存；同一文件展开的虚拟凭证共享来源分组。
-3. 侧栏中「CPA 内核 → 凭证分组」「CommandCode 模块 → 账号分组」和「Devin 模块 → 账号分组」分别显示所属模块的来源。
+3. 侧栏中「CPA 内核 → 凭证分组」和「CommandCode 模块 → 账号分组」分别显示所属模块的来源。
 4. 在 API Key 页面选择相同组：只选 CommandCode 调用该组账号，只选 CPA 调用该组凭证；同时选择可跨模块调用。
 
 使用 Basis Points 等独立执行器时，插件来源和它需要读取的底层账号凭证应加入该 Key 所选分组。账号凭证内容不会因修改分组而改变。
@@ -25,16 +25,11 @@
 
 两个模块同时提供相同模型 ID 时，当前入口优先使用有可用组内账号的 CommandCode 官方 Provider ID；否则匹配组内 CPA 来源。需要明确指定 CPA 来源时，可以使用该来源允许的原始前缀模型名。多个组内 CPA 来源同名时轮换，所有选择均不越过授权分组。
 
-### `devin/` 模型：CPA 原生 Devin 渠道与 Devin 模块
+### `devin/` 模型
 
-CPA 内核自带的 Devin 渠道（OAuth/凭证管理里的 `devin` 凭证）和 Devin 模块都使用 `devin/<模型>` 这个命名空间，两者互不依赖：
+`devin/<模型>` 由 CPA 内核自带的 Devin 渠道（凭证管理里的 `devin` 凭证）按组内凭证执行。原内置 Devin 模块已移除，升级迁移会清理它的账号、分组绑定和日志，绑定该模块的 Key 改为普通 Key。
 
-1. Key 绑定 Devin 模块（`devin2api`）时，所有请求都交给 Devin 模块。
-2. `auto` Key 调用 `devin/` 模型时，只有 Devin 模块已启用，且 Key 的某个启用分组里有能提供该模型的 Devin 模块账号，才进入 Devin 模块，并使用命中分组的酒馆预设。
-3. 其他情况（Devin 模块停用、Key 未选择 Devin 分组、绑定 CPA 的 Key）都留在 CPA 内核，由 CPA 原生 Devin 渠道按组内凭证执行。
-4. Devin 模块目录暂时不可用、而 CPA 也没有这个模型时，返回 Devin 模块自己的错误，便于排查。
-
-`POST /v1/messages/count_tokens` 也接受 `ccm_` 模型 Key：它与 `/v1/messages` 使用相同的组内 CPA 来源，不叠加预设、不记账；只由 Devin 模块或 CommandCode 提供的模型不支持计数，返回 404。
+`POST /v1/messages/count_tokens` 也接受 `ccm_` 模型 Key：它与 `/v1/messages` 使用相同的组内 CPA 来源，不叠加预设、不记账；只由 CommandCode 提供的模型不支持计数，返回 404。
 
 平台拒绝的请求按 HTTP 状态返回对应的错误类型（OpenAI 格式：`invalid_api_key`、`permission_denied`、`model_not_found`、`service_unavailable` 等；Anthropic 格式：`authentication_error`、`permission_error`、`not_found_error`、`overloaded_error` 等）。只有酒馆预设无法应用（HTTP 422）时才是 `preset_route_error`。
 
@@ -62,7 +57,7 @@ CPA 使用完整官方 v8.0.15，OAuth、刷新、配额、协议转换、模型
 | `POST /api/groups` | 创建：`name`、可选 `description`、`enabled` |
 | `PATCH /api/groups/:id` | 编辑分组名称、描述或开关 |
 | `DELETE /api/groups/:id` | 删除未绑定的非默认分组 |
-| `GET /api/groups/accounts?moduleId=cpa` | 来源与已绑定分组；也可选 `commandcode`、`devin2api` 或不传 |
+| `GET /api/groups/accounts?moduleId=cpa` | 来源与已绑定分组；也可选 `commandcode` 或不传 |
 | `PATCH /api/groups/accounts` | 设置来源组：`moduleId`、`sourceType`、`sourceId`、`groupIds` |
 | `DELETE /api/groups/accounts` | 清理已确认不存在的来源绑定，参数同来源标识 |
 

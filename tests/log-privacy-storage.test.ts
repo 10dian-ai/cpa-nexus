@@ -16,7 +16,6 @@ vi.mock('../server/lib/db', () => {
 import { insertRequestLog } from '../server/lib/logs'
 import listLogs from '../server/api/logs/index.get'
 import getLog from '../server/api/logs/[id].get'
-import { listDevinLogs } from '../server/lib/devin2api/admin'
 
 describe('request log persistence and historical reads', () => {
   let server: Server | undefined
@@ -44,7 +43,7 @@ describe('request log persistence and historical reads', () => {
   it('filters old rows on list/detail reads, protects old credentials and searches both original and masked model names', async () => {
     const id = randomUUID()
     const sourceId = randomUUID()
-    const old = { id, account_id: null, module_id: 'devin2api', source_id: sourceId, account_label: 'Gemini source', key_name: 'Anthropic https://key.example', model: 'gemini-pro', protocol: 'messages', status: 'error',
+    const old = { id, account_id: null, module_id: 'cpa', source_id: sourceId, account_label: 'Gemini source', key_name: 'Anthropic https://key.example', model: 'gemini-pro', protocol: 'messages', status: 'error',
       http_status: 401, duration_ms: 1, streaming: false, usage: { output_tokens: 3 }, error_message: 'ChatGPT HTTP://upstream.example', response_truncated: false,
       created_at: new Date().toISOString(), request_body: { model: 'gemini-pro', authorization: 'old-private-key', messages: [{ content: 'https://prompt.example' }] },
       response_body: { format: 'sse', raw: String.raw`data: {"error":{"message":"Anthropic https:\/\/upstream.example"}}` }, session_id: 'Anthropic-session' }
@@ -56,30 +55,27 @@ describe('request log persistence and historical reads', () => {
     const page = await fetch(base + '/api/logs?model=gemini-pro').then(response => response.json())
     const detail = await fetch(base + '/api/logs/' + id).then(response => response.json())
     expect(page.items[0]).toMatchObject({ model: '***-pro', accountLabel: '*** source', keyName: '*** ***', errorMessage: '*** ***', usage: { output_tokens: 3 } })
-    expect(page.items[0]).toMatchObject({ accountId: sourceId, moduleId: '***2api', sourceId })
-    expect(detail).toMatchObject({ accountId: sourceId, moduleId: '***2api', sourceId })
+    expect(page.items[0]).toMatchObject({ accountId: sourceId, moduleId: 'cpa', sourceId })
+    expect(detail).toMatchObject({ accountId: sourceId, moduleId: 'cpa', sourceId })
     expect(detail.requestBody.authorization).toBe('[redacted]')
     expect(detail.responseBody.raw).toContain('"message":"*** ***"')
     expect(JSON.stringify({ page, detail })).not.toMatch(/gemini|anthropic|chatgpt|https?:|old-private-key/i)
     expect(old.model).toBe('gemini-pro')
-    expect(old.module_id).toBe('devin2api')
-    const moduleLogs = await listDevinLogs({ page: 1, pageSize: 50, model: 'gemini-pro' })
-    expect(JSON.stringify(moduleLogs)).not.toMatch(/gemini|anthropic|chatgpt|https?:|old-private-key/i)
-    expect(moduleLogs.items[0]).toMatchObject({ accountId: sourceId, model: '***-pro', errorMessage: '*** ***' })
+    expect(old.module_id).toBe('cpa')
     const conditions = fixture.queries.filter(query => query.text.includes('l.model ILIKE'))
     expect(conditions.some(query => query.values.includes('%gemini-pro%') && query.values.includes('%***-pro%'))).toBe(true)
   })
 
   it('keeps real module/source IDs in database routing columns and filters billing log metadata copies', async () => {
     const sourceId = randomUUID()
-    await insertRequestLog({ keyId: null, accountId: null, moduleId: 'devin2api', sourceId, model: 'devin/glm-5', protocol: 'messages', sessionId: null,
-      status: 'success', httpStatus: 200, durationMs: 1, streaming: false, usage: { total_tokens: 10, nexus: { moduleId: 'devin2api', groupIds: ['group-a'] } },
+    await insertRequestLog({ keyId: null, accountId: null, moduleId: 'cpa', sourceId, model: 'devin/glm-5', protocol: 'messages', sessionId: null,
+      status: 'success', httpStatus: 200, durationMs: 1, streaming: false, usage: { total_tokens: 10, nexus: { moduleId: 'cpa', groupIds: ['group-a'] } },
       errorMessage: null, requestBody: null, responseBody: null, responseTruncated: false })
     const insert = fixture.queries.find(query => query.text.includes('INSERT INTO request_logs'))!
     expect(insert.text).toContain('module_id,source_id')
-    expect(insert.values[3]).toBe('devin2api')
+    expect(insert.values[3]).toBe('cpa')
     expect(insert.values[4]).toBe(sourceId)
     expect(insert.values[5]).toBe('***/***-5')
-    expect(insert.values).toContainEqual({ total_tokens: 10, nexus: { moduleId: '***2api', groupIds: ['group-a'] } })
+    expect(insert.values).toContainEqual({ total_tokens: 10, nexus: { moduleId: 'cpa', groupIds: ['group-a'] } })
   })
 })

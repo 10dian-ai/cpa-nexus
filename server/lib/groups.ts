@@ -10,13 +10,12 @@ type Database = Sql | TransactionSql
 export const groupIdsSchema = z.array(z.string().uuid()).min(1, '请至少选择一个分组')
 export const groupInputSchema = z.object({ name: z.string().trim().min(1), description: z.string().optional(), enabled: z.boolean().optional() }).strict()
 const emptyBinding = (): GroupBinding => ({ groupIds: [], groupNames: [] })
-export async function getModuleDefaultGroupIds(sql: Database = getDb()): Promise<{ commandcode: string; cpa: string; devin2api?: string }> {
+export async function getModuleDefaultGroupIds(sql: Database = getDb()): Promise<{ commandcode: string; cpa: string }> {
   const rows = await sql`SELECT module_id,group_id FROM nexus_module_group_defaults`
   const commandcode = rows.find(row => row.module_id === 'commandcode')?.group_id as string | undefined
   const cpa = rows.find(row => row.module_id === 'cpa')?.group_id as string | undefined
-  const devin2api = rows.find(row => row.module_id === 'devin2api')?.group_id as string | undefined
   if (!commandcode || !cpa) throw createError({ statusCode: 503, message: '模块默认分组尚未初始化，请完成数据库迁移' })
-  return devin2api ? { commandcode, cpa, devin2api } : { commandcode, cpa }
+  return { commandcode, cpa }
 }
 export async function getModuleDefaultGroupId(moduleId: GroupModuleId, sql: Database = getDb()) {
   const id = (await getModuleDefaultGroupIds(sql))[moduleId]
@@ -25,8 +24,6 @@ export async function getModuleDefaultGroupId(moduleId: GroupModuleId, sql: Data
 }
 export async function getDefaultModelKeyGroupIds(sql: Database = getDb()) {
   const defaults = await getModuleDefaultGroupIds(sql)
-  // Keep existing client permissions stable. Devin access is opt-in by
-  // selecting the Devin group on a model key after the module is installed.
   return [...new Set([defaults.cpa, defaults.commandcode])]
 }
 export async function assertGroupIds(groupIds?: string[], sql: Database = getDb()): Promise<string[]> {

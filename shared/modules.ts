@@ -76,19 +76,6 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
     ],
   },
   {
-    id: 'devin2api', name: 'Devin', kind: 'extension', tier: 'module', navLabel: 'Devin 模块', icon: 'i-ph-robot-bold', required: false, defaultEnabled: false, version: '0.1.0',
-    description: 'Devin 2API 适配模块，将 Devin 会话映射为标准模型接口。与 CPA 内核自带的 Devin 渠道相互独立。',
-    capabilities: ['Responses API', 'Chat Completions', 'Messages API', '账号与令牌', '模型目录', '分组路由', '调用日志'],
-    navigation: [
-      { to: '/devin2api', label: '模块概览', icon: 'i-ph-robot-bold' },
-      { to: '/devin2api?tab=accounts', label: '账号与令牌', icon: 'i-ph-user-list-bold' },
-      { to: '/groups/accounts?module=devin2api', label: '账号分组', icon: 'i-ph-address-book-bold' },
-      { to: '/devin2api?tab=models', label: '模型目录', icon: 'i-ph-cube-bold' },
-      { to: '/devin2api?tab=logs', label: '请求日志', icon: 'i-ph-clipboard-text-bold' },
-      { to: '/devin2api?tab=settings', label: '模块设置', icon: 'i-ph-wrench-bold' },
-    ],
-  },
-  {
     id: 'platform', name: '平台管理', kind: 'platform', tier: 'platform', navLabel: '平台', icon: 'i-ph-squares-four-bold', required: true, version: '0.2.0',
     description: '统一管理员登录、模块管理和部署配置。',
     capabilities: ['管理员会话', '模块状态', 'API Key 管理', '持久化设置', '部署与版本适配'],
@@ -109,7 +96,5 @@ export function gatedModuleForRequest(path: string, method: string): string | nu
   if (/^\/commandcode\/v1(?:\/|$)/.test(path)) return 'commandcode'
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) &&
       /^\/api\/(?:accounts|external\/accounts)(?:\/|$)/.test(path)) return 'commandcode'
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) &&
-      /^\/api\/devin2api(?:\/|$)/.test(path)) return 'devin2api'
   return null
 }
