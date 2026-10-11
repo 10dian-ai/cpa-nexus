@@ -22,6 +22,7 @@ import { redactModelResponseBody } from '../diagnostic-response'
 import { redactSensitiveText } from '../../../shared/log-privacy'
 import { modelErrorBody } from '../model-errors'
 import { upstreamIdleTimeoutMs } from '../timeouts'
+import { ResponseCapture } from '../gateway/response'
 import type { AuthenticatedModelKey } from '../../../shared/keys'
 import type { SystemSettings } from '../../../shared/types'
 import { planCpaRoute, sequenceAttempts, type CpaRouteAttempt, type RouteAttempt } from '../routing/plan'
@@ -158,7 +159,7 @@ export async function handleNexusInference(event: H3Event) {
     await runModelRequest({
       event, endpoint, key, groupIds: routing.groupIds, strategy: routing.strategy, settings, body, model,
       protocol: family === 'v1' && GENERATION.has(path) ? path as Protocol : undefined,
-      logProtocol: gemini ? `gemini:${gemini[2]}` : path,
+      logProtocol: gemini ? `v1beta/${gemini[2]}` : path,
       cpaPathFor: nativeModel => gemini ? cpaPath(endpoint, `models/${nativeModel}:${gemini[2]}`) : cpaPath(endpoint),
     })
   } catch (error) {
@@ -289,23 +290,29 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
     res.statusCode = status
     res.setHeader('content-type', String(upstream.response.headers['content-type'] || 'application/json; charset=utf-8'))
     res.end(Buffer.from(redactModelResponseBody(Buffer.from(text), status)))
-    await logRequest(request, { status, startedAt, failures, error: errorMessageFrom(text), body, attempt, presetIds, devin })
+    await logRequest(request, { status, startedAt, failures, error: errorMessageFrom(text), body, attempt, presetIds, devin, responseBody: parseLogBody(text) })
     return 'done'
   }
   if (presetIds.length) event.node.res.setHeader('x-nexus-preset-id', presetIds.join(','))
   else event.node.res.removeHeader('x-nexus-preset-id')
   if (protocol) event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
   const usageObserver = new BillingUsageObserver()
+  const capture = new ResponseCapture()
   let piped: PipeResult | undefined
   try {
-    piped = await pipeCpaResponse(event, upstream, { usageObserver, timeoutMs })
+    piped = await pipeCpaResponse(event, upstream, { usageObserver, capture, timeoutMs })
   } finally {
     await logRequest(request, {
       status: piped?.status ?? status, startedAt, failures, body, attempt, presetIds, devin, piped, usage: usageObserver.value(),
       error: piped ? piped.outcome.errorMessage : 'CPA response interrupted',
+      responseBody: capture.value(piped?.streaming ?? false), responseTruncated: capture.truncated,
     })
   }
   return 'done'
+}
+
+function parseLogBody(text: string): unknown {
+  try { return JSON.parse(text) } catch { return text ? { format: 'text', raw: text, truncated: false } : null }
 }
 
 /** Map CPA's selected auth index back to the Nexus source that owns it. */
@@ -321,7 +328,7 @@ async function sourceForAuthIndex(authIndex: string | null, offers: CpaGroupOffe
 async function logRequest(request: ModelRequest, input: {
   status: number; startedAt: number; failures: AttemptRecord[]; body: JsonObject; error?: string | null
   attempt?: CpaRouteAttempt; presetIds?: string[]; devin?: { level: string; source: string; removed: string[] }
-  piped?: PipeResult; usage?: Record<string, unknown> | null
+  piped?: PipeResult; usage?: Record<string, unknown> | null; responseBody?: unknown; responseTruncated?: boolean
 }) {
   try {
     const offers = input.piped?.authIndex ? await listCpaGroupOffers(request.groupIds).catch(() => undefined) : undefined
@@ -344,7 +351,7 @@ async function logRequest(request: ModelRequest, input: {
         },
       },
       errorMessage: status === 'error' ? (input.error || `CPA core returned HTTP ${input.status}`) : status === 'incomplete' ? 'Stream ended without a completion event' : null,
-      requestBody: input.body, responseBody: null, responseTruncated: false,
+      requestBody: input.body, responseBody: input.responseBody ?? null, responseTruncated: input.responseTruncated ?? false,
     })
   } catch (error) {
     console.error('[cpa] Request log could not be persisted', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable'))

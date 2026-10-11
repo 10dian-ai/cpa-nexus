@@ -27,7 +27,7 @@ async function logout() {
     <a href="#main-content" class="nexus-skip-link">跳至页面内容</a>
     <AppSidebar :groups="groups" :current="current" :open="mobileOpen" :username="session?.username" :busy="busy" @close="mobileOpen = false" @logout="logout" />
     <div class="main-shell">
-      <AppTopbar :current="current" :connection="connection" :show-detail="route.path !== current.to" :menu-open="mobileOpen" @open-menu="mobileOpen = true" />
+      <AppTopbar :current="current" :connection="connection" :show-detail="route.path !== current.to.split('?')[0]" :menu-open="mobileOpen" @open-menu="mobileOpen = true" />
       <main id="main-content" class="main-content"><slot /></main>
       <footer class="workspace-footer"><span>CPA Nexus · 模块化 AI 管理平台</span><span>时间以北京时间显示</span></footer>
     </div>

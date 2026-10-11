@@ -6,6 +6,6 @@
 </template>
 <style scoped>
 .preset-credential-route { margin-top: 22px; padding: 22px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin-bottom: 22px; }
-.preset-credential-example, .preset-credential-help { font-size: 12px; line-height: 1.8; margin-bottom: 18px; color: var(--muted); overflow-wrap: anywhere; }
+.preset-credential-example, .preset-credential-help { font-size: 13px; line-height: 1.8; margin-bottom: 18px; color: var(--muted); overflow-wrap: anywhere; }
 .preset-credential-example code { color: var(--ink); }
 </style>

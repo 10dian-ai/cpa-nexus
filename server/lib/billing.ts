@@ -30,8 +30,10 @@ export class BillingUsageObserver {
   private observe(value: unknown) {
     const data = object(value)
     if (!data) return
-    const usage = object(data.usage)
-    if (usage && Object.keys(usage).length) this.current = { ...(this.current || {}), ...usage }
+    // OpenAI/Anthropic/Responses report `usage`; Gemini reports `usageMetadata`.
+    for (const usage of [object(data.usage), object(data.usageMetadata)]) {
+      if (usage && Object.keys(usage).length) this.current = { ...(this.current || {}), ...usage }
+    }
     for (const nested of [data.response, data.message]) this.observe(nested)
   }
 

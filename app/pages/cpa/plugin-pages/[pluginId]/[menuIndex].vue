@@ -29,5 +29,5 @@ const revision = ref(0)
 </template>
 
 <style scoped>
-.cpa-plugin-console { width: 100%; height: max(780px, calc(100vh - 220px)); border: 1px solid var(--border); border-radius: 7px; background: #fff; }
+.cpa-plugin-console { width: 100%; height: max(780px, calc(100vh - 220px)); border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
 </style>

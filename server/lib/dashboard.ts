@@ -12,7 +12,8 @@ export async function getDashboardView(): Promise<DashboardView> {
       count(*) FILTER(WHERE last_sync_at IS NULL)::int AS pending,max(last_sync_at) AS last_sync_at FROM managed_accounts`,
     db<DashboardQuotaAccount[]>`SELECT enabled,status,api_key_ciphertext IS NOT NULL AND api_key_ciphertext<>'' AS has_api_key,snapshot
       FROM managed_accounts WHERE enabled AND status='ready' AND api_key_ciphertext IS NOT NULL AND api_key_ciphertext<>''`,
-    db`SELECT count(*)::int AS total,count(*) FILTER(WHERE status='success')::int AS success,count(*) FILTER(WHERE status='error')::int AS failed FROM request_logs`,
+    db`SELECT count(*)::int AS total,count(*) FILTER(WHERE status='success')::int AS success,count(*) FILTER(WHERE status='error')::int AS failed FROM request_logs
+      WHERE module_id IS DISTINCT FROM 'cpa'`,
     redis.get('ccm:worker:heartbeat'),
     redis.zcount('ccm:gateway:leases:global', Date.now(), '+inf'),
     commandcodeProviderHealthy(),

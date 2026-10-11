@@ -371,7 +371,7 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
     event.node.res.off('close', onClose)
     try {
       await insertRequestLog({
-        id: requestId, keyId: logKeyId, accountId, model, protocol, sessionId: affinity.sessionId,
+        id: requestId, keyId: logKeyId, accountId, moduleId: 'commandcode', model, protocol, sessionId: affinity.sessionId,
         status, httpStatus, durationMs: Date.now() - startedAt, streaming,
         usage: inspection.usage, errorMessage, requestBody: effectiveBody,
         responseBody: capture.value(streaming), responseTruncated: capture.truncated,

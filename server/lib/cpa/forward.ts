@@ -110,7 +110,7 @@ export function parseTraceAuthIndex(value: string | string[] | undefined): strin
 export interface PipeResult { status: number; streaming: boolean; outcome: StreamOutcome; authIndex: string | null }
 
 /** Stream an opened CPA response to the client, redacting diagnostics and observing usage/outcome. */
-export function pipeCpaResponse(event: H3Event, upstream: CpaUpstream, options: { usageObserver?: BillingUsageObserver; timeoutMs: number }): Promise<PipeResult> {
+export function pipeCpaResponse(event: H3Event, upstream: CpaUpstream, options: { usageObserver?: BillingUsageObserver; capture?: { push(chunk: Uint8Array): void }; timeoutMs: number }): Promise<PipeResult> {
   const { response, request } = upstream
   const status = response.statusCode || 502
   const contentType = String(response.headers['content-type'] || '')
@@ -155,6 +155,7 @@ export function pipeCpaResponse(event: H3Event, upstream: CpaUpstream, options: 
       for await (const chunk of source) {
         const raw = Buffer.from(chunk)
         options.usageObserver?.push(raw)
+        options.capture?.push(raw)
         outcome.push(raw)
         for (const safe of filter.push(raw)) await writeWithBackpressure(res, safe, downstream.signal)
       }

@@ -267,6 +267,8 @@ describe('unified model key router', () => {
       fixture.capabilities.mockResolvedValue({ runtimeAccounts: [{ id: 'source-a-auth', authIndex: 'idx7', fileName: 'a.json' }] })
       const response = await post({ model: 'native-model', messages: [] }, 'ccm_KA'); await response.text()
       expect(fixture.log.mock.calls.at(-1)![0]).toMatchObject({ sourceId: 'source-a', status: 'success', usage: { nexus: { authIndex: 'idx7', groupId: 'group-a' } } })
+      // The reply is kept for the request log detail page.
+      expect(fixture.log.mock.calls.at(-1)![0].responseBody).toMatchObject({ body: { model: 'native-model' } })
     })
 
     it('preserves streaming with usage reporting for unified keys', async () => {

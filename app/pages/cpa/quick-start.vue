@@ -14,5 +14,5 @@ const source = computed(() => `/api/cpa/native-panel?revision=${revision.value}#
 </template>
 
 <style scoped>
-.cpa-quick-start { width: 100%; height: max(780px, calc(100vh - 220px)); border: 1px solid var(--border); border-radius: 7px; background: #fff; }
+.cpa-quick-start { width: 100%; height: max(780px, calc(100vh - 220px)); border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
 </style>

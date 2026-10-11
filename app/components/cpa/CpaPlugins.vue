@@ -62,5 +62,5 @@ function pluginRoles(plugin: Record<string, unknown>) {
 </template>
 
 <style scoped>
-.plugin-runtime-roles { white-space: normal; max-width: 42ch; margin-top: 7px; font-size: 11px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }
+.plugin-runtime-roles { white-space: normal; max-width: 42ch; margin-top: 7px; font-size: 12px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }
 </style>

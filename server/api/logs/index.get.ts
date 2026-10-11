@@ -7,10 +7,13 @@ export default defineEventHandler(async event => {
   const query = getQuery(event); const { page, pageSize, offset } = pagination(query)
   const model = String(query.model ?? '').slice(0, 200)
   const status = ['success','error','cancelled','incomplete'].includes(String(query.status)) ? String(query.status) : ''
+  // Source filter: CPA kernel requests or CommandCode pool requests (older CommandCode rows have no module).
+  const source = ['cpa', 'commandcode'].includes(String(query.source)) ? String(query.source) : ''
   const db = getDb()
   const pattern = '%' + model.replace(/[\\%_]/g, '\\$&') + '%'
   const safePattern = '%' + redactSensitiveText(model).replace(/[\\%_]/g, '\\$&') + '%'
-  const condition = db`WHERE (${model}='' OR l.model ILIKE ${pattern} OR l.model ILIKE ${safePattern}) AND (${status}='' OR l.status=${status})`
+  const condition = db`WHERE (${model}='' OR l.model ILIKE ${pattern} OR l.model ILIKE ${safePattern}) AND (${status}='' OR l.status=${status})
+    AND (${source}='' OR (${source}='cpa' AND l.module_id='cpa') OR (${source}='commandcode' AND l.module_id IS DISTINCT FROM 'cpa'))`
   const [rows, count] = await Promise.all([
     db`SELECT l.id,l.account_id,l.module_id,l.source_id,a.label AS account_label,k.name AS key_name,l.model,l.protocol,l.status,l.http_status,l.duration_ms,l.streaming,l.usage,l.error_message,l.response_truncated,l.created_at
       FROM request_logs l LEFT JOIN managed_accounts a ON a.id=l.account_id LEFT JOIN gateway_keys k ON k.id=l.key_id ${condition} ORDER BY l.created_at DESC,l.id DESC LIMIT ${pageSize} OFFSET ${offset}`,

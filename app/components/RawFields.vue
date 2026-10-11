@@ -7,6 +7,10 @@ const labels: Record<string, string> = {
   subscriptionCredits: '订阅额度', additionalCredits: '额外额度',
   inputTokens: '输入 Token', outputTokens: '输出 Token', totalTokens: '总 Token',
   cachedInputTokens: '缓存输入 Token', requestCount: '请求次数', cost: '费用',
+  prompt_tokens: '输入 Token', completion_tokens: '输出 Token', total_tokens: '总 Token',
+  input_tokens: '输入 Token', output_tokens: '输出 Token', cache_read_input_tokens: '缓存读取 Token', cache_creation_input_tokens: '缓存写入 Token',
+  promptTokenCount: '输入 Token', candidatesTokenCount: '输出 Token', totalTokenCount: '总 Token', thoughtsTokenCount: '思考 Token',
+  prompt_tokens_details: '输入明细', completion_tokens_details: '输出明细', input_tokens_details: '输入明细', output_tokens_details: '输出明细',
 }
 const rows = computed(() => Object.entries(props.value || {}))
 </script>

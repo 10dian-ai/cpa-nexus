@@ -74,7 +74,7 @@ function progressValue(window: QuotaWindow) { const value = window.remainingPerc
   </div>
 </template>
 <style scoped>
-.cpa-quota-center select { width: 100%; font-size: 13px; }.cpa-quota-center .form-row { align-items: start; }
-.cpa-quota-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }.cpa-quota-window { padding: 18px 0; border-top: 1px solid var(--border); }.cpa-quota-window h3 { font-size: 15px; font-weight: 600; margin-bottom: 15px; }.cpa-quota-window dl { display: grid; gap: 11px; margin-bottom: 18px; }.cpa-quota-window dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; }.cpa-quota-window dt { font-size: 12px; color: var(--muted); }.cpa-quota-window dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
+.cpa-quota-center select { width: 100%; font-size: 14px; }.cpa-quota-center .form-row { align-items: start; }
+.cpa-quota-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }.cpa-quota-window { padding: 18px 0; border-top: 1px solid var(--border); }.cpa-quota-window h3 { font-size: 16px; font-weight: 600; margin-bottom: 15px; }.cpa-quota-window dl { display: grid; gap: 11px; margin-bottom: 18px; }.cpa-quota-window dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; }.cpa-quota-window dt { font-size: 13px; color: var(--muted); }.cpa-quota-window dd { margin: 0; font-size: 15px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
 @media (max-width: 600px) { .cpa-quota-center .form-row, .cpa-quota-windows { grid-template-columns: 1fr; } }
 </style>

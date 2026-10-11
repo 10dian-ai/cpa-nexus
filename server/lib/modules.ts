@@ -49,7 +49,7 @@ export async function listModules(): Promise<ModuleView[]> {
       message: commandcodeHealthy ? '官方 Provider 模型目录已同步，账号池使用官方 API。' : '官方 Provider 目录尚未同步或更新失败，请刷新官方目录。',
     }
     if (manifest.id === 'platform') return { ...manifest, enabled, status: 'ready', message: '平台管理服务可访问。' }
-    if (manifest.id === 'presets') return { ...manifest, enabled, status: 'ready', message: '已启用预设路由；未选择预设的请求直接调用原模块。' }
+    if (manifest.id === 'presets') return { ...manifest, enabled, status: 'ready', message: '已启用；每个调用分组按自己的设置叠加预设，没有开启预设的分组按原样调用。' }
     return { ...manifest, enabled, status: 'unconfigured', message: '此扩展尚未提供运行状态检查，请完成模块接入。' }
   })
 }

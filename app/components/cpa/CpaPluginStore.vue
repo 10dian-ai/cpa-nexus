@@ -75,6 +75,6 @@ function platforms(plugin: Record<string, unknown>) {
 </template>
 
 <style scoped>
-.store-description { font-size: 11px; line-height: 1.8; color: var(--muted); margin-top: 7px; overflow-wrap: anywhere; }
+.store-description { font-size: 12px; line-height: 1.8; color: var(--muted); margin-top: 7px; overflow-wrap: anywhere; }
 .store-source-errors { padding: 12px 20px; }
 </style>

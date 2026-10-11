@@ -11,11 +11,13 @@ describe('shell navigation', () => {
     ])
     expect(groups.map(group => group.label)).toEqual(['平台', 'CPA 内核 · 一级', '酒馆内核 · 二级', 'CommandCode 模块', 'Custom'])
     const links = (label: string) => groups.find(group => group.label === label)?.links.map(link => link.to) || []
-    expect(links('平台')).toEqual(['/', '/modules', '/keys', '/groups'])
+    expect(links('平台')).toEqual(['/', '/modules', '/keys', '/groups', '/logs'])
     expect(links('CPA 内核 · 一级')).toContain('/cpa/native')
     expect(links('CPA 内核 · 一级')).toContain('/groups/accounts?module=cpa')
     expect(links('酒馆内核 · 二级')).toEqual(['/presets'])
     expect(links('CommandCode 模块')).toContain('/groups/accounts?module=commandcode')
+    // Request logs cover every model key, so they stay reachable when CommandCode is disabled.
+    expect(links('CommandCode 模块')).not.toContain('/logs')
   })
 
   it('places enabled CPA plugin pages directly under the CPA kernel', () => {

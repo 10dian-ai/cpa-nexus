@@ -57,7 +57,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 <style scoped>
 .model-sync-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-bottom: 22px; }
-.model-sync-panel strong { display: block; margin-bottom: 8px; font-size: 13px; }
-.model-sync-panel p { margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.model-sync-panel strong { display: block; margin-bottom: 8px; font-size: 14px; }
+.model-sync-panel p { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 @media (max-width: 720px) { .model-sync-panel { grid-template-columns: 1fr; } }
 </style>

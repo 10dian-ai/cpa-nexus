@@ -99,9 +99,9 @@ function fieldLabel(field: PluginConfigField) {
 .plugin-field-list { list-style: none; padding: 0; margin: 18px 0; }
 .plugin-field-list li { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 15px 0; border-top: 1px solid var(--border); }
 .plugin-field-list li > div:first-child { min-width: 0; }
-.plugin-field-list strong { font-size: 12px; overflow-wrap: anywhere; }
-.plugin-field-list p { color: var(--muted); font-size: 12px; line-height: 1.7; margin-top: 5px; }
-.plugin-field-value { display: block; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50ch; margin-top: 6px; }
+.plugin-field-list strong { font-size: 13px; overflow-wrap: anywhere; }
+.plugin-field-list p { color: var(--muted); font-size: 13px; line-height: 1.7; margin-top: 5px; }
+.plugin-field-value { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50ch; margin-top: 6px; }
 .plugin-field-list .inline-actions { flex-shrink: 0; }
 @media (max-width: 600px) { .plugin-field-list li { align-items: start; }.plugin-field-list .inline-actions { flex-direction: column-reverse; } }
 </style>
