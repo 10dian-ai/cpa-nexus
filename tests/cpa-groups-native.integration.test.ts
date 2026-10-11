@@ -14,16 +14,16 @@ vi.mock('../server/lib/db', () => ({ getDb: () => {
 } }))
 vi.mock('../server/lib/groups', () => ({
   ensureAccountGroups: async () => {}, accountGroupBindings: async () => fixture.bindings,
-  resolveEnabledKeyGroupIds: async (id: string) => id === 'key-a' ? ['A'] : id === 'key-b' ? ['B'] : ['A', 'B'],
+  resolveKeyRouting: async (id: string) => ({ groupIds: id === 'key-a' ? ['A'] : id === 'key-b' ? ['B'] : ['A', 'B'], strategy: 'mixed' }),
 }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: async (secret: string) => {
   const id = { ccm_local_a: 'key-a', ccm_local_b: 'key-b', ccm_local_both: 'key-both' }[secret as 'ccm_local_a']
   return id ? { id, name: id, moduleId: 'auto' } : null
 } }))
 vi.mock('../server/lib/modules', () => ({ requireModule: async () => {}, isModuleEnabled: async (id: string) => id === 'cpa' }))
-vi.mock('../server/lib/presets', () => ({ resolveKeyPresetStack: async () => [] }))
-vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: 0 }) }))
-vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: async () => { throw Error('Unexpected CommandCode path') } }))
+vi.mock('../server/lib/presets', () => ({ resolveGroupPresetStack: async () => [] }))
+vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: 0, upstreamTimeoutSeconds: 600, devinDefaultEffort: 'high', devinStripSampling: true }) }))
+vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: async () => { throw Error('Unexpected CommandCode path') }, isCommandcodeFailure: () => false }))
 vi.mock('../server/lib/gateway/accounts', () => ({ listCandidates: async () => [], listGatewayModels: async () => ({ data: [] }) }))
 vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: async () => null }))
 
@@ -124,7 +124,8 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
       expect((await response.json()).choices[0].message.content).toBe(source)
       expect(calls.at(-1)).toEqual({ source, model: 'gpt-local', authorization: 'Bearer ' + upstreamKeys[source], userAgent: 'opencode' })
       const catalog = await fetch(appUrl + '/v1/models', { headers: { authorization: 'Bearer ' + key } })
-      expect((await catalog.json()).data.map((model: { id: string }) => model.id)).toEqual(['shared-model', 'source-' + source.toLowerCase() + '/shared-model'])
+      // Clients see original model names only; source prefixes stay an internal routing detail.
+      expect((await catalog.json()).data.map((model: { id: string }) => model.id)).toEqual(['shared-model'])
     }
   })
   it('rejects a foreign source prefix before invoking a provider and combines allowed groups only', async () => {
@@ -136,6 +137,12 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
     const origins = new Set([(await a.json()).choices[0].message.content, (await b.json()).choices[0].message.content])
     expect(origins).toEqual(new Set(['A', 'B']))
   })
+  it('persists the Devin masked-internal-error rule in the real v8 configuration', async () => {
+    const saved = await client().request({ path: 'config/oauth/request-scoped-errors/devin' })
+    expect(saved.status).toBe(200)
+    expect(JSON.parse(new TextDecoder().decode(saved.body))).toEqual([{ status: 502, match: ['an internal error occurred'], action: 'continue' }])
+    expect(await applyCpaPrivacyPolicy(client(), { fileNames: [] })).toEqual({ changed: false, updatedFiles: 0 })
+  })
   it('keeps native keys working and refuses cross-group retries when the selected real account fails', async () => {
     const native = await post(clientKey); expect(native.status).toBe(200); await native.text()
     const before = calls.length; failed.add('A')
@@ -146,7 +153,7 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
     } finally { failed.delete('A') }
     const healthy = await post('ccm_local_b'); expect(healthy.status).toBe(200); await healthy.text(); expect(calls.at(-1)?.source).toBe('B')
   })
-  it('publishes callable real model IDs when the original core requires source prefixes', async () => {
+  it('keeps original model names callable when the original core requires source prefixes', async () => {
     const configure = async (enabled: boolean) => {
       expect((await client().request({ path: 'config', method: 'PATCH', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ routing: { 'force-model-prefix': enabled } }) })).status).toBe(200)
@@ -161,13 +168,15 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
         const response = await fetch(appUrl + '/v1/models', { headers: { authorization: 'Bearer ccm_local_a' } })
         expect(response.status).toBe(200)
         ids = (await response.json()).data.map((model: { id: string }) => model.id)
-        if (JSON.stringify(ids) === JSON.stringify(['source-a/shared-model'])) break
+        if (JSON.stringify(ids) === JSON.stringify(['shared-model'])) break
         await new Promise<void>(finish => setTimeout(finish, 100))
       } while (Date.now() < deadline)
-      expect(ids).toEqual(['source-a/shared-model'])
-      const result = await post('ccm_local_a', ids[0]!)
-      expect(result.status).toBe(200); expect((await result.json()).choices[0].message.content).toBe('A')
-      expect(calls.at(-1)?.source).toBe('A')
+      expect(ids).toEqual(['shared-model'])
+      for (const model of ['shared-model', 'source-a/shared-model']) {
+        const result = await post('ccm_local_a', model)
+        expect(result.status, model).toBe(200); expect((await result.json()).choices[0].message.content).toBe('A')
+        expect(calls.at(-1)?.source).toBe('A')
+      }
     } finally { await configure(false) }
   })
   it('persists source software headers through native fields merging without losing tokens or unknown metadata', async () => {

@@ -297,6 +297,31 @@ export async function saveKeyPresetMode(tx: TransactionSql, keyId: string, enabl
   await tx`INSERT INTO nexus_key_preset_bindings(key_id,mode,preset_id) VALUES(${keyId},${enabled ? 'stack' : 'bypass'},${null}) ON CONFLICT(key_id) DO UPDATE SET mode=EXCLUDED.mode,preset_id=NULL,updated_at=now()`
 }
 
+/**
+ * The SillyTavern preset stack of one routing group. A request uses the stack
+ * of the group whose source actually serves it, independent of the API key.
+ * Per-group settings (enable, order, JSON and variable overrides) win; presets
+ * the group has not configured inherit the library's own values.
+ */
+export async function resolveGroupPresetStack(groupId: string): Promise<PresetView[]> {
+  if (!groupId || !await isModuleEnabled('presets')) return []
+  const generation = routeCacheGeneration
+  const cacheKey = `group\0${groupId}`
+  const cached = groupStackCache.get(cacheKey)
+  if (cached && cached.until > Date.now()) return cached.value
+  const rows = await getDb()`SELECT p.*,${groupId}::uuid AS group_context_id,b.group_id AS group_binding_id,b.enabled AS group_enabled,
+      b.sort_order AS group_sort_order,b.source_json AS group_source_json,b.variables AS group_variables
+    FROM nexus_presets p LEFT JOIN nexus_group_preset_bindings b ON b.group_id=${groupId} AND b.preset_id=p.id
+    WHERE COALESCE(b.enabled,p.enabled)=true ORDER BY COALESCE(b.sort_order,p.sort_order),p.id`
+  const value = rows.map(row => groupView(row as PresetRow))
+  if (generation === routeCacheGeneration) {
+    if (groupStackCache.size >= 128) groupStackCache.delete(groupStackCache.keys().next().value!)
+    groupStackCache.set(cacheKey, { value, until: Date.now() + 2000 })
+  }
+  return value
+}
+
+/** @deprecated Keys no longer choose presets; kept for older integrations. */
 /** Stack-enabled keys share all enabled presets, ordered by the library. */
 export async function resolveKeyPresetStack(keyId: string, enabledGroupIds?: string[]): Promise<PresetView[]> {
   if (!await isModuleEnabled('presets')) return []

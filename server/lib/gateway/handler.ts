@@ -20,7 +20,7 @@ import { acquireLease, releaseLease, renewLease, RENEW_INTERVAL_MS, type Lease }
 import { classifyFailure, type UpstreamFailure } from './errors'
 import { ResponseCapture, ResponseInspection, MAX_RESPONSE_LOG_BYTES } from './response'
 import { readJsonBodyLimited, writeWithBackpressure } from './transport'
-import { resolveKeyPresetStack } from '../presets'
+import { resolveGroupPresetStack } from '../presets'
 import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
 import { resolveAccountRoutingGroupId } from '../groups'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, normalizeBillingRequest } from '../billing'
@@ -235,7 +235,8 @@ export async function handleGateway(event: H3Event, options?: { protocolPath?: P
         if (protocol !== 'systemone') {
           const matchedGroupId = presetKeyId ? await resolveAccountRoutingGroupId('commandcode', accountId, presetKeyId) : null
           if (presetKeyId && !matchedGroupId) throw Object.assign(new Error('Selected account is no longer in an enabled group for this API key'), { statusCode: 403 })
-        const presets = presetKeyId && matchedGroupId ? await resolveKeyPresetStack(presetKeyId, [matchedGroupId]) : []
+        // The serving account's group decides the SillyTavern presets, not the key.
+        const presets = presetKeyId && matchedGroupId ? await resolveGroupPresetStack(matchedGroupId) : []
         const generationType = resolvePresetGenerationType(body, event.node.req.headers)
         if (presets.length) {
             effectiveBody = applyPresetStack(presets, body, { protocol: protocol === 'chat/completions' ? 'chat' : protocol, generationType })

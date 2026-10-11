@@ -200,15 +200,14 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 | `POST /api/external/accounts` | app，原外调账号添加/批量导入入口 | 独立服务 Key |
 | `/api/external/accounts`、`/api/external/accounts/:id`、`/api/external/jobs/:id`、`/api/external/pool` | app，外调账号、任务与池信息 | 独立服务 Key |
 | `/api/cpa/*`、`/api/modules/*`、其余平台 `/api/*` | app，平台与 CPA 管理适配 | 管理员登录 |
-| `/v1/models`、`/v1/chat/completions`、`/v1/messages`、`/v1/responses` | app 按 Key 分组分流及可选预设 → CPA → 原生账号或模块 | 统一模型 `ccm_` Key；历史 CPA 客户端 Key 保留兼容 |
+| `/v1/*`、`/v1beta/*`（含 `/openai/v1/*`、`/cpa-api/v1/*`、`/cpa-api/v1beta/*`）的标准 HTTP 请求 | app 统一入口：`ccm_` Key 按分组顺序／策略选择来源、应用该分组预设和 Devin 参数转换后交给 CPA；历史 CPA 客户端 Key 原样转发给 CPA（仅移除隐私请求头） | 统一模型 `ccm_` Key；历史 CPA 客户端 Key |
 | `/commandcode/v1/*` | app 模块兼容入口，验证来源分组后通过 CPA 转换格式 | 拥有 CommandCode 来源分组的 `ccm_` Key |
 | `/v1/systemone`、`/cpa-api/v1/systemone` | app，官方 System One 专门入口；CPA 未实现该协议 | 拥有 CommandCode 来源分组的 `ccm_` Key |
-| 标准 HTTP `/openai/v1/`、`/cpa-api/v1/` 下的 models、chat/completions、messages、responses | app，使用相同的统一模型适配入口 | 统一模型 Key 或历史 CPA 客户端 Key |
-| 其余 `/v1/*`、`/v1beta/*`、`/openai/v1/*`、`/backend-api/codex/*`、`/api/provider/*`、`/cpa-api/*`，以及原生 WebSocket | CPA 原生模型协议；`/cpa-api/` 移除前缀 | 历史 CPA 客户端 Key；统一 `ccm_` Key 尚不适用于这些协议 |
+| `/backend-api/codex/*`、`/api/provider/*`、其余 `/cpa-api/*`，以及 `/v1` WebSocket | CPA 原生模型协议；`/cpa-api/` 移除前缀 | 历史 CPA 客户端 Key；统一 `ccm_` Key 尚不适用于这些协议 |
 
 所有统一模型 Key 使用同一个 `https://你的域名/v1` Base URL，由 Key 与账号的共同分组决定可用来源。迁移 013 将已有平台模型 Key 转为跨模块选择，内部桥接 Key 保持专用。`/commandcode/v1` 继续兼容原客户端，受相同的分组过滤约束。CommandCode 停用不阻断 CPA 来源。具体操作及协议边界见 [分组说明](groups.md)。
 
-酒馆预设是默认关闭的可选处理模块，在酒馆页面选择模型 API Key 后绑定预设。例如 KA 保持直连，KB 选择经过酒馆模块并叠加全部已开启预设，使用 KB 的 Chat/Messages/Responses 请求才应用该预设。上游账号选择不影响这一规则；原有账号/模块预设记录保留，但统一 Key 不继承旧路由。完整操作和协议边界见 [预设模块](presets.md)。
+酒馆预设是默认关闭的可选处理模块，按调用分组设置：请求由哪个分组处理，就叠加该分组已开启的预设（Chat/Messages/Responses 请求）。多分组 Key 自动切换到下一个分组时，预设也随之换成那个分组的设置。原有账号/模块预设记录保留，但统一 Key 不继承旧路由。完整操作和协议边界见 [预设模块](presets.md)。
 
 入口支持 SSE、WebSocket、长连接和断开取消，上传、预设及模型请求体不设人为大小上限。CPA 管理 API、`management.html`、原生管理资源和 `/cpa-api/` 下的配置、凭证、插件及日志文件禁止公网直连；面板通过登录后的后台适配器访问管理接口。
 

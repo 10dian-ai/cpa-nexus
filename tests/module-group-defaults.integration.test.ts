@@ -36,6 +36,8 @@ describe.skipIf(!databaseUrl)('module default group upgrade on PostgreSQL', () =
     await sql`DELETE FROM nexus_key_groups WHERE key_id=${customKey} AND group_id=${DEFAULT_GROUP_ID}`
     migration = await readFile(path.resolve('db/migrations/015_module_group_defaults.sql'), 'utf8')
     await sql.unsafe(migration).simple()
+    // The current group helpers read the key group order added by a later migration (020).
+    await sql`ALTER TABLE nexus_key_groups ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0`
     defaults = await getModuleDefaultGroupIds()
   }, 30_000)
   afterAll(async () => {
@@ -117,6 +119,7 @@ describe.skipIf(!databaseUrl)('upgrade of the user-renamed commandcode global gr
     await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${key},'Existing model key','ccm_existing',${randomUUID()},'auto')`
     migration = await readFile(path.resolve('db/migrations/015_module_group_defaults.sql'), 'utf8')
     await sql.unsafe(migration).simple()
+    await sql`ALTER TABLE nexus_key_groups ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0`
     cpaDefault = (await getModuleDefaultGroupIds()).cpa
   }, 30_000)
   afterAll(async () => {

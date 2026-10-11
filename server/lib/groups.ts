@@ -48,7 +48,8 @@ export async function ensureAccountGroups(sql: Database, moduleId: GroupModuleId
 export async function setKeyGroups(sql: Database, keyId: string, groupIds?: string[]) {
   const ids = await assertGroupIds(groupIds, sql)
   await sql`DELETE FROM nexus_key_groups WHERE key_id=${keyId}`
-  for (const id of ids) await sql`INSERT INTO nexus_key_groups(key_id,group_id) VALUES(${keyId},${id})`
+  // The submitted order is the key's routing order (first group is tried first).
+  for (const [position, id] of ids.entries()) await sql`INSERT INTO nexus_key_groups(key_id,group_id,position) VALUES(${keyId},${id},${position})`
   return ids
 }
 export async function accountGroupBindings(moduleId: GroupModuleId, accountIds?: string[], sql: Database = getDb()) {
@@ -64,14 +65,19 @@ export async function keyGroupBindings(keyIds?: string[], sql: Database = getDb(
   const map = new Map<string, GroupBinding>()
   if (keyIds?.length === 0) return map
   const filter = keyIds ? sql`WHERE kg.key_id IN ${sql(keyIds)}` : sql``
-  const rows = await sql`SELECT kg.key_id,g.id,g.name FROM nexus_key_groups kg JOIN nexus_groups g ON g.id=kg.group_id ${filter} ORDER BY g.created_at,g.id`
+  const rows = await sql`SELECT kg.key_id,g.id,g.name FROM nexus_key_groups kg JOIN nexus_groups g ON g.id=kg.group_id ${filter} ORDER BY kg.position,g.created_at,g.id`
   for (const row of rows) { const entry = map.get(row.key_id) ?? emptyBinding(); entry.groupIds.push(row.id); entry.groupNames.push(row.name); map.set(row.key_id, entry) }
   return map
 }
 export async function resolveEnabledKeyGroupIds(keyId: string): Promise<string[]> {
-  const rows = await getDb()`SELECT g.id FROM nexus_key_groups kg JOIN nexus_groups g ON g.id=kg.group_id
-    JOIN gateway_keys k ON k.id=kg.key_id WHERE kg.key_id=${keyId} AND k.enabled=true AND g.enabled=true ORDER BY g.created_at,g.id`
-  return rows.map(row => row.id)
+  return (await resolveKeyRouting(keyId)).groupIds
+}
+export type KeyGroupStrategy = 'failover' | 'mixed'
+/** Enabled groups in the key's own order, plus how the key moves between them. */
+export async function resolveKeyRouting(keyId: string): Promise<{ groupIds: string[]; strategy: KeyGroupStrategy }> {
+  const rows = await getDb()`SELECT g.id,k.group_strategy FROM nexus_key_groups kg JOIN nexus_groups g ON g.id=kg.group_id
+    JOIN gateway_keys k ON k.id=kg.key_id WHERE kg.key_id=${keyId} AND k.enabled=true AND g.enabled=true ORDER BY kg.position,g.created_at,g.id`
+  return { groupIds: rows.map(row => String(row.id)), strategy: rows[0]?.group_strategy === 'mixed' ? 'mixed' : 'failover' }
 }
 
 /** Recheck the selected account against the current key and group membership. */
@@ -82,7 +88,7 @@ export async function resolveAccountRoutingGroupId(moduleId: GroupModuleId, acco
     JOIN gateway_keys k ON k.id=kg.key_id
     WHERE ag.module_id=${moduleId} AND ag.account_id=${accountId} AND kg.key_id=${keyId}
       AND k.enabled=true AND g.enabled=true
-    ORDER BY g.created_at,g.id LIMIT 1`
+    ORDER BY kg.position,g.created_at,g.id LIMIT 1`
   return rows[0] ? String(rows[0].id) : null
 }
 export async function listGroups(): Promise<GroupView[]> {

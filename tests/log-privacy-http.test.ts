@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../server/lib/redis', () => ({ getRedis: () => ({ get: async () => 'admin' }) }))
 vi.mock('../server/lib/cpa/privacy-hooks', () => ({ applyCpaPrivacyAfterResponse: async () => {} }))
-import { forwardNativeCpa } from '../server/lib/cpa/inference'
+import { forwardCpa } from '../server/lib/cpa/forward'
 import managementHandler from '../server/api/cpa/management/[...path]'
 import consoleHandler from '../server/api/cpa/console/[...path]'
 import adminMiddleware from '../server/middleware/admin'
@@ -64,7 +64,7 @@ describe('diagnostic privacy over real local HTTP', () => {
     vi.stubEnv('CPA_MANAGEMENT_KEY', 'test-only-management-key')
     vi.stubEnv('CPA_CLIENT_KEY', '')
     const router = createRouter()
-      .use('/native/**', defineEventHandler(event => forwardNativeCpa(event, event.path)))
+      .use('/native/**', defineEventHandler(async event => { await forwardCpa({ event, path: event.path, timeoutMs: 30_000 }) }))
       .use('/api/cpa/management/**', managementHandler)
       .use('/api/cpa/console/**', consoleHandler)
       .get('/api/failure', defineEventHandler(() => { throw createError({ statusCode: 422, message: 'Gemini HTTP://failure.example failed', data: { model: 'claude-sonnet' } }) }))

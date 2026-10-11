@@ -17,6 +17,10 @@ const settingsShape = {
   maxRequestBodyMb: z.number().int().nonnegative().transform(() => 0),
   /** Longest silence allowed from an upstream model before the request is aborted. */
   upstreamTimeoutSeconds: z.number().int().min(UPSTREAM_TIMEOUT_LIMITS.min).max(UPSTREAM_TIMEOUT_LIMITS.max),
+  /** Devin thinking level used when a request names none. */
+  devinDefaultEffort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
+  /** Drop temperature/top_p/top_k for Devin thinking levels, as Devin's own CLI does. */
+  devinStripSampling: z.boolean(),
 }
 /** API input: unknown fields are rejected. */
 export const settingsSchema = z.object(settingsShape).strict()

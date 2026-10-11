@@ -4,6 +4,8 @@ export interface CpaPrivacyClient {
 }
 export function cpaPrivacyHeaders(value: unknown, provider?: string): Record<string, unknown>
 export function cpaPrivacyDefaultsPatch(config: unknown): Record<string, unknown>
+export const NEXUS_DEVIN_INTERNAL_ERROR_RULE: Readonly<{ status: number; match: string[]; action: string }>
+export function cpaNexusRoutingPatch(config: unknown): Record<string, unknown>
 export function cpaPrivacyApiKeysPatch(config: unknown): Record<string, unknown>
 export function cpaPrivacyCredentialPatch(document: unknown): Record<string, unknown>
 export function applyCpaPrivacyPolicy(client: CpaPrivacyClient, options?: { fileNames?: string[] }): Promise<{ changed: boolean; updatedFiles: number }>

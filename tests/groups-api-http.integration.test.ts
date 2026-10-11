@@ -21,7 +21,7 @@ vi.mock('../server/lib/cpa/group-routing', async () => {
   const { createError } = await import('h3')
   const inventory = async () => { if (fixture.failInventory) throw createError({ statusCode: 502, message: 'CPA unavailable' }); return fixture.sources }
   return { listCpaGroupSources: inventory, validateCpaSource: async (id: string) => (await inventory()).find(source => source.sourceId === id) ?? null,
-    prepareCpaGroupSource: fixture.prepare }
+    prepareCpaGroupSource: fixture.prepare, invalidateCpaGroupBindings: () => {} }
 })
 import admin from '../server/middleware/admin'
 import listGroups from '../server/api/groups/index.get'

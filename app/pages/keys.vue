@@ -10,6 +10,7 @@ function loadLegacyKeys(event: Event) {
   <AppPageHeader title="API Key" description="模型 Key 按所选分组调用各来源的模型，统一使用 /v1 入口。外调管理 Key 用于 CommandCode 的账号管理接口。" />
   <div class="form-stack">
     <KeyManager />
+    <RoutingSettings />
     <details class="raw-details" @toggle="loadLegacyKeys">
       <summary><UIcon name="i-ph-clock-counter-clockwise-bold" />CPA 历史客户端密钥</summary>
       <div v-if="legacyLoaded" class="legacy-keys">

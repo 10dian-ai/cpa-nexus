@@ -1,279 +1,367 @@
-import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
-import { request as httpsRequest } from 'node:https'
-import { createBrotliDecompress, createUnzip } from 'node:zlib'
 import { getRequestURL, type H3Event } from 'h3'
-import { CPA_DEFAULT_URL, validateCpaBaseUrl } from './client'
-import { handleCommandcodeCompatibility } from '../commandcode-compat'
+import { handleCommandcodeCompatibility, isCommandcodeFailure } from '../commandcode-compat'
 import { handleGateway } from '../gateway/handler'
 import { verifyOriginalGatewayKey } from '../commandcode-identity'
-import { resolveKeyPresetStack } from '../presets'
+import { resolveGroupPresetStack } from '../presets'
 import { authenticateGatewayKey } from '../auth'
 import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
 import { getSettings } from '../settings'
 import { readJsonBodyLimited } from '../gateway/transport'
 import { isModuleEnabled, requireModule } from '../modules'
 import { gatewayCors } from '../gateway/cors'
-import { resolveEnabledKeyGroupIds } from '../groups'
-import { listCpaGroupModels, resolveCpaGroupPolicy } from './group-routing'
-import { listGatewayModels } from '../gateway/accounts'
-import { privacyHeaders } from '../privacy-headers'
-import { getConfig } from '../config'
-import { CPA_GROUP_POLICY_HEADER, registerCpaGroupPolicy } from './group-policy'
+import { accountGroupBindings, resolveKeyRouting, type KeyGroupStrategy } from '../groups'
+import { listCandidates } from '../gateway/accounts'
+import { getProviderModel } from '../official-catalog'
+import { invalidateCpaGroupPolicy, registerCpaGroupPolicy } from './group-policy'
+import { listCpaGroupOffers, type CpaGroupOffer } from './group-routing'
+import { getNexusCpaCapabilities } from './nexus-capabilities'
+import { forwardCpa, openCpaUpstream, pipeCpaResponse, readUpstreamText, type CpaUpstream, type PipeResult } from './forward'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
 import { insertRequestLog } from '../logs'
-import { DiagnosticResponseFilter } from '../diagnostic-response'
-import { writeWithBackpressure } from '../gateway/transport'
+import { redactModelResponseBody } from '../diagnostic-response'
 import { redactSensitiveText } from '../../../shared/log-privacy'
 import { modelErrorBody } from '../model-errors'
-import { resolveInferenceRoute } from '../inference-route'
+import { upstreamIdleTimeoutMs } from '../timeouts'
+import type { AuthenticatedModelKey } from '../../../shared/keys'
+import type { SystemSettings } from '../../../shared/types'
+import { planCpaRoute, sequenceAttempts, type CpaRouteAttempt, type RouteAttempt } from '../routing/plan'
+import { applyDevinParams, devinThinkingLevels, isDevinModel } from '../routing/devin-params'
+import { errorMessageFrom, isFailoverResponse } from '../routing/failover'
+import { geminiModelList, listKeyModels } from '../routing/catalog'
 
-const PROTOCOLS = new Map([['chat/completions', 'chat'], ['messages', 'messages'], ['responses', 'responses']] as const)
-/** Anthropic token counting is answered by the CPA kernel for the same group-scoped sources as `messages`. */
-const COUNT_TOKENS = 'messages/count_tokens'
-const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
+/**
+ * Public model entry for unified `ccm_` keys and native CPA keys.
+ *
+ *   client ─► nginx ─► /nexus/cpa/{v1,v1beta}/… (here)
+ *     native CPA key ──────────────► CPA, untouched
+ *     ccm_ model key ─► key groups ─► attempts (group × source) ─► CPA / CommandCode
+ *
+ * Each attempt uses the presets of the group it runs in, Devin parameter
+ * conversion when the source is CPA's Devin provider, and a short-lived CPA
+ * group policy so the kernel only selects credentials of that group. Failed
+ * attempts (credentials, access, rate limit, upstream errors) move on to the
+ * next source or group before anything reaches the client.
+ */
+type Protocol = 'chat/completions' | 'messages' | 'responses'
+type JsonObject = Record<string, unknown>
+const GENERATION: ReadonlySet<string> = new Set(['chat/completions', 'messages', 'responses'])
+const PRESET_PROTOCOL = { 'chat/completions': 'chat', messages: 'messages', responses: 'responses' } as const
+/** Bridge callbacks from CPA into the CommandCode gateway. */
+const BRIDGE_PATHS = new Set(['chat/completions', 'messages', 'responses', 'systemone'])
 // Kept for callers upgrading from the former native-key authentication cache.
 export function resetCpaInferenceAuthCache() {}
 
-function copyHeaders(source: IncomingHttpHeaders): IncomingHttpHeaders {
-  const connectionTokens = String(source.connection || '').toLowerCase().split(',').map(token => token.trim())
-  return Object.fromEntries(Object.entries(source).filter(([name]) => !HOP_HEADERS.has(name) && !connectionTokens.includes(name)))
-}
-function destination(path: string) {
-  return new URL(path, validateCpaBaseUrl(process.env.CPA_URL || CPA_DEFAULT_URL))
-}
 function fail(event: H3Event, protocol: string, status: number, message: string, code?: string) {
   if (event.node.res.destroyed || event.node.res.writableEnded) return
   event.node.res.statusCode = status
   event.node.res.setHeader('content-type', 'application/json; charset=utf-8')
   event.node.res.end(JSON.stringify(modelErrorBody(protocol, status, message, code)))
 }
-
-function requestHeaders(event: H3Event, clientKey?: string): IncomingHttpHeaders {
-  const input = copyHeaders(event.node.req.headers)
-  const hasSession = ['x-session-id', 'session_id', 'x-claude-code-session-id', 'x-codex-session-id'].some(name => typeof input[name] === 'string')
-  const headers = privacyHeaders(input, hasSession ? getConfig().encryptionKey : undefined)
-  for (const name of Object.keys(headers)) if (name.startsWith('x-nexus-')) delete headers[name]
-  if (clientKey) {
-    for (const name of Object.keys(headers)) {
-      if (name === 'cookie' || name === 'x-api-key' || name === 'x-goog-api-key' || name.startsWith('x-nexus-')) delete headers[name]
-    }
-    headers.authorization = 'Bearer ' + clientKey
-  }
-  return headers
-}
-
-/** Stream native requests and replies without changing their protocol or credentials. */
-export async function forwardNativeCpa(event: H3Event, path: string, body?: Record<string, unknown>, clientKey?: string, groupPolicy?: string,
-  usageObserver?: BillingUsageObserver) {
-  const url = destination(path)
-  const headers = requestHeaders(event, clientKey)
-  // Inspect diagnostics as text even when the caller advertises compression.
-  headers['accept-encoding'] = 'identity'
-  if (groupPolicy) headers[CPA_GROUP_POLICY_HEADER] = groupPolicy
-  let transformed: Buffer | undefined
-  if (body) {
-    transformed = Buffer.from(JSON.stringify(body))
-    headers['content-length'] = String(transformed.byteLength)
-    headers['content-type'] = 'application/json'
-    delete headers['content-encoding']
-  }
-  const request = url.protocol === 'https:' ? httpsRequest : httpRequest
-  await new Promise<void>((resolve, reject) => {
-    let reply: IncomingMessage | undefined
-    const downstream = new AbortController()
-    const upstream = request(url, { method: event.method, headers }, response => {
-      reply = response
-      const status = response.statusCode || 502
-      const contentType = response.headers['content-type'] || ''
-      const inspect = status >= 400 || /^(?:text\/event-stream|application\/(?:[\w.+-]*\+)?json)(?:;|$)/i.test(contentType)
-      event.node.res.statusCode = status
-      for (const [name, value] of Object.entries(copyHeaders(response.headers))) {
-        if (inspect && ['content-length', 'content-encoding', 'etag', 'last-modified', 'content-md5', 'digest'].includes(name)) continue
-        if (value !== undefined && name !== BILLING_USAGE_POLICY_HEADER) event.node.res.setHeader(name, value)
-      }
-      event.node.res.setHeader('x-accel-buffering', 'no')
-      response.on('error', reject)
-      response.on('aborted', () => reject(new Error('CPA response interrupted')))
-      if (!inspect) {
-        if (usageObserver) {
-          response.on('data', chunk => usageObserver.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-          response.on('end', () => usageObserver.end())
-        }
-        response.pipe(event.node.res)
-        return
-      }
-      const filter = new DiagnosticResponseFilter(status, contentType)
-      const encoding = String(response.headers['content-encoding'] || '').toLowerCase()
-      const source = encoding === 'br' ? response.pipe(createBrotliDecompress())
-        : ['gzip', 'deflate'].includes(encoding) ? response.pipe(createUnzip()) : response
-      void (async () => {
-        for await (const chunk of source) {
-          const raw = Buffer.from(chunk)
-          usageObserver?.push(raw)
-          for (const safe of filter.push(raw)) await writeWithBackpressure(event.node.res, safe, downstream.signal)
-        }
-        usageObserver?.end()
-        for (const safe of filter.end()) await writeWithBackpressure(event.node.res, safe, downstream.signal)
-        event.node.res.end()
-      })().catch(reject)
-    })
-    const cleanup = () => { event.node.res.off('close', closed); event.node.res.off('finish', finished) }
-    const finished = () => { cleanup(); resolve() }
-    const closed = () => {
-      if (!event.node.res.writableFinished) { downstream.abort(); upstream.destroy(); reply?.destroy() }
-      cleanup(); resolve()
-    }
-    event.node.res.once('close', closed)
-    event.node.res.once('finish', finished)
-    upstream.setTimeout(120_000, () => upstream.destroy(new Error('CPA upstream idle timeout')))
-    upstream.on('error', error => { cleanup(); reject(error) })
-    if (event.node.res.destroyed) { closed(); return }
-    if (transformed) upstream.end(transformed)
-    else event.node.req.pipe(upstream)
-  })
-}
-
-async function listModelGroups(event: H3Event, keyId: string, groupIds: string[], moduleId: string) {
-  const catalogs: Array<Promise<Array<{ id: string }>>> = []
-  const includeCommandcode = (moduleId === 'commandcode' || moduleId === 'auto') && await isModuleEnabled('commandcode')
-  if (moduleId === 'cpa' || moduleId === 'auto') catalogs.push(listCpaGroupModels(groupIds))
-  if (includeCommandcode) catalogs.push(listGatewayModels(keyId).then(result => result.data))
-  const results = await Promise.allSettled(catalogs)
-  if (results.every(result => result.status === 'rejected')) throw Object.assign(new Error('模型目录暂不可用'), { statusCode: 503 })
-  const models = new Map<string, Record<string, unknown>>()
-  for (const result of results) {
-    if (result.status !== 'fulfilled') continue
-    for (const model of result.value) {
-      const previous = models.get(model.id)
-      if (!previous) models.set(model.id, { ...model })
-    }
-  }
+function sendJson(event: H3Event, value: unknown) {
+  event.node.res.statusCode = 200
   event.node.res.setHeader('content-type', 'application/json; charset=utf-8')
-  event.node.res.end(JSON.stringify({ object: 'list', data: [...models.values()].sort((a, b) => String(a.id).localeCompare(String(b.id))) }))
+  event.node.res.end(JSON.stringify(value))
 }
 
-/** A platform model key grants group membership across source modules. */
+interface ParsedEndpoint {
+  family: 'v1' | 'v1beta'
+  /** Path below the family, e.g. `chat/completions` or `models/gemini-pro:generateContent`. */
+  path: string
+  search: URLSearchParams
+}
+function parseEndpoint(event: H3Event): ParsedEndpoint {
+  const url = getRequestURL(event)
+  const match = /^(?:\/nexus\/cpa)?\/(v1beta|v1)(?:\/(.*))?$/.exec(url.pathname)
+  return { family: (match?.[1] as 'v1' | 'v1beta') || 'v1', path: (match?.[2] || '').replace(/\/$/, ''), search: url.searchParams }
+}
+
+function readSecret(event: H3Event, search: URLSearchParams): string {
+  const authorization = event.node.req.headers.authorization
+  if (typeof authorization === 'string' && /^Bearer\s+/i.test(authorization)) return authorization.replace(/^Bearer\s+/i, '').trim()
+  for (const name of ['x-api-key', 'x-goog-api-key']) {
+    const value = event.node.req.headers[name]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return search.get('key')?.trim() || ''
+}
+
+/** CPA path for a request, without the caller's own `key=` query credential. */
+function cpaPath(endpoint: ParsedEndpoint, path = endpoint.path) {
+  const search = new URLSearchParams(endpoint.search)
+  search.delete('key')
+  const query = search.toString()
+  return `/${endpoint.family}/${path}${query ? '?' + query : ''}`
+}
+
 export async function handleNexusInference(event: H3Event) {
-  const requested = getRequestURL(event)
-  const path = requested.pathname.replace(/^(?:\/nexus\/cpa)?\/v1\//, '').replace(/\/$/, '')
-  const protocol = PROTOCOLS.get(path as 'chat/completions' | 'messages' | 'responses')
+  const endpoint = parseEndpoint(event)
+  const { family, path } = endpoint
+  const label = family === 'v1beta' ? 'gemini' : path
   const cors = gatewayCors('/v1/' + path, event.method, event.node.req.headers['access-control-request-headers'])
   if (cors) {
     for (const [name, value] of Object.entries(cors.headers)) event.node.res.setHeader(name, value)
     if (cors.preflight) { event.node.res.statusCode = 204; event.node.res.end(); return }
   }
-  const authorization = event.node.req.headers.authorization
-  const apiKey = event.node.req.headers['x-api-key']
-  const secret = typeof authorization === 'string' && /^Bearer\s+/i.test(authorization)
-    ? authorization.replace(/^Bearer\s+/i, '').trim() : typeof apiKey === 'string' ? apiKey.trim() : ''
+  const secret = readSecret(event, endpoint.search)
+  let settings: SystemSettings | undefined
   try {
     // Native CPA keys may use any non-empty value, but an absent credential
-    // must be rejected at the platform boundary instead of being proxied to
-    // the core and exposed as a misleading upstream 502.
-    if (!secret) { fail(event, path, 401, 'A valid model API key is required'); return }
-    // Existing native core keys retain their original protocol and authentication.
-    if (!secret.startsWith('ccm_')) return await forwardNativeCpa(event, '/v1/' + path + requested.search)
-    // CPA installations before the private app callback was split may still point
-    // their managed CommandCode channel at the public /nexus/cpa/v1 route. A
-    // signed bridge callback is internal and must use the same gateway path as a
-    // direct /v1 callback so the original model key, groups and presets survive.
-    // Require the signature before delegating; an unsigned bridge key remains an
-    // invalid public model key below.
-    const bridgeProtocol = protocol === 'chat' ? 'chat/completions' : protocol || (path === 'systemone' ? 'systemone' : undefined)
-    if (secret.startsWith('ccm_nexus_') && bridgeProtocol && verifyOriginalGatewayKey(event.node.req.headers)) {
-      return await handleGateway(event, { protocolPath: bridgeProtocol })
+    // must be rejected here instead of becoming a misleading upstream 502.
+    if (!secret) { fail(event, label, 401, 'A valid model API key is required'); return }
+    // Existing native core keys keep their original protocol, path and authentication.
+    if (!secret.startsWith('ccm_')) {
+      await forwardCpa({ event, path: `/${family}/${path}${endpoint.search.size ? '?' + endpoint.search.toString() : ''}`, timeoutMs: upstreamIdleTimeoutMs(await getSettings()) })
+      return
     }
-    const countTokens = path === COUNT_TOKENS
-    if (!((path === 'models' && event.method === 'GET') || ((protocol || countTokens || path === 'systemone') && event.method === 'POST'))) { fail(event, path, 404, 'Unsupported model endpoint', 'unsupported_endpoint'); return }
+    // A signed CommandCode bridge callback from CPA keeps the original key, groups and presets.
+    if (family === 'v1' && secret.startsWith('ccm_nexus_') && BRIDGE_PATHS.has(path) && verifyOriginalGatewayKey(event.node.req.headers)) {
+      return await handleGateway(event, { protocolPath: path as Protocol | 'systemone' })
+    }
     const key = await authenticateGatewayKey(secret)
-    if (!key || secret.startsWith('ccm_nexus_')) { fail(event, path, 401, 'A valid model API key is required'); return }
+    if (!key || secret.startsWith('ccm_nexus_')) { fail(event, label, 401, 'A valid model API key is required'); return }
+    settings = await getSettings()
     const moduleId = key.moduleId || 'commandcode'
     if (moduleId === 'commandcode') {
-      if (countTokens) { fail(event, path, 404, 'Token counting is only available for CPA sources', 'unsupported_endpoint'); return }
-      return await handleCommandcodeCompatibility(event, { protocolPath: path })
+      if (family === 'v1' && ((path === 'models' && event.method === 'GET') || ((GENERATION.has(path) || path === 'systemone') && event.method === 'POST'))) {
+        return await handleCommandcodeCompatibility(event, { protocolPath: path })
+      }
+      fail(event, label, 404, 'This endpoint is only available for CPA sources', 'unsupported_endpoint'); return
     }
-    const groupIds = await resolveEnabledKeyGroupIds(key.id)
-    if (!groupIds.length) { fail(event, path, 403, '这个模型 API Key 没有已启用的分组'); return }
-    if (path === 'models') return await listModelGroups(event, key.id, groupIds, moduleId)
-    if (path === 'systemone') {
+    const routing = await resolveKeyRouting(key.id)
+    if (!routing.groupIds.length) { fail(event, label, 403, '这个模型 API Key 没有已启用的分组'); return }
+
+    if (event.method === 'GET' && (path === 'models' || path.startsWith('models/'))) {
+      const models = await listKeyModels(key, routing.groupIds)
+      if (path === 'models') return sendJson(event, family === 'v1beta' ? geminiModelList(models) : { object: 'list', data: models })
+      const id = decodeURIComponent(path.slice('models/'.length))
+      const model = models.find(item => item.id === id)
+      if (!model) { fail(event, label, 404, 'Model not found', 'model_not_found'); return }
+      return sendJson(event, family === 'v1beta' ? geminiModelList([model]).models[0] : model)
+    }
+    if (family === 'v1' && path === 'systemone' && event.method === 'POST') {
       if (moduleId === 'auto') return await handleCommandcodeCompatibility(event, { protocolPath: path })
       fail(event, path, 403, 'System One requires a key with Command Code group access'); return
     }
-    if (event.node.req.headers['content-encoding']) { fail(event, path, 415, 'Model API keys require an uncompressed JSON request'); return }
-    let body = await readJsonBodyLimited(event, (await getSettings()).maxRequestBodyMb * 1024 * 1024)
-    const model = typeof body.model === 'string' ? body.model.trim() : ''
-    if (!model || model.length > 256) { fail(event, path, 400, 'model must be a non-empty string of at most 256 characters'); return }
-    const route = await resolveInferenceRoute({ moduleId, model, keyId: key.id, groupIds })
-    if (route.target === 'reject') { fail(event, path, route.status, route.message); return }
-    if (route.target !== 'cpa' && countTokens) { fail(event, path, 404, 'Token counting is only available for CPA sources', 'unsupported_endpoint'); return }
-    if (route.target === 'commandcode') return await handleCommandcodeCompatibility(event, { protocolPath: path, body })
-    const clientKey = process.env.CPA_CLIENT_KEY?.trim()
-    if (!clientKey) { fail(event, path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
-    await requireModule('cpa')
-    const selected = await resolveCpaGroupPolicy(model, groupIds, key.id)
-    if (!selected) { fail(event, path, 404, '当前 Key 的分组中没有可调用的这个模型'); return }
-    body.model = model
-    if (countTokens) {
-      // Token counting is not a generation: no preset stack, billing policy or
-      // request log, only the same group-scoped CPA sources as /messages.
-      body.model = selected.model
-      const policy = selected.legacyPrefix ? undefined : await registerCpaGroupPolicy({ keyId: key.id,
-        allowedAuthIDs: selected.allowedAuthIDs, allowedPluginIDs: selected.allowedPluginIDs })
-      return await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey, policy)
-    }
-    const presets = await resolveKeyPresetStack(key.id, [selected.selectedGroupId])
-    const generationType = resolvePresetGenerationType(body, event.node.req.headers)
-    if (presets.length) {
-      body = applyPresetStack(presets, body, { protocol: protocol!, generationType })
-      event.node.res.setHeader('x-nexus-preset-id', presets.map(preset => preset.id).join(','))
-    }
-    if (Object.hasOwn(body, 'generation_type')) { body = { ...body }; delete body.generation_type }
-    body = normalizeBillingRequest(body, path)
-    event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
-    body.model = selected.model
-    const policy = selected.legacyPrefix ? undefined : await registerCpaGroupPolicy({ keyId: key.id,
-      allowedAuthIDs: selected.allowedAuthIDs, allowedPluginIDs: selected.allowedPluginIDs })
-    const usageObserver = new BillingUsageObserver()
-    const startedAt = Date.now()
-    const presetIds = presets.map(preset => preset.id)
-    const sessionId = typeof body.session_id === 'string' ? body.session_id : null
-    try {
-      await forwardNativeCpa(event, '/v1/' + path + requested.search, body, clientKey, policy, usageObserver)
-      const statusCode = event.node.res.statusCode || 500
-      const usage = usageObserver.value()
-      const usageWithMetadata = usage ? {
-        ...usage,
-        nexus: { moduleId: 'cpa', groupIds: [...groupIds], presetIds },
-      } : null
-      await insertRequestLog({
-        keyId: key.id, accountId: null, moduleId: 'cpa', sourceId: null,
-        model: typeof body.model === 'string' ? body.model : model, protocol: path as 'chat/completions' | 'messages' | 'responses', sessionId,
-        status: statusCode >= 400 ? 'error' : 'success', httpStatus: statusCode, durationMs: Date.now() - startedAt,
-        streaming: String(event.node.res.getHeader('content-type') || '').includes('text/event-stream'), usage: usageWithMetadata,
-        errorMessage: statusCode >= 400 ? `CPA core returned HTTP ${statusCode}` : null,
-        requestBody: body, responseBody: null, responseTruncated: false,
-      }).catch(error => console.error('[cpa] Request log could not be persisted', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable')))
-      return
-    } catch (error) {
-      const partialUsage = usageObserver.value()
-      await insertRequestLog({
-        keyId: key.id, accountId: null, moduleId: 'cpa', sourceId: null,
-        model: typeof body.model === 'string' ? body.model : model, protocol: path as 'chat/completions' | 'messages' | 'responses', sessionId,
-        status: 'error', httpStatus: Number((error as { statusCode?: number }).statusCode) || event.node.res.statusCode || null,
-        durationMs: Date.now() - startedAt, streaming: false,
-        usage: partialUsage ? { ...partialUsage, nexus: { moduleId: 'cpa', groupIds: [...groupIds], presetIds } } : null,
-        errorMessage: error instanceof Error ? error.message : 'CPA request failed', requestBody: body, responseBody: null, responseTruncated: false,
-      }).catch(() => undefined)
-      throw error
-    }
+
+    // Gemini: the model is part of the path, `models/<model>:<action>`.
+    const gemini = family === 'v1beta' ? /^models\/(.+):([A-Za-z]+)$/.exec(path) : null
+    const contentType = String(event.node.req.headers['content-type'] || '')
+    const jsonBody = event.method === 'POST' && (!contentType || /json/i.test(contentType)) && (gemini || family === 'v1')
+    if (!jsonBody) return await forwardUnscoped(event, endpoint, key, routing.groupIds, settings)
+    if (event.node.req.headers['content-encoding']) { fail(event, label, 415, 'Model API keys require an uncompressed JSON request'); return }
+    const body = await readJsonBodyLimited(event, settings.maxRequestBodyMb * 1024 * 1024)
+    const model = gemini ? decodeURIComponent(gemini[1]!) : typeof body.model === 'string' ? body.model.trim() : ''
+    // JSON calls that name no model (job control such as `responses/{id}/cancel`)
+    // are left to CPA within the key's own sources.
+    if (!gemini && body.model === undefined && !GENERATION.has(path)) return await forwardUnscoped(event, endpoint, key, routing.groupIds, settings, body)
+    if (!model || model.length > 256) { fail(event, label, 400, 'model must be a non-empty string of at most 256 characters'); return }
+    await runModelRequest({
+      event, endpoint, key, groupIds: routing.groupIds, strategy: routing.strategy, settings, body, model,
+      protocol: family === 'v1' && GENERATION.has(path) ? path as Protocol : undefined,
+      logProtocol: gemini ? `gemini:${gemini[2]}` : path,
+      cpaPathFor: nativeModel => gemini ? cpaPath(endpoint, `models/${nativeModel}:${gemini[2]}`) : cpaPath(endpoint),
+    })
   } catch (error) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }
-    // Platform errors carry an explicit status and an already-redacted, actionable
-    // message (module stopped, kernel needs the group-policy patch, catalog down).
-    // Only bare transport failures fall back to the generic connection message.
+    // Platform errors carry an explicit status and an actionable, redacted
+    // message. Only bare transport failures fall back to the generic message.
     const explicit = Number((error as { statusCode?: number }).statusCode)
     const status = explicit || (/timeout/i.test(String(error)) ? 504 : 502)
-    fail(event, path, status, explicit && error instanceof Error && error.message ? redactSensitiveText(error.message) : 'CPA request failed; check the core connection',
+    fail(event, label, status, explicit && error instanceof Error && error.message ? redactSensitiveText(error.message) : 'CPA request failed; check the core connection',
       status === 422 ? 'preset_route_error' : undefined)
   }
+}
+
+interface ModelRequest {
+  event: H3Event; endpoint: ParsedEndpoint; key: AuthenticatedModelKey; groupIds: string[]; strategy: KeyGroupStrategy
+  settings: SystemSettings; body: JsonObject; model: string
+  /** Set for generation endpoints: presets, billing and CommandCode apply. */
+  protocol?: Protocol
+  logProtocol: string
+  cpaPathFor: (nativeModel: string) => string
+}
+interface AttemptRecord { kind: 'cpa' | 'commandcode'; groupId: string; model?: string; status: number; error: string }
+
+/** Groups (among the key's) holding a CommandCode account that can serve the model. */
+async function commandcodeGroups(model: string, key: AuthenticatedModelKey, groupIds: string[]): Promise<Set<string> | undefined> {
+  if (key.moduleId !== 'auto' || !await isModuleEnabled('commandcode')) return undefined
+  let provider: Awaited<ReturnType<typeof getProviderModel>> = null
+  try { provider = await getProviderModel(model) } catch { /* CPA can remain usable during a catalog outage. */ }
+  if (!provider) return undefined
+  const candidates = await listCandidates(model, key.id)
+  if (!candidates.length) return undefined
+  const bindings = await accountGroupBindings('commandcode', candidates.map(candidate => candidate.id))
+  const groups = new Set([...bindings.values()].flatMap(binding => binding.groupIds))
+  return new Set(groupIds.filter(id => groups.has(id)))
+}
+
+async function runModelRequest(request: ModelRequest) {
+  const { event, key, groupIds, protocol, model } = request
+  const label = request.logProtocol
+  let attempts: RouteAttempt[]
+  if (model.startsWith('commandcode/')) {
+    if (key.moduleId !== 'auto') { fail(event, label, 403, 'This API key is bound to CPA and cannot call Command Code models'); return }
+    if (!protocol) { fail(event, label, 404, 'This endpoint is only available for CPA sources', 'unsupported_endpoint'); return }
+    attempts = [{ kind: 'commandcode', groupId: groupIds[0]! }]
+  } else {
+    await requireModule('cpa')
+    if (!process.env.CPA_CLIENT_KEY?.trim()) { fail(event, label, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
+    const plan = await planCpaRoute({ model, groupIds })
+    const ccGroups = protocol ? await commandcodeGroups(model, key, groupIds) : undefined
+    attempts = sequenceAttempts({ groupIds, strategy: request.strategy, rotationKey: key.id + '\0' + model, perGroup: plan.perGroup, commandcodeGroups: ccGroups })
+    if (!attempts.length) { fail(event, label, 404, '当前 Key 的分组中没有可调用的这个模型', 'model_not_found'); return }
+  }
+  const failures: AttemptRecord[] = []
+  const startedAt = Date.now()
+  for (const [index, attempt] of attempts.entries()) {
+    const last = index === attempts.length - 1
+    if (attempt.kind === 'commandcode') {
+      const result = await handleCommandcodeCompatibility(event, { protocolPath: protocol!, body: { ...request.body }, failover: !last })
+      if (isCommandcodeFailure(result)) { failures.push({ kind: 'commandcode', groupId: attempt.groupId, status: result.status, error: result.message }); continue }
+      return
+    }
+    const outcome = await runCpaAttempt(request, attempt, last, failures, startedAt)
+    if (outcome === 'done') return
+  }
+  // Every attempt failed over; report the last one.
+  const lastFailure = failures.at(-1)
+  const status = lastFailure?.status || 502
+  fail(event, label, status, redactSensitiveText(lastFailure?.error || 'All sources for this model failed'))
+  await logRequest(request, { status, startedAt, failures, error: lastFailure?.error || 'All sources failed', body: request.body })
+}
+
+async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, last: boolean, failures: AttemptRecord[], startedAt: number): Promise<'done' | 'next'> {
+  const { event, key, protocol, settings } = request
+  let body: JsonObject = { ...request.body }
+  let presetIds: string[] = []
+  if (protocol) {
+    // The serving group decides the SillyTavern presets, never the key.
+    const presets = await resolveGroupPresetStack(attempt.groupId)
+    if (presets.length) {
+      body = applyPresetStack(presets, body, { protocol: PRESET_PROTOCOL[protocol], generationType: resolvePresetGenerationType(body, event.node.req.headers) })
+      presetIds = presets.map(preset => preset.id)
+    }
+    if (Object.hasOwn(body, 'generation_type')) delete body.generation_type
+    body = normalizeBillingRequest(body, protocol)
+  }
+  let nativeModel = attempt.opaque ? attempt.nativeModel : attempt.nativeModel + (attempt.parenSuffix !== undefined ? `(${attempt.parenSuffix})` : '')
+  let devin: { level: string; source: string; removed: string[] } | undefined
+  if (!attempt.opaque && isDevinModel(attempt.nativeModel)) {
+    const levels = (await devinThinkingLevels().catch(() => new Map<string, string[]>())).get(attempt.nativeModel.toLowerCase())
+    const parenLevel = attempt.parenSuffix ? attempt.parenSuffix.trim().toLowerCase() : undefined
+    const converted = applyDevinParams({
+      body, nativeModel: attempt.nativeModel, supportedLevels: levels,
+      nameLevel: (attempt.nameLevel || (parenLevel && ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(parenLevel) ? parenLevel : undefined)) as never,
+      options: { defaultLevel: settings.devinDefaultEffort || 'high', stripSampling: settings.devinStripSampling !== false },
+    })
+    body = converted.body
+    nativeModel = converted.model
+    devin = { level: converted.level, source: converted.levelSource, removed: converted.removed }
+  }
+  if (request.endpoint.family === 'v1') body.model = nativeModel
+  const policyInput = { keyId: key.id, allowedAuthIDs: attempt.allowedAuthIDs, allowedPluginIDs: attempt.allowedPluginIDs }
+  const timeoutMs = upstreamIdleTimeoutMs(settings)
+  const record = (status: number, error: string) => failures.push({ kind: 'cpa', groupId: attempt.groupId, model: nativeModel, status, error })
+  let upstream: CpaUpstream
+  let errorText: string | undefined
+  for (let round = 0; ; round++) {
+    const policy = await registerCpaGroupPolicy(policyInput)
+    try {
+      upstream = await openCpaUpstream({ event, path: request.cpaPathFor(nativeModel), method: 'POST', body, clientKey: process.env.CPA_CLIENT_KEY!.trim(), policy, timeoutMs })
+    } catch (error) {
+      if (last) throw error
+      record(/timeout/i.test(String(error)) ? 504 : 502, error instanceof Error ? error.message : 'CPA connection failed')
+      return 'next'
+    }
+    if (upstream.response.statusCode === 403 && round === 0) {
+      errorText = await readUpstreamText(upstream.response)
+      // A cached policy CPA no longer holds (core restarted): register a new one once.
+      if (errorText.includes('nexus_group_policy_invalid')) { invalidateCpaGroupPolicy(policyInput); errorText = undefined; continue }
+    }
+    break
+  }
+  const status = upstream.response.statusCode || 502
+  if (status >= 400 && (!last || errorText !== undefined)) {
+    const text = errorText ?? await readUpstreamText(upstream.response)
+    if (!last && isFailoverResponse(status, text)) { record(status, errorMessageFrom(text)); return 'next' }
+    // A client error that another source would reject as well, or the last failure: return it as is.
+    const res = event.node.res
+    res.statusCode = status
+    res.setHeader('content-type', String(upstream.response.headers['content-type'] || 'application/json; charset=utf-8'))
+    res.end(Buffer.from(redactModelResponseBody(Buffer.from(text), status)))
+    await logRequest(request, { status, startedAt, failures, error: errorMessageFrom(text), body, attempt, presetIds, devin })
+    return 'done'
+  }
+  if (presetIds.length) event.node.res.setHeader('x-nexus-preset-id', presetIds.join(','))
+  else event.node.res.removeHeader('x-nexus-preset-id')
+  if (protocol) event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
+  const usageObserver = new BillingUsageObserver()
+  let piped: PipeResult | undefined
+  try {
+    piped = await pipeCpaResponse(event, upstream, { usageObserver, timeoutMs })
+  } finally {
+    await logRequest(request, {
+      status: piped?.status ?? status, startedAt, failures, body, attempt, presetIds, devin, piped, usage: usageObserver.value(),
+      error: piped ? piped.outcome.errorMessage : 'CPA response interrupted',
+    })
+  }
+  return 'done'
+}
+
+/** Map CPA's selected auth index back to the Nexus source that owns it. */
+async function sourceForAuthIndex(authIndex: string | null, offers: CpaGroupOffer[] | undefined): Promise<string | null> {
+  if (!authIndex) return null
+  try {
+    const account = (await getNexusCpaCapabilities())?.runtimeAccounts.find(item => item.authIndex === authIndex)
+    if (!account) return null
+    return (offers || []).find(offer => offer.authIds.includes(account.id))?.sourceId || account.fileName || account.id
+  } catch { return null }
+}
+
+async function logRequest(request: ModelRequest, input: {
+  status: number; startedAt: number; failures: AttemptRecord[]; body: JsonObject; error?: string | null
+  attempt?: CpaRouteAttempt; presetIds?: string[]; devin?: { level: string; source: string; removed: string[] }
+  piped?: PipeResult; usage?: Record<string, unknown> | null
+}) {
+  try {
+    const offers = input.piped?.authIndex ? await listCpaGroupOffers(request.groupIds).catch(() => undefined) : undefined
+    const sourceId = await sourceForAuthIndex(input.piped?.authIndex ?? null, offers)
+    const status = input.piped ? input.piped.outcome.logStatus(input.piped.status) : 'error'
+    await insertRequestLog({
+      keyId: request.key.id, accountId: null, moduleId: 'cpa', sourceId,
+      model: request.model, protocol: request.logProtocol,
+      sessionId: typeof request.body.session_id === 'string' ? request.body.session_id : null,
+      status, httpStatus: input.status, durationMs: Date.now() - input.startedAt, streaming: !!input.piped?.streaming,
+      usage: {
+        ...(input.usage || {}),
+        nexus: {
+          moduleId: 'cpa', groupIds: [...request.groupIds], strategy: request.strategy,
+          ...(input.attempt ? { groupId: input.attempt.groupId, nativeModel: input.attempt.nativeModel } : {}),
+          presetIds: input.presetIds || [],
+          ...(input.devin ? { devin: input.devin } : {}),
+          ...(input.piped?.authIndex ? { authIndex: input.piped.authIndex } : {}),
+          ...(input.failures.length ? { failover: input.failures } : {}),
+        },
+      },
+      errorMessage: status === 'error' ? (input.error || `CPA core returned HTTP ${input.status}`) : status === 'incomplete' ? 'Stream ended without a completion event' : null,
+      requestBody: input.body, responseBody: null, responseTruncated: false,
+    })
+  } catch (error) {
+    console.error('[cpa] Request log could not be persisted', redactSensitiveText(error instanceof Error ? error.message : 'Storage unavailable'))
+  }
+}
+
+/**
+ * Requests without a JSON model field (multipart uploads, job polling): CPA
+ * resolves the model; the policy still limits it to the key's own sources.
+ */
+async function forwardUnscoped(event: H3Event, endpoint: ParsedEndpoint, key: AuthenticatedModelKey, groupIds: string[], settings: SystemSettings, body?: JsonObject) {
+  await requireModule('cpa')
+  const clientKey = process.env.CPA_CLIENT_KEY?.trim()
+  if (!clientKey) { fail(event, endpoint.path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
+  const offers = await listCpaGroupOffers(groupIds)
+  if (!offers.length) { fail(event, endpoint.path, 404, '当前 Key 的分组中没有可调用的 CPA 来源', 'model_not_found'); return }
+  const policy = await registerCpaGroupPolicy({ keyId: key.id, allowedAuthIDs: [...new Set(offers.flatMap(offer => offer.authIds))],
+    allowedPluginIDs: [...new Set(offers.flatMap(offer => offer.pluginId ? [offer.pluginId] : []))] })
+  await forwardCpa({ event, path: cpaPath(endpoint), body, clientKey, policy, timeoutMs: upstreamIdleTimeoutMs(settings) })
 }

@@ -23,14 +23,19 @@ export interface SystemSettings {
   logRetentionDays: number; affinityTtlSeconds: number; maxRequestBodyMb: number
   /** Upstream silence (seconds) tolerated before a model request is aborted. */
   upstreamTimeoutSeconds: number
+  /** Devin thinking level used when a request names none. */
+  devinDefaultEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  /** Drop sampling controls for Devin thinking levels. */
+  devinStripSampling: boolean
 }
 export const DEFAULT_SETTINGS: SystemSettings = {
   activeRefreshSeconds: 60, idleRefreshSeconds: 300, activeWindowSeconds: 300,
   refreshConcurrency: 2, refreshRatePerSecond: 2,
   logRetentionDays: 30, affinityTtlSeconds: 86400, maxRequestBodyMb: 0,
   upstreamTimeoutSeconds: 600,
+  devinDefaultEffort: 'high', devinStripSampling: true,
 }
-export interface GatewayKeyView extends Partial<GroupBinding> { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; createdAt: string; lastUsedAt: string | null }
+export interface GatewayKeyView extends Partial<GroupBinding> { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; groupStrategy?: 'failover' | 'mixed'; createdAt: string; lastUsedAt: string | null }
 export interface RequestLogView {
   id: string; accountId: string | null; accountLabel: string | null; keyName: string | null
   moduleId?: string | null; sourceId?: string | null

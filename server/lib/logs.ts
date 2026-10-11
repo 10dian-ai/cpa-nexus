@@ -4,7 +4,8 @@ import { redactSensitiveText } from '../../shared/log-privacy'
 export interface RequestLogInput {
   id?: string; keyId: string | null; accountId: string | null; model: string
   moduleId?: string | null; sourceId?: string | null
-  protocol: 'chat/completions' | 'messages' | 'responses' | 'systemone'; sessionId: string | null
+  /** Endpoint path below /v1, e.g. `chat/completions` or `gemini:generateContent`. */
+  protocol: string; sessionId: string | null
   status: 'success' | 'error' | 'cancelled' | 'incomplete'; httpStatus: number | null
   durationMs: number; streaming: boolean; usage: Record<string, unknown> | null
   errorMessage: string | null; requestBody: unknown; responseBody: unknown; responseTruncated: boolean

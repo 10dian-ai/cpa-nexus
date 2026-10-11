@@ -25,7 +25,21 @@ const fail = (statusCode: number, message: string) => platformError({ statusCode
 let inventory: { sources: Source[]; until: number } | undefined
 let reading: Promise<Source[]> | undefined
 const cursors = new Map<string, number>()
-export function resetCpaGroupRouting() { inventory = undefined; reading = undefined; cursors.clear(); resetNexusCpaCapabilities() }
+// Per-request routing used to ask CPA for every credential's model list and
+// write a default-group row per source on every call (N management requests
+// and 2N queries before forwarding). Model lists and group bindings are now
+// cached briefly; default groups are written once when a source is first seen.
+const MODEL_CACHE_MS = 30_000
+const BINDING_CACHE_MS = 2_000
+const modelCache = new Map<string, { until: number; value: Promise<CpaGroupModel[]> }>()
+const ensuredSources = new Set<string>()
+let bindingCache: { until: number; value: Promise<Map<string, { groupIds: string[]; groupNames: string[] }>> } | undefined
+export function resetCpaGroupRouting() {
+  inventory = undefined; reading = undefined; cursors.clear(); modelCache.clear(); ensuredSources.clear(); bindingCache = undefined
+  resetNexusCpaCapabilities()
+}
+/** Group membership changed: the next routing decision must read it again. */
+export function invalidateCpaGroupBindings() { bindingCache = undefined }
 
 async function readJson(client: Client, input: CpaRequest): Promise<unknown> {
   const response = await client.request(input)
@@ -133,7 +147,17 @@ async function each<T>(items: T[], callback: (item: T) => Promise<void>) {
 async function readSources(fresh = false): Promise<Source[]> {
   if (!fresh && inventory && inventory.until > Date.now()) return inventory.sources
   if (!fresh && reading) return reading
-  const promise = readInventory().then(sources => { inventory = { sources, until: Date.now() + 5000 }; return sources })
+  const promise = readInventory().then(async sources => {
+    // First sighting of a source gives it its module default group, once.
+    const unseen = sources.filter(source => !ensuredSources.has(source.id))
+    if (unseen.length) {
+      const db = getDb()
+      await each(unseen, async source => { await ensureAccountGroups(db, 'cpa', source.id); ensuredSources.add(source.id) })
+      bindingCache = undefined
+    }
+    inventory = { sources, until: Date.now() + 5000 }
+    return sources
+  })
   if (!fresh) reading = promise
   try { return await promise } finally { if (reading === promise) reading = undefined }
 }
@@ -142,8 +166,6 @@ export async function listCpaGroupSources(options: { fresh?: boolean } = {}): Pr
   const sources = await readSources(options.fresh === true)
   let routingMessage = ''
   try { await assertCpaGroupRoutingSafe() } catch (error) { routingMessage = error instanceof Error ? error.message : '无法核验 CPA 插件分组路由' }
-  const db = getDb()
-  for (const source of sources) await ensureAccountGroups(db, 'cpa', source.id)
   const bindings = await accountGroupBindings('cpa', sources.map(source => source.id))
   return sources.map(source => ({ id: source.id, moduleId: 'cpa', sourceType: 'cpa', sourceId: source.id,
     name: source.name, provider: source.provider, enabled: source.enabled, credentialIds: [...source.authIds],
@@ -193,26 +215,76 @@ export async function prepareCpaGroupSource(sourceId: string): Promise<void> {
   })
 }
 
-async function accountModels(source: Source, client: Client): Promise<CpaGroupModel[]> {
+async function readAuthModels(client: Client, authId: string): Promise<CpaGroupModel[]> {
+  const payload = await readJson(client, { path: 'credentials/models', query: { name: authId } })
+  if (!object(payload) || !Array.isArray(payload.models)) throw fail(502, 'CPA 来源模型目录格式无效')
+  const result: CpaGroupModel[] = []
+  for (const model of payload.models) {
+    if (!object(model) || !text(model.id)) continue
+    result.push({ id: text(model.id), object: 'model', ...(text(model.owned_by) ? { owned_by: text(model.owned_by) } : {}),
+      ...(text(model.display_name) ? { display_name: text(model.display_name) } : {}) })
+  }
+  return result
+}
+function cachedAuthModels(client: Client, authId: string, fresh: boolean): Promise<CpaGroupModel[]> {
+  const cached = modelCache.get(authId)
+  if (!fresh && cached && cached.until > Date.now()) return cached.value
+  const value = readAuthModels(client, authId)
+  modelCache.set(authId, { until: Date.now() + MODEL_CACHE_MS, value })
+  // A failed read is not cached; the next request asks CPA again.
+  value.catch(() => { if (modelCache.get(authId)?.value === value) modelCache.delete(authId) })
+  if (modelCache.size > 10_000) modelCache.delete(modelCache.keys().next().value!)
+  return value
+}
+async function accountModels(source: Source, client: Client, fresh = false): Promise<CpaGroupModel[]> {
   const result = new Map<string, CpaGroupModel>()
   for (const authId of [...source.authIds, ...(source.modelClientIDs || [])]) {
-    const payload = await readJson(client, { path: 'credentials/models', query: { name: authId } })
-    if (!object(payload) || !Array.isArray(payload.models)) throw fail(502, 'CPA 来源模型目录格式无效')
-    for (const model of payload.models) {
-      if (!object(model) || !text(model.id)) continue
-      result.set(text(model.id), { id: text(model.id), object: 'model', ...(text(model.owned_by) ? { owned_by: text(model.owned_by) } : {}),
-        ...(text(model.display_name) ? { display_name: text(model.display_name) } : {}) })
-    }
+    for (const model of await cachedAuthModels(client, authId, fresh)) if (!result.has(model.id)) result.set(model.id, model)
   }
   return [...result.values()]
+}
+function sourceBindings(sources: Source[]) {
+  if (!bindingCache || bindingCache.until <= Date.now()) {
+    const value = accountGroupBindings('cpa', sources.map(source => source.id))
+    bindingCache = { until: Date.now() + BINDING_CACHE_MS, value }
+    value.catch(() => { if (bindingCache?.value === value) bindingCache = undefined })
+  }
+  return bindingCache.value
 }
 async function allowedSources(groupIds: string[], fresh = false) {
   if (!groupIds.length) return []
   const sources = await readSources(fresh)
-  for (const source of sources) await ensureAccountGroups(getDb(), 'cpa', source.id)
-  const bindings = await accountGroupBindings('cpa', sources.map(source => source.id))
+  const bindings = await sourceBindings(sources)
   const allowed = new Set(groupIds)
   return sources.filter(source => source.enabled && source.supported && bindings.get(source.id)?.groupIds.some(id => allowed.has(id)))
+}
+
+/** One routable CPA source as seen through one of the caller's groups. */
+export interface CpaGroupOffer {
+  groupId: string; sourceId: string; provider: string; prefix: string
+  authIds: string[]; pluginId?: string; models: string[]
+}
+/**
+ * Every (group, source) pair the caller may use, with that source's native
+ * model IDs. Sources whose catalog cannot be read are still returned with an
+ * empty list, so opaque router aliases can keep using them.
+ */
+export async function listCpaGroupOffers(groupIds: string[]): Promise<CpaGroupOffer[]> {
+  const sources = await allowedSources(groupIds)
+  if (!sources.length) return []
+  await assertCpaGroupRoutingSafe()
+  const bindings = await sourceBindings(await readSources())
+  const client = createCpaClient()
+  const models = new Map<string, string[]>()
+  await each(sources, async source => {
+    try { models.set(source.id, (await accountModels(source, client)).map(model => model.id).filter(id => !id.startsWith('commandcode/'))) }
+    catch { models.set(source.id, []) }
+  })
+  const allowed = new Set(groupIds)
+  return sources.flatMap(source => (bindings.get(source.id)?.groupIds || []).filter(id => allowed.has(id)).map(groupId => ({
+    groupId, sourceId: source.id, provider: source.provider, prefix: source.prefix,
+    authIds: [...source.authIds], ...(source.pluginId ? { pluginId: source.pluginId } : {}), models: models.get(source.id) || [],
+  })))
 }
 async function requireVerifiedPluginRouting(client: Client) {
   const capabilities = await getNexusCpaCapabilities()
@@ -239,7 +311,7 @@ export async function resolveCpaGroupPolicy(model: string, groupIds: string[], _
   if (!capabilities?.groupPolicy.enabled) throw fail(503, '请更新并配置 Nexus 内核以启用完整插件分组策略')
   const sources = await allowedSources(groupIds)
   if (!sources.length) return null
-  const bindings = await accountGroupBindings('cpa', sources.map(source => source.id))
+  const bindings = await sourceBindings(await readSources())
   const client = createCpaClient(), baseModel = modelParts(model).base
   const advertised = new Set<string>()
   await each(sources, async source => {
@@ -318,12 +390,12 @@ export async function resolveCpaGroupModel(model: string, groupIds: string[], ke
     const all = await readSources(true), confirmed = all.find(item => item.id === source.id)
     if (!confirmed?.enabled || !confirmed.supported || !confirmed.prefix || all.some(other => other.id !== source.id && other.prefix === confirmed.prefix)) throw fail(409, 'CPA 来源账号路由已变化，请重新保存分组')
     const wanted = confirmed.prefix + '/' + originalBase
-    const ownModels = await accountModels(confirmed, client)
+    const ownModels = await accountModels(confirmed, client, true)
     if (ownModels.some(entry => entry.id === wanted)) {
       // A custom model alias on another source must not impersonate this source's routing prefix.
       let collision = false
       await each(all.filter(other => other.id !== source.id && other.enabled), async other => {
-        if ((await accountModels(other, client)).some(entry => entry.id === wanted)) collision = true
+        if ((await accountModels(other, client, true)).some(entry => entry.id === wanted)) collision = true
       })
       if (collision) throw fail(409, 'CPA 模型路由被其他来源共用，无法保证分组隔离，请修改冲突模型别名')
       const currentBinding = (await accountGroupBindings('cpa', [source.id])).get(source.id)

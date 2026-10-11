@@ -7,12 +7,12 @@ import { DEFAULT_GROUP_ID } from '../shared/groups'
 
 interface StoredKey {
   id: string; name: string; prefix: string; secret_hash: string; enabled: boolean
-  module_id: ModelModuleId; created_at: Date; last_used_at: Date | null
+  module_id: ModelModuleId; group_strategy?: 'failover' | 'mixed'; created_at: Date; last_used_at: Date | null
 }
 const fixture = vi.hoisted(() => ({
   keys: new Map<string, StoredKey>(), sessions: new Map<string, string>(),
   disabled: new Set<string>(), queries: [] as { sql: string; values: unknown[] }[],
-  presetModes: new Map<string, boolean>(), keyGroups: new Map<string, string[]>(), failPresetSave: false, failGroupRead: false,
+  keyGroups: new Map<string, string[]>(), failGroupSave: false, failGroupRead: false,
   publish: vi.fn(async () => 1),
   defaultModelGroupIds: ['44444444-4444-4444-8444-444444444444', '55555555-5555-4555-8555-555555555555'],
 }))
@@ -25,7 +25,7 @@ vi.mock('../server/lib/db', () => {
   fixture.queries.push({ sql, values })
   if (sql.startsWith('INSERT INTO gateway_keys')) {
     const row: StoredKey = { id: String(values[0]), name: String(values[1]), prefix: String(values[2]),
-      secret_hash: String(values[3]), module_id: values[4] as ModelModuleId, enabled: true,
+      secret_hash: String(values[3]), module_id: values[4] as ModelModuleId, group_strategy: values[5] as 'failover' | 'mixed', enabled: true,
       created_at: new Date('2026-10-03T00:00:00.000Z'), last_used_at: null }
     fixture.keys.set(row.id, row); return [{ created_at: row.created_at }]
   }
@@ -42,12 +42,13 @@ vi.mock('../server/lib/db', () => {
     return []
   }
   if (sql.startsWith('UPDATE gateway_keys SET name=coalesce')) {
-    const row = fixture.keys.get(String(values[3]))
+    const row = fixture.keys.get(String(values[4]))
     if (!row || row.prefix.startsWith('ccm_nexus_')) return []
     if (values[0] !== null) row.name = String(values[0])
     if (values[1] !== null) row.enabled = Boolean(values[1])
     if (values[2] !== null) row.module_id = values[2] as ModelModuleId
-    return [{ id: row.id, module_id: row.module_id }]
+    if (values[3] !== null) row.group_strategy = values[3] as 'failover' | 'mixed'
+    return [{ id: row.id, module_id: row.module_id, group_strategy: row.group_strategy ?? 'failover' }]
   }
   if (sql.startsWith('DELETE FROM gateway_keys')) {
     const row = fixture.keys.get(String(values[0]))
@@ -58,22 +59,17 @@ vi.mock('../server/lib/db', () => {
   }
   return { getDb: () => Object.assign(sqlQuery, { begin: async (callback: (tx: typeof sqlQuery) => Promise<unknown>) => {
     const keys = new Map([...fixture.keys].map(([id, row]) => [id, { ...row }]))
-    const modes = new Map(fixture.presetModes)
     const groups = new Map(fixture.keyGroups)
     try { return await callback(sqlQuery) }
-    catch (error) { fixture.keys = keys; fixture.presetModes = modes; fixture.keyGroups = groups; throw error }
+    catch (error) { fixture.keys = keys; fixture.keyGroups = groups; throw error }
   } }) }
 })
-vi.mock('../server/lib/presets', () => ({
-  saveKeyPresetMode: async (_tx: unknown, keyId: string, enabled: boolean) => {
-    if (fixture.failPresetSave) throw createError({ statusCode: 503, message: 'Preset storage unavailable' })
-    fixture.presetModes.set(keyId, enabled)
-  },
-  resetPresetRouteCache: vi.fn(),
-}))
 vi.mock('../server/lib/groups', async () => { const { z } = await import('zod'); return {
   groupIdsSchema: z.array(z.string().uuid()).min(1),
-  setKeyGroups: async (_tx: unknown, id: string, groupIds?: string[]) => { fixture.keyGroups.set(id, groupIds ?? [...fixture.defaultModelGroupIds]) },
+  setKeyGroups: async (_tx: unknown, id: string, groupIds?: string[]) => {
+    if (fixture.failGroupSave) throw createError({ statusCode: 503, message: 'Group storage unavailable' })
+    fixture.keyGroups.set(id, groupIds ?? [...fixture.defaultModelGroupIds])
+  },
   keyGroupBindings: async (ids: string[]) => {
     if (fixture.failGroupRead) throw createError({ statusCode: 503, message: 'Group read unavailable' })
     return new Map(ids.map(id => [id, { groupIds: fixture.keyGroups.get(id) ?? [...fixture.defaultModelGroupIds], groupNames: ['CPA', 'CommandCode'] }]))
@@ -108,7 +104,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(3000),
   })
   beforeEach(async () => {
-    fixture.keys.clear(); fixture.sessions.clear(); fixture.disabled.clear(); fixture.queries.length = 0; fixture.publish.mockClear(); fixture.presetModes.clear(); fixture.keyGroups.clear(); fixture.failPresetSave = false; fixture.failGroupRead = false
+    fixture.keys.clear(); fixture.sessions.clear(); fixture.disabled.clear(); fixture.queries.length = 0; fixture.publish.mockClear(); fixture.keyGroups.clear(); fixture.failGroupSave = false; fixture.failGroupRead = false
     seed(KEY_ID, KEY); seed(BRIDGE_ID, BRIDGE_KEY, 'commandcode')
     fixture.sessions.set('ccm:admin:session:' + hashGatewayKey('admin-model-keys'), 'admin')
     const app = createApp(); app.use(adminMiddleware)
@@ -125,7 +121,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
       expect(response.status).toBe(200)
       const created = await response.json()
       expect(created.key).toMatch(/^ccm_[A-Za-z0-9_-]{43}$/)
-      expect(created.item).toMatchObject({ name: moduleId + ' client', moduleId, enabled: true, groupIds: fixture.defaultModelGroupIds })
+      expect(created.item).toMatchObject({ name: moduleId + ' client', moduleId, groupStrategy: 'failover', enabled: true, groupIds: fixture.defaultModelGroupIds })
       expect(fixture.keys.get(created.item.id)?.module_id).toBe(moduleId)
       expect(await authenticateGatewayKey(created.key)).toEqual({ id: created.item.id, name: moduleId + ' client', moduleId })
       const insert = fixture.queries.filter(query => query.sql.startsWith('INSERT INTO gateway_keys')).at(-1)!
@@ -158,7 +154,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
 
   it('preserves an existing module binding during unrelated key edits', async () => {
     seed(KEY_ID, KEY, 'cpa')
-    for (const body of [{ name: 'Renamed CPA key' }, { enabled: false }, { presetEnabled: true }, { groupIds: [DEFAULT_GROUP_ID] }]) {
+    for (const body of [{ name: 'Renamed CPA key' }, { enabled: false }, { groupStrategy: 'mixed' }, { groupIds: [DEFAULT_GROUP_ID] }]) {
       const response = await request(`/api/keys/${KEY_ID}`, 'PATCH', body)
       expect(response.status).toBe(200)
       expect(await response.json()).toMatchObject({ ok: true, moduleId: 'cpa' })
@@ -169,56 +165,50 @@ describe('unified model keys with persistent module binding over HTTP', () => {
   it('defaults new model keys to unified routing while retaining historical internal identities', async () => {
     const created = await (await request('/api/keys', 'POST', { name: 'Old client' })).json()
     expect(created.item.moduleId).toBe('auto')
-    expect(fixture.presetModes.get(created.item.id)).toBe(false)
+    expect(created.item.groupStrategy).toBe('failover')
     await expect(requireModelKeyModule({ id: KEY_ID, name: 'Legacy integration' }, 'commandcode')).resolves.toBeUndefined()
     await expect(requireModelKeyModule({ id: KEY_ID, name: 'Legacy integration' }, 'cpa')).rejects.toMatchObject({ statusCode: 403 })
   })
 
-  it('saves the module and preset stack option with key creation, even when the preset module is stopped', async () => {
-    fixture.disabled.add('presets')
-    const response = await request('/api/keys', 'POST', { name: 'Stack key', presetEnabled: true })
+  it('saves the multi-group strategy with key creation and edits', async () => {
+    const response = await request('/api/keys', 'POST', { name: 'Mixed key', groupStrategy: 'mixed' })
     expect(response.status).toBe(200)
     const created = await response.json()
-    expect(created.key).toMatch(/^ccm_[A-Za-z0-9_-]{43}$/)
-    expect(created.item.moduleId).toBe('auto')
-    expect(fixture.presetModes.get(created.item.id)).toBe(true)
+    expect(created.item).toMatchObject({ moduleId: 'auto', groupStrategy: 'mixed' })
+    expect(fixture.keys.get(created.item.id)?.group_strategy).toBe('mixed')
     fixture.publish.mockRejectedValueOnce(new Error('Notification unavailable'))
-    const second = await request('/api/keys', 'POST', { name: 'No notification', presetEnabled: true })
+    const second = await request('/api/keys', 'POST', { name: 'No notification' })
     expect(second.status).toBe(200)
     expect((await second.json()).key).toMatch(/^ccm_[A-Za-z0-9_-]{43}$/)
   })
 
-  it('changes only the supplied preset option and preserves it during unrelated edits', async () => {
-    const stack = await request(`/api/keys/${KEY_ID}`, 'PATCH', { presetEnabled: true })
-    expect(stack.status).toBe(200); await stack.arrayBuffer()
-    expect(fixture.presetModes.get(KEY_ID)).toBe(true)
-    const rename = await request(`/api/keys/${KEY_ID}`, 'PATCH', { name: 'Renamed stack key' })
-    expect(rename.status).toBe(200); await rename.arrayBuffer()
-    expect(fixture.presetModes.get(KEY_ID)).toBe(true)
-    fixture.disabled.add('presets')
-    const direct = await request(`/api/keys/${KEY_ID}`, 'PATCH', { presetEnabled: false })
-    expect(direct.status).toBe(200); await direct.arrayBuffer()
-    expect(fixture.presetModes.get(KEY_ID)).toBe(false)
+  it('changes only the supplied strategy and preserves it during unrelated edits', async () => {
+    const mixed = await request(`/api/keys/${KEY_ID}`, 'PATCH', { groupStrategy: 'mixed' })
+    expect(await mixed.json()).toMatchObject({ ok: true, groupStrategy: 'mixed' })
+    const rename = await request(`/api/keys/${KEY_ID}`, 'PATCH', { name: 'Renamed mixed key' })
+    expect(await rename.json()).toMatchObject({ groupStrategy: 'mixed' })
+    const listed = await (await request('/api/keys')).json()
+    expect(listed.items.find((key: { id: string }) => key.id === KEY_ID)).toMatchObject({ groupStrategy: 'mixed' })
+    const failover = await request(`/api/keys/${KEY_ID}`, 'PATCH', { groupStrategy: 'failover' })
+    expect(await failover.json()).toMatchObject({ groupStrategy: 'failover' })
   })
 
-  it('rolls back a new or edited key if saving its preset route fails', async () => {
-    fixture.failPresetSave = true
-    const creation = await request('/api/keys', 'POST', { name: 'Must roll back', presetEnabled: true })
+  it('rolls back a new or edited key if saving its groups fails', async () => {
+    fixture.failGroupSave = true
+    const creation = await request('/api/keys', 'POST', { name: 'Must roll back', groupIds: [DEFAULT_GROUP_ID] })
     expect(creation.status).toBe(503); await creation.arrayBuffer()
     expect(fixture.keys.size).toBe(2)
-    expect(fixture.presetModes.size).toBe(0)
-    const edit = await request(`/api/keys/${KEY_ID}`, 'PATCH', { name: 'Must roll back edit', moduleId: 'cpa', presetEnabled: true })
+    const edit = await request(`/api/keys/${KEY_ID}`, 'PATCH', { name: 'Must roll back edit', moduleId: 'cpa', groupIds: [DEFAULT_GROUP_ID] })
     expect(edit.status).toBe(503); await edit.arrayBuffer()
     expect(fixture.keys.get(KEY_ID)).toMatchObject({ name: 'Existing key', module_id: 'auto' })
     expect(fixture.publish).not.toHaveBeenCalled()
   })
   it('rolls back creation if reading the response group binding fails, preserving one-time secret delivery', async () => {
     fixture.failGroupRead = true
-    const response = await request('/api/keys', 'POST', { name: 'Must roll back group read', presetEnabled: true })
+    const response = await request('/api/keys', 'POST', { name: 'Must roll back group read' })
     expect(response.status).toBe(503); await response.arrayBuffer()
     expect(fixture.keys.size).toBe(2)
     expect(fixture.keyGroups.size).toBe(0)
-    expect(fixture.presetModes.size).toBe(0)
     expect(fixture.publish).not.toHaveBeenCalled()
   })
 
@@ -248,11 +238,11 @@ describe('unified model keys with persistent module binding over HTTP', () => {
   })
 
   it('rejects unsupported module types and malformed edits before persistence', async () => {
-    for (const body of [{ name: 'Invalid', moduleId: 'presets' }, { name: 'Invalid', moduleId: [] }, { name: 'Invalid', extra: true }, { name: 'Invalid', presetEnabled: 'true' }]) {
+    for (const body of [{ name: 'Invalid', moduleId: 'presets' }, { name: 'Invalid', moduleId: [] }, { name: 'Invalid', extra: true }, { name: 'Invalid', presetEnabled: true }, { name: 'Invalid', groupStrategy: 'random' }]) {
       const response = await request('/api/keys', 'POST', body)
       expect(response.status).toBe(400); await response.arrayBuffer()
     }
-    for (const body of [{ moduleId: 'platform' }, { moduleId: null }, {}, { unrelated: true }, { presetEnabled: null }]) {
+    for (const body of [{ moduleId: 'platform' }, { moduleId: null }, {}, { unrelated: true }, { presetEnabled: false }, { groupStrategy: null }]) {
       const response = await request(`/api/keys/${KEY_ID}`, 'PATCH', body)
       expect(response.status).toBe(400); await response.arrayBuffer()
     }

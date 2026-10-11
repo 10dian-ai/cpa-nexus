@@ -171,7 +171,9 @@ describe.skipIf(!binary)('real CPA binary integration with an isolated local ups
     const saved = await client.request({ path: 'config/api-keys/openai-compatibility' })
     const groups = JSON.parse(new TextDecoder().decode(saved.body))
     expect(groups[0]).toMatchObject({ name: 'nexus-commandcode', 'base-url': upstreamBase, 'request-retry': 0, 'disable-cooling': true })
-    expect(groups[0].keys[0]).toEqual({ 'api-key': bridgeKey })
+    // CPA's v8 view adds a read-only auth_index to each key; the stored key itself is unchanged.
+    expect(Object.keys(groups[0].keys[0]).filter(name => name !== 'auth_index')).toEqual(['api-key'])
+    expect(groups[0].keys[0]['api-key']).toBe(bridgeKey)
     const savedMessages = await client.request({ path: 'config/api-keys/claude' })
     const messages = JSON.parse(new TextDecoder().decode(savedMessages.body))
     expect(messages[0]).toMatchObject({ name: 'nexus-commandcode-messages', 'base-url': upstreamBase.replace(/\/v1$/, ''), 'request-retry': 0, 'disable-cooling': true })

@@ -6,7 +6,7 @@
 
 ## 更新已有部署
 
-CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；迁移 `013_routing_groups.sql` 将平台模型 Key 设为跨模块调用，旧 Key 和账号加入默认组，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 仅选择调用分组，可访问匹配的 CPA 与 CommandCode 来源。创建和编辑模型 Key 时，可选择普通调用或经过酒馆模块；经过酒馆模块的 Key 会按顺序叠加全部已开启预设。外调服务 Key 不经过酒馆模块。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
+CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；迁移 `013_routing_groups.sql` 将平台模型 Key 设为跨模块调用，旧 Key 和账号加入默认组，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 仅选择调用分组，可访问匹配的 CPA 与 CommandCode 来源。创建和编辑模型 Key 时选择调用分组、顺序和多分组策略；酒馆预设由处理请求的分组决定。外调服务 Key 不经过酒馆模块。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
 
 ## 认证
 

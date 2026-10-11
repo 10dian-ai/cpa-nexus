@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyCpaPrivacyPolicy, cpaPrivacyApiKeysPatch, cpaPrivacyCredentialPatch, cpaPrivacyDefaultsPatch, cpaPrivacyHeaders } from '../scripts/cpa-privacy-policy.mjs'
+import { applyCpaPrivacyPolicy, cpaNexusRoutingPatch, NEXUS_DEVIN_INTERNAL_ERROR_RULE, cpaPrivacyApiKeysPatch, cpaPrivacyCredentialPatch, cpaPrivacyDefaultsPatch, cpaPrivacyHeaders } from '../scripts/cpa-privacy-policy.mjs'
 import { prepareNativePrivacy } from '../scripts/setup-native-cpa.mjs'
 
 const response = (body: unknown, status = 200) => ({ status, body: Buffer.from(JSON.stringify(body)) })
@@ -116,5 +116,13 @@ describe('native CPA outgoing software identity policy', () => {
       } })
     expect(result).toEqual({ changed: true, updatedFiles: 2 })
     expect(paths.every(path => path.startsWith('/v8/management/'))).toBe(true)
+  })
+
+  it('keeps Devin masked internal errors on the next credential without cooling the model down', () => {
+    const operator = { status: 400, match: ['context_length_exceeded'], action: 'stop' }
+    const config = { oauth: { 'request-scoped-errors': { devin: [operator, { status: 502, match: ['an internal error occurred'], action: 'continue-and-cooldown' }], codex: [operator] } } }
+    expect(cpaNexusRoutingPatch(config)).toEqual({ oauth: { 'request-scoped-errors': { devin: [operator, NEXUS_DEVIN_INTERNAL_ERROR_RULE] } } })
+    expect(cpaNexusRoutingPatch({ oauth: { 'request-scoped-errors': { devin: [operator, NEXUS_DEVIN_INTERNAL_ERROR_RULE] } } })).toEqual({})
+    expect(cpaNexusRoutingPatch({})).toEqual({ oauth: { 'request-scoped-errors': { devin: [NEXUS_DEVIN_INTERNAL_ERROR_RULE] } } })
   })
 })

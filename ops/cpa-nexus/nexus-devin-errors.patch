@@ -162,3 +162,83 @@ index 0000000000000000000000000000000000000000..4b7d87a61d88144c88e7e0985c059af8
 +		})
 +	}
 +}
+diff --git a/sdk/api/handlers/nexus_devin_scoped_errors_test.go b/sdk/api/handlers/nexus_devin_scoped_errors_test.go
+new file mode 100644
+index 0000000..d8182e6
+--- /dev/null
++++ b/sdk/api/handlers/nexus_devin_scoped_errors_test.go
+@@ -0,0 +1,74 @@
++package handlers
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"net/http"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++// CPA Nexus writes this oauth.request-scoped-errors rule for Devin so a masked
++// internal failure moves to the next credential without cooling the model.
++func TestNexusDevinInternalFailureRuleContinuesWithoutCooldown(t *testing.T) {
++	const model = "devin/claude-opus-5-5"
++	manager := coreauth.NewManager(nil, nil, nil)
++	manager.SetRetryConfig(0, 0, 0)
++	manager.SetConfig(&config.Config{OAuthRequestScopedErrors: map[string][]config.RequestScopedErrorRule{
++		"devin": {{Status: http.StatusBadGateway, Match: []string{"an internal error occurred"}, Action: "continue"}},
++	}})
++	manager.RegisterExecutor(executor.NewDevinExecutor(&config.Config{}))
++	modelInfo := registry.LookupDevinModel(model)
++	if modelInfo == nil {
++		t.Fatal("missing pinned Opus model metadata")
++	}
++	ids := []string{"synthetic-nexus-devin-scoped-a", "synthetic-nexus-devin-scoped-b"}
++	for _, id := range ids {
++		if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: id, Provider: "devin", Status: coreauth.StatusActive,
++			Attributes: map[string]string{"session_token": "synthetic-token", "auth_kind": "oauth"}}); err != nil {
++			t.Fatal(err)
++		}
++		registry.GetGlobalRegistry().RegisterClient(id, "devin", []*registry.ModelInfo{modelInfo})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++	}
++	calls := 0
++	wire := helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: synthetic-trace)"}}`))
++	rt := nexusDevinErrorTransport(func(r *http.Request) (*http.Response, error) {
++		calls++
++		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/connect+proto"}}, Body: io.NopCloser(bytes.NewReader(wire))}, nil
++	})
++	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", rt)
++	payload := []byte(`{"model":"devin/claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`)
++	req := coreexecutor.Request{Model: model, Payload: payload}
++	opts := coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload}
++	for round := 1; round <= 2; round++ {
++		_, err := manager.Execute(ctx, []string{"devin"}, req, opts)
++		if err == nil {
++			t.Fatal("synthetic failure unexpectedly succeeded")
++		}
++		if calls != round*len(ids) {
++			t.Fatalf("round %d made %d upstream calls, want %d (every credential, no cooldown)", round, calls, round*len(ids))
++		}
++	}
++	for _, id := range ids {
++		updated, ok := manager.GetByID(id)
++		if !ok || updated == nil {
++			t.Fatal("missing registered synthetic auth")
++		}
++		if state := updated.ModelStates[model]; state != nil && !state.NextRetryAfter.IsZero() {
++			t.Fatalf("%s cooled down until %s", id, state.NextRetryAfter)
++		}
++		if updated.Disabled {
++			t.Fatal("masked internal failure disabled the credential")
++		}
++	}
++}

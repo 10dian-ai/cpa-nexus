@@ -4,7 +4,7 @@ import { validate } from '../../lib/account-validation'
 import { getDb } from '../../lib/db'
 import { groupIdsSchema, setAccountGroups, assertGroupIds } from '../../lib/groups'
 import { publishUpdate } from '../../lib/events'
-import { validateCpaSource, prepareCpaGroupSource } from '../../lib/cpa/group-routing'
+import { validateCpaSource, prepareCpaGroupSource, invalidateCpaGroupBindings } from '../../lib/cpa/group-routing'
 export default defineEventHandler(async event => {
   const body = validate(z.object({ moduleId: z.enum(['commandcode','cpa']), sourceType: z.string().min(1), sourceId: z.string().min(1), groupIds: groupIdsSchema }).strict(), await readBody(event))
   if (body.sourceType !== body.moduleId) throw createError({ statusCode: 400, message: '来源类型与模块不一致' })
@@ -23,6 +23,7 @@ export default defineEventHandler(async event => {
     await prepareCpaGroupSource(body.sourceId)
     await getDb().begin(tx => setAccountGroups(tx, 'cpa', body.sourceId, body.groupIds))
   }
+  invalidateCpaGroupBindings()
   await publishUpdate({ type: 'groups' })
   return { ok: true, groupIds: [...new Set(body.groupIds)] }
 })

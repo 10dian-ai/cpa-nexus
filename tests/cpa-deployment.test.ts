@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { createServer, type Server } from 'node:http'
+import { createServer, request as httpRequest, type Server } from 'node:http'
 import { createConnection, createServer as createTcpServer, type Socket } from 'node:net'
 import { createHash } from 'node:crypto'
 import { parse } from 'dotenv'
@@ -223,10 +223,15 @@ describe.skipIf(!nginxBinary)('CPA Nexus native edge transport', () => {
     await mkdir(join(directory, 'logs'))
     await mkdir(join(directory, 'temp'))
     app = createServer(async (request, response) => {
-      if (request.url?.startsWith('/nexus/cpa/v1/')) {
-        const upstream = await fetch(cpaUrl + request.url.replace('/nexus/cpa', ''), { headers: { authorization: request.headers.authorization || '' } })
-        response.writeHead(upstream.status, { 'content-type': 'application/json' })
-        response.end(await upstream.text())
+      // Stand-in for the Nexus router: stream to CPA and mark the hop.
+      if (request.url?.startsWith('/nexus/cpa/')) {
+        const forward = httpRequest(cpaUrl + request.url.slice('/nexus/cpa'.length), { method: request.method, headers: { ...request.headers, 'x-nexus-edge': 'app' } }, upstream => {
+          response.writeHead(upstream.statusCode || 502, upstream.headers)
+          upstream.pipe(response)
+        })
+        forward.once('error', () => response.destroy())
+        response.once('close', () => forward.destroy())
+        request.pipe(forward)
         return
       }
       if (request.url === '/cpa' || request.url === '/cpa/providers') {
@@ -321,8 +326,14 @@ describe.skipIf(!nginxBinary)('CPA Nexus native edge transport', () => {
       expect(response.headers.get('content-type')).toContain('text/html')
       expect(await response.text()).toContain('panel from app')
     }
-    for (const route of ['/v1/models', '/v1beta/models', '/openai/v1/videos', '/backend-api/codex/responses', '/api/provider/example/v1/models']) {
-      expect((await (await fetch(edgeUrl + route)).json()).upstream).toBe('cpa')
+    for (const route of ['/v1/models', '/v1beta/models', '/openai/v1/videos', '/cpa-api/v1/images/generations', '/v1beta/models/gemini:generateContent?alt=sse']) {
+      const body = await (await fetch(edgeUrl + route)).json()
+      expect(body).toMatchObject({ upstream: 'cpa', path: route.replace(/^\/(?:openai|cpa-api)/, '') })
+      expect(body.headers['x-nexus-edge'], route).toBe('app')
+    }
+    for (const route of ['/backend-api/codex/responses', '/api/provider/example/v1/models']) {
+      const body = await (await fetch(edgeUrl + route)).json()
+      expect(body.upstream).toBe('cpa'); expect(body.headers['x-nexus-edge']).toBeUndefined()
     }
     const escaped = await (await fetch(edgeUrl + '/cpa-api/future-model-path?fixture=1')).json()
     expect(escaped).toMatchObject({ upstream: 'cpa', path: '/future-model-path?fixture=1' })
@@ -336,10 +347,11 @@ describe.skipIf(!nginxBinary)('CPA Nexus native edge transport', () => {
         'x-stainless-os': 'private-device', 'x-opencode-project': 'private-project', traceparent: 'private-trace',
       }, body: '{"model":"local-fixture-only"}' })
       const body = await response.json()
-      expect(body.upstream).toBe('cpa'); expect(body.path).toBe(path)
+      expect(body.upstream).toBe('cpa'); expect(body.path).toBe(path); expect(body.headers['x-nexus-edge']).toBe('app')
       expect(body.headers.authorization).toBe('Bearer local-native-fixture')
       expect(body.headers['user-agent']).toBe('opencode'); expect(body.headers.originator).toBe('opencode')
-      for (const name of ['cookie', 'x-stainless-os', 'x-opencode-project', 'traceparent']) expect(body.headers[name]).toBeUndefined()
+      // Cookies reach the Nexus router, which removes them with the other private headers.
+      for (const name of ['x-stainless-os', 'x-opencode-project', 'traceparent']) expect(body.headers[name]).toBeUndefined()
     }
   })
 

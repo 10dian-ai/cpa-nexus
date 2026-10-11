@@ -50,6 +50,23 @@ export function cpaPrivacyDefaultsPatch(config) {
   if (codex?.['user-agent'] !== CPA_PRIVACY_USER_AGENT) patch.oauth = { providers: { codex: { 'header-defaults': { 'user-agent': CPA_PRIVACY_USER_AGENT } } } }
   return patch
 }
+/**
+ * Routing defaults Nexus keeps in the CPA config (merged with operator rules):
+ * Devin reports transient backend failures as `permission_denied: an internal
+ * error occurred` (HTTP 502 after nexus-devin-errors.patch). Those try the next
+ * credential without cooling the model down, so one masked failure cannot make
+ * a model unavailable on every Devin credential for a minute.
+ */
+export const NEXUS_DEVIN_INTERNAL_ERROR_RULE = Object.freeze({ status: 502, match: ['an internal error occurred'], action: 'continue' })
+export function cpaNexusRoutingPatch(config) {
+  if (!object(config)) throw Error('CPA routing configuration is invalid')
+  const scoped = object(config.oauth?.['request-scoped-errors']) ? config.oauth['request-scoped-errors'] : {}
+  const current = Array.isArray(scoped.devin) ? scoped.devin : []
+  const isNexusRule = rule => object(rule) && Number(rule.status) === 502 && Array.isArray(rule.match) && rule.match.includes(NEXUS_DEVIN_INTERNAL_ERROR_RULE.match[0])
+  const next = [...current.filter(rule => !isNexusRule(rule)), { ...NEXUS_DEVIN_INTERNAL_ERROR_RULE, match: [...NEXUS_DEVIN_INTERNAL_ERROR_RULE.match] }]
+  if (equal(current, next)) return {}
+  return { oauth: { 'request-scoped-errors': { devin: next } } }
+}
 export function cpaPrivacyApiKeysPatch(config) {
   if (config === undefined || config === null) return {}
   if (!object(config)) throw Error('CPA privacy upstream key configuration is invalid')
@@ -94,6 +111,8 @@ export async function applyCpaPrivacyPolicy(client, options = {}) {
   const config = await readJson(client, 'config')
   const defaults = cpaPrivacyDefaultsPatch(config)
   if (Object.keys(defaults).length) { await writeJson(client, 'config', defaults); changed = true }
+  const routing = cpaNexusRoutingPatch(Object.keys(defaults).length ? await readJson(client, 'config') : config)
+  if (Object.keys(routing).length) { await writeJson(client, 'config', routing); changed = true }
   // Read the arrays again after the scalar patch to preserve concurrent reload normalization.
   const current = await readJson(client, 'config')
   const upstream = object(current) ? current['api-keys'] : undefined

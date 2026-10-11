@@ -9,9 +9,33 @@ export function signCpaGroupPolicy(id: string, expiresAt: number, secret: string
   const value = id + '.' + expiresAt
   return value + '.' + createHmac('sha256', secret).update(value).digest('hex')
 }
-/** Only a short opaque reference crosses the request boundary; account lists stay server-side. */
+/**
+ * Only a short opaque reference crosses the request boundary; account lists stay server-side.
+ * CPA keeps a registered policy until it expires (30 s) and accepts it on any
+ * number of requests, so identical policies are reused while at least 10 s of
+ * validity remain instead of registering one per request.
+ */
+const policyCache = new Map<string, { expiresAt: number; value: Promise<string> }>()
+const REUSE_MARGIN_MS = 10_000
+function policyCacheKey(input: CpaGroupPolicyInput) {
+  return JSON.stringify([input.keyId, [...new Set(input.allowedAuthIDs)].sort(), [...new Set(input.allowedPluginIDs)].sort()])
+}
+export function resetCpaGroupPolicyCache() { policyCache.clear() }
+/** Forget a cached policy CPA no longer knows (for example after a core restart). */
+export function invalidateCpaGroupPolicy(input: CpaGroupPolicyInput) { policyCache.delete(policyCacheKey(input)) }
 export async function registerCpaGroupPolicy(input: CpaGroupPolicyInput): Promise<string> {
-  const expiresAt = Date.now() + 30_000
+  const key = policyCacheKey(input)
+  const now = Date.now()
+  const cached = policyCache.get(key)
+  if (cached && cached.expiresAt - now > REUSE_MARGIN_MS) return cached.value
+  const expiresAt = now + 30_000
+  const value = createCpaGroupPolicy(input, expiresAt)
+  policyCache.set(key, { expiresAt, value })
+  if (policyCache.size > 5000) for (const [entry, item] of policyCache) if (item.expiresAt - now <= REUSE_MARGIN_MS) policyCache.delete(entry)
+  value.catch(() => { if (policyCache.get(key)?.value === value) policyCache.delete(key) })
+  return value
+}
+async function createCpaGroupPolicy(input: CpaGroupPolicyInput, expiresAt: number): Promise<string> {
   const response = await createCpaClient().request({ path: 'nexus/group-policies', method: 'POST',
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...input, expiresAt }) })
   if (response.status === 404) throw platformError({ statusCode: 503, message: '当前 CPA 内核未启用插件分组适配，请更新内核后重试' })

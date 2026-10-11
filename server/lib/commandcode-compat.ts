@@ -15,6 +15,7 @@ import { registerCpaGroupPolicy, CPA_GROUP_POLICY_HEADER } from './cpa/group-pol
 import { DiagnosticResponseFilter } from './diagnostic-response'
 import { redactLogValue, redactSensitiveText } from '../../shared/log-privacy'
 import { modelErrorBody } from './model-errors'
+import { errorMessageFrom, isFailoverStatus } from './routing/failover'
 
 const PROTOCOLS = ['chat/completions', 'messages', 'responses']
 function error(event: H3Event, protocol: string, status: number, code: string, message: string) {
@@ -26,7 +27,15 @@ function error(event: H3Event, protocol: string, status: number, code: string, m
 }
 
 /** Legacy manager keys enter CPA for protocol conversion; CPA returns to /v1 for native account execution. */
-export async function handleCommandcodeCompatibility(event: H3Event, options?: { protocolPath?: string; body?: Record<string, unknown> }) {
+export interface CommandcodeAttemptFailure { failed: true; status: number; message: string }
+export function isCommandcodeFailure(value: unknown): value is CommandcodeAttemptFailure {
+  return !!value && typeof value === 'object' && (value as { failed?: unknown }).failed === true
+}
+/**
+ * `failover: true` (used by the unified multi-group router) returns a failed
+ * upstream status instead of sending it, so the caller can try the next source.
+ */
+export async function handleCommandcodeCompatibility(event: H3Event, options?: { protocolPath?: string; body?: Record<string, unknown>; failover?: boolean }): Promise<unknown> {
   const pathname = getRequestURL(event).pathname
   const path = options?.protocolPath || pathname.replace(/^\/commandcode\/v1\//, '').replace(/\/$/, '')
   try {
@@ -44,7 +53,7 @@ export async function handleCommandcodeCompatibility(event: H3Event, options?: {
   }
 }
 
-async function handleCompatibility(event: H3Event, path: string, options?: { protocolPath?: string; body?: Record<string, unknown> }) {
+async function handleCompatibility(event: H3Event, path: string, options?: { protocolPath?: string; body?: Record<string, unknown>; failover?: boolean }): Promise<unknown> {
   await requireModule('commandcode')
   const method = event.node.req.method || 'GET'
   const cors = gatewayCors('/v1/' + path, method, event.node.req.headers['access-control-request-headers'])
@@ -111,6 +120,10 @@ async function handleCompatibility(event: H3Event, path: string, options?: { pro
     resetIdle()
     const upstream = await fetch(destination, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal, redirect: 'error' })
     if (timer) clearTimeout(timer)
+    if (options?.failover && isFailoverStatus(upstream.status)) {
+      const text = await upstream.text().catch(() => '')
+      return { failed: true, status: upstream.status, message: errorMessageFrom(text) }
+    }
     if (!upstream.body) throw new Error('CPA response has no body')
     reader = upstream.body.getReader()
     const filter = new DiagnosticResponseFilter(upstream.status, upstream.headers.get('content-type') || 'application/json')
