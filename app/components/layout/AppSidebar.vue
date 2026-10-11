@@ -80,7 +80,7 @@ function toggle(group: NavigationGroup, index: number) {
       </section>
     </nav>
     <div class="sidebar-footer">
-      <div class="admin-avatar"><UIcon name="i-ph-user-bold" aria-hidden="true" /></div>
+      <div class="admin-avatar"><CatgirlMascot variant="head" :size="30" /></div>
       <div><strong>{{ username || '管理员' }}</strong><span>最高管理员</span></div>
       <button class="icon-button" :disabled="busy" aria-label="退出登录" title="退出登录" @click="emit('logout')"><UIcon name="i-ph-sign-out-bold" /></button>
     </div>

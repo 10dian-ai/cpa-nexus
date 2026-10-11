@@ -57,6 +57,12 @@ Devin 的每个思考档位其实是一个独立的上游模型，CPA 通过 `de
 
 Devin 有时把后端临时故障报告为 `permission_denied: an internal error occurred`。CPAN 在 CPA 配置中写入 `oauth.request-scoped-errors.devin` 规则：这种错误直接换下一个 Devin 凭证，不再让该模型在凭证上冷却约一分钟；全部凭证都失败时，再由 CPAN 切换到下一个分组。已有的其他自定义规则会保留。
 
+### 图片自动压缩与 413
+
+请求里的 base64 图片（OpenAI `image_url`、Responses `input_image`、Anthropic `source.type: base64`、Gemini `inline_data`）超过 512 KB 或最长边超过设定值时，CPAN 会先等比缩小（默认最长边 2048 px、质量 85，带透明通道的转 WebP，其余转 JPEG），再发给任何来源。模型看到的清晰度基本不变，四张手机照片通常从几十 MB 降到几 MB。网络图片链接、动图和无法解析的数据原样转发。可在「API Key → 调用设置」修改或关闭；日志的 `usage.nexus.images` 记录压缩前后大小。
+
+上游代理（常见是 nginx 默认的 1 MB 请求体上限）返回 413 时，CPAN 会先尝试其他来源和分组；都不接受时返回 `request_too_large`，并说明请求大小和处理办法，而不是转发 nginx 的 HTML 错误页。
+
 ### 支持的入口
 
 `ccm_` 模型 Key 可以调用 `/v1` 下的所有 CPA 模型路径（chat/completions、messages、messages/count_tokens、responses、responses/compact、embeddings、images、audio、videos 等）和 Gemini 格式的 `/v1beta/models/<模型>:generateContent`、`:streamGenerateContent`、`:countTokens`。Key 可以放在 `Authorization: Bearer`、`x-api-key`、`x-goog-api-key` 或 `?key=` 中。不带 `model` 字段的请求（multipart 上传、任务查询、`responses/<id>/cancel` 等）交给 CPA 处理，但只允许使用 Key 所有分组内的凭证。WebSocket 升级仍直接交给 CPA，只能使用 CPA 原生客户端 Key。

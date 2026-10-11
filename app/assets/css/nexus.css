@@ -260,3 +260,9 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px soli
   .table-toolbar .search-field { flex: 1 1 100%; }
   .table-toolbar select { flex: 1 1 140px; min-width: 0; }
 }
+
+/* Catgirl mascot placements */
+.state-mascot { margin: 0 auto 10px; }
+.login-panel { position: relative; margin-top: 84px; }
+.login-mascot { position: absolute; top: -110px; right: 30px; }
+.sidebar-footer .admin-avatar { background: var(--primary-tint); overflow: hidden; border-radius: 10px; display: grid; place-items: end center; }

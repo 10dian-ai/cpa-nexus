@@ -21,7 +21,7 @@ vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: fixture.pro
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: 'test-only-privacy-secret' }) }))
 vi.mock('../server/lib/presets', () => ({ resolveGroupPresetStack: fixture.presets }))
-vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.limit, upstreamTimeoutSeconds: 600, devinDefaultEffort: 'high', devinStripSampling: true }) }))
+vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.limit, upstreamTimeoutSeconds: 600, devinDefaultEffort: 'high', devinStripSampling: true, imageMaxEdge: 2048, imageQuality: 85 }) }))
 vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: fixture.compat, isCommandcodeFailure: (value: any) => !!value && value.failed === true }))
 vi.mock('../server/lib/gateway/handler', () => ({ handleGateway: fixture.internal }))
 vi.mock('../server/lib/routing/devin-params', async importOriginal => ({ ...await importOriginal<object>(), devinThinkingLevels: fixture.devinLevels }))
@@ -261,6 +261,28 @@ describe('unified model key router', () => {
       expect(response.status).toBe(200); await response.text()
       expect(fixture.invalidate).toHaveBeenCalledWith({ keyId: 'KA', allowedAuthIDs: ['source-a-auth'], allowedPluginIDs: [] })
       expect(fixture.policy).toHaveBeenCalledTimes(2); expect(generations()).toHaveLength(2)
+    })
+
+    it('explains an upstream proxy body limit instead of relaying its HTML page', async () => {
+      fixture.core.set('native-model', { status: 413, body: '<html><head><title>413 Request Entity Too Large</title></head></html>' })
+      const response = await post({ model: 'native-model', messages: [{ role: 'user', content: 'hi' }] }, 'ccm_KA')
+      expect(response.status).toBe(413)
+      const payload = await response.json()
+      expect(payload.error.code).toBe('request_too_large')
+      expect(payload.error.message).toContain('client_max_body_size')
+    })
+
+    it('shrinks large inline images before they reach CPA', async () => {
+      fixture.limit = 0
+      const { default: sharp } = await import('sharp')
+      const raw = Buffer.alloc(3000 * 2000 * 3); let seed = 3
+      for (let i = 0; i < raw.length; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; raw[i] = ((i / 3 % 3000) * 255 / 3000 + (seed >> 24)) & 255 }
+      const image = (await sharp(raw, { raw: { width: 3000, height: 2000, channels: 3 } }).jpeg({ quality: 98 }).toBuffer()).toString('base64')
+      const response = await post({ model: 'native-model', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + image } }] }] }, 'ccm_KA')
+      expect(response.status).toBe(200); await response.text()
+      const forwarded = generations()[0]!.body.messages[0].content[0].image_url.url as string
+      expect(forwarded.length).toBeLessThan(image.length / 2)
+      expect(fixture.log.mock.calls.at(-1)![0].usage.nexus.images).toMatchObject({ images: 1, compressed: 1 })
     })
 
     it('records the credential CPA actually used', async () => {

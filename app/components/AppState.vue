@@ -12,7 +12,8 @@ watch(() => props.error, (error) => {
 </script>
 <template>
   <div class="state-box" :class="{ compact }" :role="error ? 'alert' : 'status'" :aria-busy="loading">
-    <UIcon :name="loading ? 'i-ph-circle-notch-bold' : error ? 'i-ph-warning-circle-bold' : icon || 'i-ph-paw-print-bold'" class="state-icon" :class="{ spinning: loading }" />
+    <CatgirlMascot v-if="!loading && !error && !compact" variant="sit" :size="84" class="state-mascot" />
+    <UIcon v-else :name="loading ? 'i-ph-circle-notch-bold' : error ? 'i-ph-warning-circle-bold' : icon || 'i-ph-paw-print-bold'" class="state-icon" :class="{ spinning: loading }" />
     <h3>{{ loading ? '正在读取数据' : error ? '数据加载失败' : title || '暂无数据' }}</h3>
     <p>{{ loading ? '请稍候，正在获取实际记录。' : error ? apiErrorMessage(error) : description }}</p>
     <button v-if="error" class="button" @click="$emit('retry')">重新加载</button>

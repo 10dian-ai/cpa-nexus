@@ -21,6 +21,10 @@ const settingsShape = {
   devinDefaultEffort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
   /** Drop temperature/top_p/top_k for Devin thinking levels, as Devin's own CLI does. */
   devinStripSampling: z.boolean(),
+  /** Longest edge for inline request images; 0 sends images unchanged. */
+  imageMaxEdge: z.number().int().refine(value => value === 0 || (value >= 512 && value <= 8192), '图片最长边需为 0 或 512–8192'),
+  /** JPEG/WebP quality used when an image is resized. */
+  imageQuality: z.number().int().min(40).max(100),
 }
 /** API input: unknown fields are rejected. */
 export const settingsSchema = z.object(settingsShape).strict()

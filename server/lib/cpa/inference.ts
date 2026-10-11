@@ -23,6 +23,7 @@ import { redactSensitiveText } from '../../../shared/log-privacy'
 import { modelErrorBody } from '../model-errors'
 import { upstreamIdleTimeoutMs } from '../timeouts'
 import { ResponseCapture } from '../gateway/response'
+import { compressRequestImages, type ImageCompressionStats } from '../media/image-compress'
 import type { AuthenticatedModelKey } from '../../../shared/keys'
 import type { SystemSettings } from '../../../shared/types'
 import { planCpaRoute, sequenceAttempts, type CpaRouteAttempt, type RouteAttempt } from '../routing/plan'
@@ -180,6 +181,8 @@ interface ModelRequest {
   protocol?: Protocol
   logProtocol: string
   cpaPathFor: (nativeModel: string) => string
+  /** Inline image resizing applied before routing, for logs. */
+  images?: ImageCompressionStats
 }
 interface AttemptRecord { kind: 'cpa' | 'commandcode'; groupId: string; model?: string; status: number; error: string }
 
@@ -211,6 +214,13 @@ async function runModelRequest(request: ModelRequest) {
     const ccGroups = protocol ? await commandcodeGroups(model, key, groupIds) : undefined
     attempts = sequenceAttempts({ groupIds, strategy: request.strategy, rotationKey: key.id + '\0' + model, perGroup: plan.perGroup, commandcodeGroups: ccGroups })
     if (!attempts.length) { fail(event, label, 404, '当前 Key 的分组中没有可调用的这个模型', 'model_not_found'); return }
+  }
+  // Shrink large inline images once, before any attempt, so every source
+  // (and every proxy on the way) receives the smaller request.
+  if (request.settings.imageMaxEdge > 0) {
+    const compressed = await compressRequestImages(request.body, { maxEdge: request.settings.imageMaxEdge, quality: request.settings.imageQuality })
+    request.body = compressed.body
+    if (compressed.stats.images) request.images = compressed.stats
   }
   const failures: AttemptRecord[] = []
   const startedAt = Date.now()
@@ -282,9 +292,16 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
     break
   }
   const status = upstream.response.statusCode || 502
-  if (status >= 400 && (!last || errorText !== undefined)) {
+  if (status >= 400 && (!last || errorText !== undefined || status === 413)) {
     const text = errorText ?? await readUpstreamText(upstream.response)
     if (!last && isFailoverResponse(status, text)) { record(status, errorMessageFrom(text)); return 'next' }
+    if (status === 413) {
+      // Usually an nginx in front of the provider: explain instead of relaying its HTML page.
+      const message = tooLargeMessage(body)
+      fail(event, request.logProtocol, 413, message, 'request_too_large')
+      await logRequest(request, { status, startedAt, failures, error: message, body, attempt, presetIds, devin, responseBody: parseLogBody(text) })
+      return 'done'
+    }
     // A client error that another source would reject as well, or the last failure: return it as is.
     const res = event.node.res
     res.statusCode = status
@@ -309,6 +326,11 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
     })
   }
   return 'done'
+}
+
+function tooLargeMessage(body: JsonObject): string {
+  const megabytes = (Buffer.byteLength(JSON.stringify(body)) / 1024 / 1024).toFixed(1)
+  return `上游拒绝了过大的请求（约 ${megabytes} MB）：模型服务前面的代理限制了请求体大小。请减少或压缩图片，或让该上游调高请求体上限（nginx 的 client_max_body_size）。`
 }
 
 function parseLogBody(text: string): unknown {
@@ -348,6 +370,7 @@ async function logRequest(request: ModelRequest, input: {
           ...(input.devin ? { devin: input.devin } : {}),
           ...(input.piped?.authIndex ? { authIndex: input.piped.authIndex } : {}),
           ...(input.failures.length ? { failover: input.failures } : {}),
+          ...(request.images ? { images: request.images } : {}),
         },
       },
       errorMessage: status === 'error' ? (input.error || `CPA core returned HTTP ${input.status}`) : status === 'incomplete' ? 'Stream ended without a completion event' : null,

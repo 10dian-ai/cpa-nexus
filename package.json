@@ -27,6 +27,7 @@
     "h3": "1.15.11",
     "ioredis": "5.11.1",
     "postgres": "3.4.9",
+    "sharp": "0.34.4",
     "zod": "4.6.2"
   },
   "devDependencies": {

@@ -4,7 +4,8 @@
  * credentials, access, missing model, rate limits and upstream/server errors.
  * Client mistakes (bad JSON, unsupported parameters) are returned as-is.
  */
-const ALWAYS = new Set([401, 402, 403, 404, 408, 429, 500, 502, 503, 504, 520, 521, 522, 524, 529])
+// 413: another source (behind a different proxy) may accept a larger body.
+const ALWAYS = new Set([401, 402, 403, 404, 408, 413, 429, 500, 502, 503, 504, 520, 521, 522, 524, 529])
 
 export function isFailoverStatus(status: number): boolean {
   return ALWAYS.has(status)

@@ -27,6 +27,10 @@ export interface SystemSettings {
   devinDefaultEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Drop sampling controls for Devin thinking levels. */
   devinStripSampling: boolean
+  /** Longest edge (px) for inline request images; 0 sends them unchanged. */
+  imageMaxEdge: number
+  /** Quality for resized images (40–100). */
+  imageQuality: number
 }
 export const DEFAULT_SETTINGS: SystemSettings = {
   activeRefreshSeconds: 60, idleRefreshSeconds: 300, activeWindowSeconds: 300,
@@ -34,6 +38,7 @@ export const DEFAULT_SETTINGS: SystemSettings = {
   logRetentionDays: 30, affinityTtlSeconds: 86400, maxRequestBodyMb: 0,
   upstreamTimeoutSeconds: 600,
   devinDefaultEffort: 'high', devinStripSampling: true,
+  imageMaxEdge: 2048, imageQuality: 85,
 }
 export interface GatewayKeyView extends Partial<GroupBinding> { id: string; name: string; prefix: string; enabled: boolean; moduleId?: ModelModuleId; groupStrategy?: 'failover' | 'mixed'; createdAt: string; lastUsedAt: string | null }
 export interface RequestLogView {
