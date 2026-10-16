@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface StoredKey {
   id: string; name: string; prefix: string; secret_hash: string; enabled: boolean
-  created_at: Date; last_used_at: Date | null
+  created_at: Date; last_used_at: Date | null; module_ids?: string[]
 }
 const fixture = vi.hoisted(() => ({
   serviceKeys: new Map<string, StoredKey>(),
@@ -13,11 +13,13 @@ const fixture = vi.hoisted(() => ({
   sessions: new Map<string, string>(),
   queries: [] as { sql: string; values: unknown[] }[],
   publish: vi.fn(async () => 1),
-  commandcodeEnabled: true,
+  disabledModules: new Set<string>(),
+  counters: new Map<string, number>(),
 }))
-vi.mock('../server/lib/modules', () => ({ requireModule: async (id: string) => {
-  if (id === 'commandcode' && !fixture.commandcodeEnabled) throw createError({ statusCode: 503, message: 'CommandCode 模块已停用' })
-} }))
+vi.mock('../server/lib/modules', () => ({
+  isModuleEnabled: async (id: string) => !fixture.disabledModules.has(id),
+  requireModule: async (id: string) => { if (fixture.disabledModules.has(id)) throw createError({ statusCode: 503, message: 'module stopped' }) },
+}))
 vi.mock('../server/lib/db', () => ({
   getDb: () => async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?').replace(/\s+/g, ' ').trim()
@@ -27,14 +29,14 @@ vi.mock('../server/lib/db', () => ({
     if (sql.startsWith('INSERT INTO')) {
       const row: StoredKey = {
         id: String(values[0]), name: String(values[1]), prefix: String(values[2]), secret_hash: String(values[3]),
-        enabled: true, created_at: new Date('2026-09-12T00:00:00.000Z'), last_used_at: null,
+        enabled: true, created_at: new Date('2026-09-12T00:00:00.000Z'), last_used_at: null, module_ids: values[4] as string[],
       }
       table.set(row.id, row)
       return [{ created_at: row.created_at }]
     }
     if (sql.startsWith('SELECT') && sql.includes('secret_hash=')) {
       const row = [...table.values()].find(item => item.secret_hash === values[0] && item.enabled)
-      return row ? [{ id: row.id, name: row.name }] : []
+      return row ? [{ id: row.id, name: row.name, module_ids: row.module_ids ?? ['logicc', 'cpa'] }] : []
     }
     if (sql.startsWith('SELECT')) {
       return [...table.values()].map(({ secret_hash: _secretHash, ...row }) => ({ ...row }))
@@ -45,19 +47,35 @@ vi.mock('../server/lib/db', () => ({
       return []
     }
     if (sql.startsWith('UPDATE') && sql.includes('name=coalesce')) {
-      const row = table.get(String(values[2]))
+      const row = table.get(String(values[3]))
       if (!row) return []
       if (values[0] !== null) row.name = String(values[0])
       if (values[1] !== null) row.enabled = Boolean(values[1])
+      if (values[2] !== null) row.module_ids = values[2] as string[]
       return [{ id: row.id }]
     }
     if (sql.startsWith('DELETE FROM')) { table.delete(String(values[0])); return [] }
     throw new Error(`Unhandled SQL in service key fixture: ${sql}`)
   },
 }))
-vi.mock('../server/lib/redis', () => ({
-  getRedis: () => ({ get: async (key: string) => fixture.sessions.get(key) ?? null, publish: fixture.publish }),
-}))
+vi.mock('../server/lib/redis', () => {
+  const counters = fixture.counters
+  const redis = {
+    get: async (key: string) => fixture.sessions.get(key) ?? (counters.has(key) ? String(counters.get(key)) : null),
+    ttl: async () => 600,
+    publish: fixture.publish,
+    multi: () => {
+      const operations: (() => unknown)[] = []
+      const chain = {
+        incr: (key: string) => { operations.push(() => { counters.set(key, (counters.get(key) ?? 0) + 1); return counters.get(key) }); return chain },
+        expire: () => { operations.push(() => 1); return chain },
+        exec: async () => operations.map(operation => [null, operation()]),
+      }
+      return chain
+    },
+  }
+  return { getRedis: () => redis }
+})
 
 import { authenticateGatewayKey, authenticateServiceKey } from '../server/lib/auth'
 import { hashGatewayKey } from '../server/lib/crypto'
@@ -97,7 +115,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
 
   beforeEach(async () => {
     fixture.serviceKeys.clear(); fixture.gatewayKeys.clear(); fixture.sessions.clear(); fixture.queries.length = 0
-    fixture.commandcodeEnabled = true
+    fixture.disabledModules.clear(); fixture.counters.clear()
     fixture.publish.mockClear()
     seedKey(fixture.serviceKeys, SERVICE_ID, SERVICE_KEY, 'External worker')
     seedKey(fixture.gatewayKeys, GATEWAY_ID, GATEWAY_KEY, 'Model client')
@@ -138,7 +156,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
     }
     expect(fixture.serviceKeys.get(SERVICE_ID)?.last_used_at).not.toBeNull()
     expect(fixture.gatewayKeys.get(GATEWAY_ID)?.last_used_at).toBeNull()
-    expect(await authenticateServiceKey(SERVICE_KEY)).toEqual({ id: SERVICE_ID, name: 'External worker' })
+    expect(await authenticateServiceKey(SERVICE_KEY)).toEqual({ id: SERVICE_ID, name: 'External worker', moduleIds: ['logicc', 'cpa'] })
   })
 
   it('rejects missing, invalid, ordinary gateway keys and session-only callers', async () => {
@@ -199,7 +217,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
     const rejected = await request('/v1/models-probe', { headers: bearer() })
     expect(await rejected.json()).toEqual({ key: null })
     const accepted = await request('/v1/models-probe', { headers: bearer(GATEWAY_KEY) })
-    expect(await accepted.json()).toEqual({ key: { id: GATEWAY_ID, name: 'Model client', moduleId: 'commandcode' } })
+    expect(await accepted.json()).toEqual({ key: { id: GATEWAY_ID, name: 'Model client', moduleId: 'auto' } })
     const serviceQueries = fixture.queries.filter(query => query.sql.startsWith('SELECT') && query.sql.includes('service_keys'))
     expect(serviceQueries).toHaveLength(0)
   })
@@ -213,12 +231,12 @@ describe('independent service keys over real H3 HTTP connections', () => {
   })
 
   it('returns plaintext only on creation, stores its hash, and lists only safe metadata', async () => {
-    const createdResponse = await adminRequest('/api/service-keys', 'POST', { name: '  Account importer  ' })
+    const createdResponse = await adminRequest('/api/service-keys', 'POST', { name: '  Account importer  ', moduleIds: ['logicc'] })
     expect(createdResponse.status).toBe(200)
     const created = await createdResponse.json()
     expect(created.key).toMatch(/^ccm_service_[A-Za-z0-9_-]{43}$/)
     expect(created.item).toEqual({
-      id: expect.any(String), name: 'Account importer', prefix: created.key.slice(0, 20), enabled: true,
+      id: expect.any(String), name: 'Account importer', prefix: created.key.slice(0, 20), enabled: true, moduleIds: ['logicc'],
       createdAt: '2026-09-12T00:00:00.000Z', lastUsedAt: null,
     })
     expect(fixture.serviceKeys.get(created.item.id)?.secret_hash).toBe(hashGatewayKey(created.key))
@@ -232,7 +250,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
     expect(JSON.stringify(listed)).not.toContain(created.key)
     expect(JSON.stringify(listed)).not.toContain(hashGatewayKey(created.key))
     expect(listed.items.every((item: object) => Object.keys(item).sort().join(',') ===
-      ['id', 'name', 'prefix', 'enabled', 'createdAt', 'lastUsedAt'].sort().join(','))).toBe(true)
+      ['id', 'name', 'prefix', 'enabled', 'moduleIds', 'createdAt', 'lastUsedAt'].sort().join(','))).toBe(true)
     const usable = await request('/api/external/probe', { headers: bearer(created.key) })
     expect(usable.status).toBe(200)
     await usable.arrayBuffer()
@@ -243,7 +261,10 @@ describe('independent service keys over real H3 HTTP connections', () => {
     const renamed = await adminRequest(`/api/service-keys/${SERVICE_ID}`, 'PATCH', { name: '  New importer  ' })
     expect(renamed.status).toBe(200)
     expect(await renamed.json()).toEqual({ ok: true })
-    expect(await authenticateServiceKey(SERVICE_KEY)).toEqual({ id: SERVICE_ID, name: 'New importer' })
+    expect(await authenticateServiceKey(SERVICE_KEY)).toEqual({ id: SERVICE_ID, name: 'New importer', moduleIds: ['logicc', 'cpa'] })
+    const scoped = await adminRequest(`/api/service-keys/${SERVICE_ID}`, 'PATCH', { moduleIds: ['cpa'] })
+    expect(scoped.status).toBe(200); await scoped.arrayBuffer()
+    expect((await authenticateServiceKey(SERVICE_KEY))?.moduleIds).toEqual(['cpa'])
     const disabled = await adminRequest(`/api/service-keys/${SERVICE_ID}`, 'PATCH', { enabled: false })
     expect(await disabled.json()).toEqual({ ok: true })
     const denied = await request('/api/external/probe', { headers: bearer() })
@@ -271,7 +292,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
       expect(response.status).toBe(200)
       const created = await response.json()
       expect(created.key).toMatch(/^ccm_service_[A-Za-z0-9_-]{43}$/)
-      expect(await authenticateServiceKey(created.key)).toEqual({ id: created.item.id, name: 'Saved during outage' })
+      expect(await authenticateServiceKey(created.key)).toEqual({ id: created.item.id, name: 'Saved during outage', moduleIds: ['logicc', 'cpa'] })
       expect(warning).toHaveBeenCalledWith('Live update notification unavailable')
     } finally { warning.mockRestore() }
   })
@@ -319,7 +340,7 @@ describe('independent service keys over real H3 HTTP connections', () => {
   })
 
   it('validates create and update payloads, IDs and missing update targets', async () => {
-    for (const body of [{}, { name: '' }, { name: '   ' }, { name: 'a'.repeat(81) }, { name: 5 }]) {
+    for (const body of [{}, { name: '' }, { name: '   ' }, { name: 'a'.repeat(81) }, { name: 5 }, { name: 'x', moduleIds: [] }, { name: 'x', moduleIds: ['commandcode'] }]) {
       const response = await adminRequest('/api/service-keys', 'POST', body)
       expect(response.status).toBe(400)
       await response.arrayBuffer()
@@ -342,17 +363,34 @@ describe('independent service keys over real H3 HTTP connections', () => {
     expect(fixture.publish).not.toHaveBeenCalled()
   })
 
-  it('gates creation and external calls on CommandCode while retaining management of existing service keys', async () => {
-    fixture.commandcodeEnabled = false
+  it('keeps external keys a platform feature: a stopped module never blocks key management', async () => {
+    fixture.disabledModules.add('logicc')
     const call = await request('/api/external/probe', { headers: bearer() })
-    expect(call.status).toBe(503); await call.arrayBuffer()
-    const create = await adminRequest('/api/service-keys', 'POST', { name: 'Unavailable importer' })
-    expect(create.status).toBe(503); await create.arrayBuffer()
-    expect(fixture.serviceKeys.size).toBe(1)
-    const listed = await adminRequest('/api/service-keys')
-    expect(listed.status).toBe(200); expect((await listed.json()).items).toHaveLength(1)
+    expect(call.status).toBe(200); await call.arrayBuffer()
+    const create = await adminRequest('/api/service-keys', 'POST', { name: 'Importer while stopped' })
+    expect(create.status).toBe(200); await create.arrayBuffer()
     const revoke = await adminRequest(`/api/service-keys/${SERVICE_ID}`, 'DELETE')
     expect(revoke.status).toBe(200); await revoke.arrayBuffer()
-    expect(fixture.serviceKeys.has(SERVICE_ID)).toBe(false)
+  })
+
+  it('locks an address out after repeated invalid keys, before any further lookup', async () => {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const response = await request('/api/external/probe', { headers: bearer('ccm_service_' + 'z'.repeat(43)) })
+      expect(response.status).toBe(401); await response.arrayBuffer()
+    }
+    const lookups = fixture.queries.length
+    const locked = await request('/api/external/probe', { headers: bearer() })
+    expect(locked.status).toBe(429)
+    expect(locked.headers.get('retry-after')).toBeTruthy()
+    await locked.arrayBuffer()
+    // Even the valid key is not checked while the address is locked.
+    expect(fixture.queries.length).toBe(lookups)
+  })
+
+  it('rate-limits each service key per minute', async () => {
+    const window = Math.floor(Date.now() / 60_000)
+    fixture.counters.set(`ccm:external:rate:${SERVICE_ID}:${window}`, 240)
+    const response = await request('/api/external/probe', { headers: bearer() })
+    expect(response.status).toBe(429); await response.arrayBuffer()
   })
 })

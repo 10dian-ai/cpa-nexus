@@ -24,6 +24,7 @@
   "dependencies": {
     "bullmq": "5.81.5",
     "dotenv": "17.4.2",
+    "gpt-tokenizer": "4.0.3",
     "h3": "1.15.11",
     "ioredis": "5.11.1",
     "postgres": "3.4.9",

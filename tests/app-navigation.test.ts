@@ -6,18 +6,19 @@ describe('shell navigation', () => {
 
   it('orders sections by the platform hierarchy: platform, CPA kernel, SillyTavern kernel, modules', () => {
     const groups = buildNavigationGroups([
-      view('commandcode', true), view('presets', true),
+      view('logicc', true), view('presets', true),
       view('custom', true, { name: 'Custom', navigation: [{ to: '/custom', label: 'Custom page', icon: 'i-ph-cube' }] }),
     ])
-    expect(groups.map(group => group.label)).toEqual(['平台', 'CPA 内核 · 一级', '酒馆内核 · 二级', 'CommandCode 模块', 'Custom'])
+    expect(groups.map(group => group.label)).toEqual(['平台', 'CPA 内核 · 一级', '酒馆内核 · 二级', 'Logicc 模块', 'Custom'])
     const links = (label: string) => groups.find(group => group.label === label)?.links.map(link => link.to) || []
-    expect(links('平台')).toEqual(['/', '/modules', '/keys', '/groups', '/logs'])
+    expect(links('平台')).toEqual(['/', '/modules', '/keys', '/groups', '/logs', '/settings'])
     expect(links('CPA 内核 · 一级')).toContain('/cpa/native')
     expect(links('CPA 内核 · 一级')).toContain('/groups/accounts?module=cpa')
     expect(links('酒馆内核 · 二级')).toEqual(['/presets'])
-    expect(links('CommandCode 模块')).toContain('/groups/accounts?module=commandcode')
-    // Request logs cover every model key, so they stay reachable when CommandCode is disabled.
-    expect(links('CommandCode 模块')).not.toContain('/logs')
+    expect(links('Logicc 模块')).toContain('/groups/accounts?module=logicc')
+    expect(links('Logicc 模块')).toContain('/logicc/accounts')
+    // Request logs cover every model key, so they stay reachable when a module is disabled.
+    expect(links('Logicc 模块')).not.toContain('/logs')
   })
 
   it('places enabled CPA plugin pages directly under the CPA kernel', () => {
@@ -27,10 +28,10 @@ describe('shell navigation', () => {
 
   it('keeps default-on modules visible while module metadata loads and hides disabled ones', () => {
     const loading = buildNavigationGroups().map(group => group.label)
-    expect(loading).toContain('CommandCode 模块')
+    expect(loading).toContain('Logicc 模块')
     expect(loading).not.toContain('酒馆内核 · 二级')
-    const disabled = buildNavigationGroups([view('commandcode', false), view('presets', false)]).map(group => group.label)
-    expect(disabled).not.toContain('CommandCode 模块')
+    const disabled = buildNavigationGroups([view('logicc', false), view('presets', false)]).map(group => group.label)
+    expect(disabled).not.toContain('Logicc 模块')
     expect(disabled).not.toContain('酒馆内核 · 二级')
   })
 
@@ -38,7 +39,7 @@ describe('shell navigation', () => {
     const groups = buildNavigationGroups()
     const current = selectCurrentNavigation(groups, '/cpa/plugins', { tab: 'store' })
     expect(current.to).toBe('/cpa/plugins?tab=store')
-    expect(navigationLinkMatches('/groups/accounts?module=cpa', '/groups/accounts', { module: 'commandcode' })).toBe(false)
+    expect(navigationLinkMatches('/groups/accounts?module=cpa', '/groups/accounts', { module: 'logicc' })).toBe(false)
     expect(navigationLinkMatches('/groups/accounts?module=cpa', '/groups/accounts', {})).toBe(true)
   })
 })

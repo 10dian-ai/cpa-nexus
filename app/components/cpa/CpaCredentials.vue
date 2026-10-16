@@ -169,7 +169,7 @@ function quotaLink(row: Record<string, unknown>) { return { path: '/cpa/quota', 
     <JsonViewer :value="selected" title="内核凭证记录" /><p class="nexus-description">酒馆预设按平台模型 API key 配置。<NuxtLink to="/presets" class="text-link">管理 key 预设</NuxtLink></p><JsonViewer v-if="details" class="section-gap" :value="details" title="凭证模型 / 操作结果" /><h3 class="nexus-subheading">修改凭证字段</h3><p class="nexus-description">提交需要变更的字段，例如权重、前缀或 headers。内核负责校验字段与凭证类型。</p><textarea v-model="fields" class="nexus-code-editor" rows="6" aria-label="凭证字段 JSON" spellcheck="false" /><p v-if="fieldError" class="inline-error" role="alert">{{ fieldError }}</p><div class="form-actions"><button class="button primary" :disabled="busy || fields.trim() === '{}'" @click="saveFields">保存字段</button></div></section>
   <AppDialog v-model="groupDialogOpen" title="编辑凭证调用分组" :description="editingCredential" :close-disabled="busy">
     <form id="credential-group-form" class="form-stack" @submit.prevent="saveGroups">
-      <GroupSelector v-model="selectedGroups" :groups="groups.data.value?.items || []" :disabled="busy || !!groups.error.value || !!groupReadError" description="此凭证仅供与它有共同启用分组的模型 API Key 调用。要与 Command Code 分开，取消共同的默认分组，再选择独立的 CPA 分组。" />
+      <GroupSelector v-model="selectedGroups" :groups="groups.data.value?.items || []" :disabled="busy || !!groups.error.value || !!groupReadError" description="此凭证仅供与它有共同启用分组的模型 API Key 调用。要与 Logicc 分开，取消共同的默认分组，再选择独立的 CPA 分组。" />
       <p v-if="editingGroup" class="small-text muted">来源：{{ editingGroup.sourceId }}。同一来源文件生成的子凭证共享分组。</p>
       <p v-if="groupError" class="inline-error" role="alert">{{ groupError }}</p>
       <div class="cpa-inline-group-create">

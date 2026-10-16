@@ -133,8 +133,8 @@ describe('CPA Nexus deployment initialization', () => {
   it('initializes a fresh deployment without host packages or legacy reverse-proxy settings', async () => {
     const output = execFileSync(process.execPath, [resolve('scripts/setup.mjs')], { cwd: directory, encoding: 'utf8' })
     const environment = parse(await readFile(join(directory, '.env'), 'utf8'))
-    expect(environment.COMMANDCODE_API_URL).toBe('https://api.commandcode.ai/provider/v1')
-    expect(environment.COMMANDCODE_MANAGEMENT_URL).toBe('https://api.commandcode.ai')
+    expect(environment.COMMANDCODE_API_URL).toBeUndefined()
+    expect(environment.INTAKE_PORT).toBe('3041')
     expect(environment.KERNEL_URL).toBeUndefined()
     expect(environment.APP_ENCRYPTION_KEY).toBeTruthy()
     expect(output).not.toContain(environment.ADMIN_PASSWORD)
@@ -143,13 +143,16 @@ describe('CPA Nexus deployment initialization', () => {
 })
 
 describe('CPA Nexus persistent deployment contract', () => {
-  it('keeps existing data volumes while using the official API and independent health checks', async () => {
+  it('keeps existing data volumes, independent health checks and the public intake port', async () => {
     const compose = await readFile(resolve('compose.yml'), 'utf8')
     const development = await readFile(resolve('compose.dev.yml'), 'utf8')
     expect(compose).toContain('name: ${NEXUS_COMPOSE_PROJECT:-cpa-nexus}')
     expect(compose).toContain('postgres-data:/var/lib/postgresql/data')
     expect(compose).toContain('redis-data:/data')
-    expect(compose).toContain('https://api.commandcode.ai/provider/v1')
+    expect(compose).not.toContain('commandcode.ai')
+    expect(compose).toContain('NEXUS_BRIDGE_BASE_URL: http://app:3000')
+    expect(compose).toContain('${INTAKE_PORT:-3041}:3041')
+    expect(compose).toContain('./ops/intake:/usr/share/nginx/intake:ro')
     expect(compose).not.toMatch(/^  kernel:/m)
     expect(compose).not.toContain('KERNEL_URL')
     expect(development).not.toContain('kernel:')
@@ -171,18 +174,25 @@ describe('CPA Nexus persistent deployment contract', () => {
     expect(script).not.toContain('git pull')
   })
 
-  it('routes original account endpoints to the app and preserves the complete core namespace', async () => {
+  it('routes the external API to the app, hides module bridges and preserves the complete core namespace', async () => {
     const configuration = await readFile(resolve('ops/nexus-nginx.conf'), 'utf8')
     const appRoutes = configuration.match(/location ~ (\^\/api\/\([^\n]+) \{\n\s+proxy_pass \$nexus_app;/)?.[1]
     expect(appRoutes).toBeTruthy()
     const pattern = new RegExp(appRoutes!)
-    for (const route of ['/api/accounts/import', '/api/accounts/actions', '/api/external/accounts', '/api/external/accounts/123', '/api/external/jobs/123', '/api/external/pool', '/api/jobs/123', '/api/keys', '/api/service-keys']) {
+    for (const route of ['/api/external/modules', '/api/external/modules/logicc/accounts', '/api/external/accounts', '/api/external/jobs/123', '/api/jobs/123', '/api/keys', '/api/service-keys']) {
       expect(pattern.test(route), route).toBe(true)
     }
     expect(pattern.test('/api/provider/example/v1/models')).toBe(false)
-    expect(configuration).toContain('location = /v1/systemone')
-    expect(configuration).toContain('location = /cpa-api/v1/systemone')
-    expect(configuration).toContain('location ^~ /commandcode/v1/')
+    expect(configuration).not.toContain('systemone')
+    expect(configuration).not.toContain('/commandcode/v1/')
+    // Only the CPA kernel calls module bridges, inside the Compose network.
+    expect(configuration).toMatch(/location ~ \^\/api\/modules\/\[\^\/\]\+\/bridge\(\?:\/\|\$\) \{\n\s+return 404;/)
+    // The public intake listener exposes the page and the external API only.
+    const intake = configuration.slice(configuration.indexOf('listen 3041;'))
+    expect(intake).toContain('location ^~ /api/external/')
+    expect(intake).toContain('proxy_set_header Cookie "";')
+    expect(intake).toMatch(/location \/ \{\n\s+return 404;/)
+    expect(intake).not.toContain('nexus_cpa')
     expect(configuration).toContain('proxy_ignore_client_abort off;')
     expect(configuration).toContain('proxy_buffering off;')
   })

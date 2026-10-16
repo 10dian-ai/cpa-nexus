@@ -79,7 +79,7 @@ vi.mock('../server/lib/redis', () => ({ getRedis: () => ({
   get: async (key: string) => fixture.sessions.get(key) ?? null, publish: fixture.publish,
 }) }))
 
-import { authenticateGatewayKey, findEnabledModelKey, requireModelKeyModule } from '../server/lib/auth'
+import { authenticateGatewayKey, findEnabledModelKey } from '../server/lib/auth'
 import { hashGatewayKey } from '../server/lib/crypto'
 import adminMiddleware from '../server/middleware/admin'
 import listKeys from '../server/api/keys/index.get'
@@ -105,7 +105,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
   })
   beforeEach(async () => {
     fixture.keys.clear(); fixture.sessions.clear(); fixture.disabled.clear(); fixture.queries.length = 0; fixture.publish.mockClear(); fixture.keyGroups.clear(); fixture.failGroupSave = false; fixture.failGroupRead = false
-    seed(KEY_ID, KEY); seed(BRIDGE_ID, BRIDGE_KEY, 'commandcode')
+    seed(KEY_ID, KEY); seed(BRIDGE_ID, BRIDGE_KEY, 'auto')
     fixture.sessions.set('ccm:admin:session:' + hashGatewayKey('admin-model-keys'), 'admin')
     const app = createApp(); app.use(adminMiddleware)
     const router = createRouter(); router.get('/api/keys', listKeys); router.post('/api/keys', createKey)
@@ -116,7 +116,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
   afterEach(async () => { await new Promise<void>(resolve => { server.close(resolve); server.closeAllConnections() }) })
 
   it('persists explicit module bindings, stores only hashes and returns safe metadata', async () => {
-    for (const moduleId of ['auto', 'cpa', 'commandcode'] as const) {
+    for (const moduleId of ['auto', 'cpa'] as const) {
       const response = await request('/api/keys', 'POST', { name: '  ' + moduleId + ' client  ', moduleId })
       expect(response.status).toBe(200)
       const created = await response.json()
@@ -135,17 +135,13 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     }
   })
 
-  it('changes module bindings and enforces the selected module during inference', async () => {
+  it('changes module bindings between unified routing and CPA-only', async () => {
     expect(await authenticateGatewayKey(KEY)).toEqual({ id: KEY_ID, name: 'Existing key', moduleId: 'auto' })
-    for (const moduleId of ['cpa', 'commandcode', 'auto'] as const) {
+    for (const moduleId of ['cpa', 'auto'] as const) {
       const changed = await request(`/api/keys/${KEY_ID}`, 'PATCH', { moduleId, name: 'Moved key' })
       expect(await changed.json()).toMatchObject({ ok: true, moduleId })
       const key = (await authenticateGatewayKey(KEY))!
       expect(key).toEqual({ id: KEY_ID, name: 'Moved key', moduleId })
-      for (const target of ['cpa', 'commandcode'] as const) {
-        if (moduleId === 'auto' || moduleId === target) await expect(requireModelKeyModule(key, target)).resolves.toBeUndefined()
-        else await expect(requireModelKeyModule(key, target)).rejects.toMatchObject({ statusCode: 403 })
-      }
       const listed = await (await request('/api/keys')).json()
       expect(listed.items[0]).toMatchObject({ id: KEY_ID, moduleId })
       expect(await findEnabledModelKey(KEY_ID)).toEqual(key)
@@ -166,8 +162,9 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     const created = await (await request('/api/keys', 'POST', { name: 'Old client' })).json()
     expect(created.item.moduleId).toBe('auto')
     expect(created.item.groupStrategy).toBe('failover')
-    await expect(requireModelKeyModule({ id: KEY_ID, name: 'Legacy integration' }, 'commandcode')).resolves.toBeUndefined()
-    await expect(requireModelKeyModule({ id: KEY_ID, name: 'Legacy integration' }, 'cpa')).rejects.toMatchObject({ statusCode: 403 })
+    // Rows written before migration 021 with the removed module read back as unified keys.
+    seed(KEY_ID, KEY, 'commandcode' as never)
+    expect(await authenticateGatewayKey(KEY)).toMatchObject({ moduleId: 'auto' })
   })
 
   it('saves the multi-group strategy with key creation and edits', async () => {
@@ -212,13 +209,12 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     expect(fixture.publish).not.toHaveBeenCalled()
   })
 
-  it('lets keys be managed while a source module is stopped, but denies inference through that module', async () => {
-    fixture.disabled.add('commandcode')
-    const create = await request('/api/keys', 'POST', { name: 'Disabled module', moduleId: 'commandcode' })
+  it('lets keys be managed while a source module is stopped and rejects the removed module binding', async () => {
+    fixture.disabled.add('logicc')
+    const create = await request('/api/keys', 'POST', { name: 'Stopped module', moduleId: 'auto' })
     expect(create.status).toBe(200); await create.arrayBuffer()
-    const update = await request(`/api/keys/${KEY_ID}`, 'PATCH', { moduleId: 'commandcode' })
-    expect(update.status).toBe(200); await update.arrayBuffer()
-    await expect(requireModelKeyModule((await authenticateGatewayKey(KEY))!, 'commandcode')).rejects.toMatchObject({ statusCode: 503 })
+    const removedModule = await request(`/api/keys/${KEY_ID}`, 'PATCH', { moduleId: 'commandcode' })
+    expect(removedModule.status).toBe(400); await removedModule.arrayBuffer()
     const disabled = await request(`/api/keys/${KEY_ID}`, 'PATCH', { enabled: false })
     expect(disabled.status).toBe(200); await disabled.arrayBuffer()
     expect(await authenticateGatewayKey(KEY)).toBeNull(); expect(await findEnabledModelKey(KEY_ID)).toBeNull()
@@ -232,7 +228,7 @@ describe('unified model keys with persistent module binding over HTTP', () => {
     expect(patched.status).toBe(404); await patched.arrayBuffer()
     const deleted = await request(`/api/keys/${BRIDGE_ID}`, 'DELETE')
     expect(deleted.status).toBe(200); await deleted.arrayBuffer()
-    expect(fixture.keys.get(BRIDGE_ID)).toMatchObject({ enabled: true, module_id: 'commandcode' })
+    expect(fixture.keys.get(BRIDGE_ID)).toMatchObject({ enabled: true, module_id: 'auto' })
     const before = fixture.queries.length
     expect(await findEnabledModelKey('forged-original-id')).toBeNull(); expect(fixture.queries).toHaveLength(before)
   })

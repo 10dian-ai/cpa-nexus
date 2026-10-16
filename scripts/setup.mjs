@@ -18,8 +18,8 @@ const lines = [
   'POSTGRES_PASSWORD=' + db, 'REDIS_PASSWORD=' + redis,
   'DATABASE_URL=postgres://ccm:' + db + '@127.0.0.1:55432/commandcode',
   'REDIS_URL=redis://:' + redis + '@127.0.0.1:56379/0',
-  'COMMANDCODE_API_URL=https://api.commandcode.ai/provider/v1',
-  'COMMANDCODE_MANAGEMENT_URL=https://api.commandcode.ai', '',
+  // Public port of the remote account intake page (served by the intake service).
+  'INTAKE_PORT=3041', 'INTAKE_BIND_ADDRESS=0.0.0.0', '',
 ]
 await writeFile(file, lines.join('\n'), { mode: 0o600, flag: 'wx' })
 console.log('Created .env with random credentials. Administrator username: admin. Read ADMIN_PASSWORD locally in .env.')

@@ -1,6 +1,6 @@
 # CPA Nexus 内核、模块与部署
 
-CPA Nexus 使用完整的官方 CLIProxyAPI 作为模型流量内核，CommandCode 是第一个业务模块。当前使用支持官方 API 的 GOAT 订阅：Cookie 用于官方账号查询和专用 API Key 管理；模型请求携带这个 Key，直接访问官方 Provider API。默认部署不再启动原来的网页协议适配器，也不需要服务器安装 Go 或 Node.js。
+CPA Nexus 使用完整的官方 CLIProxyAPI 作为模型流量内核，Logicc 是账号池模块，经内核创建的桥接渠道接入（见 [Logicc 模块](logicc-module.md)）。服务器不需要安装 Go 或 Node.js。
 
 更新脚本构建本地应用并等待健康检查，随后重建边缘代理，使 Git 更新后的路由配置及文件挂载立即生效。数据库、Redis 卷、CPA 配置与既有管理员密码保留。
 
@@ -11,25 +11,26 @@ CPA Nexus 使用完整的官方 CLIProxyAPI 作为模型流量内核，CommandCo
 ```text
 统一域名 → edge → app（面板、账号管理、CPA 管理适配）
                → CPA（原生模型流量）
-                   → CommandCode 模块 app:3000/v1
-                       → 官方 api.commandcode.ai/provider/v1
+                   → 桥接渠道 nexus-logicc → app:3000/api/modules/logicc/bridge/v1
+                       → Logicc 网页 API（app.logicc.com）
+公网 3041 → edge → 加号页面 + /api/external/*（仅此两项）
 
-worker → 官方账号/订阅/额度查询和后台任务
+worker → 账号导入、Logicc 会话续期与模型同步、桥接渠道维护、日志清理
 app + worker → PostgreSQL（真实业务记录）+ Redis（队列、租约和缓存）
 ```
 
 | 服务 | 用途 | 数据是否持久保存 |
 |---|---|---|
 | `cpa` | 完整官方内核加可重放分组适配，源码/运行镜像固定 | `.runtime/cpa/` 保存配置、凭证、插件及日志 |
-| `app` | 统一面板、账号池、管理和模块 API | 业务记录在 PostgreSQL |
-| `worker` | Cookie 保活、官方账号与额度同步、自动恢复、队列任务 | 队列在 Redis，任务及账号结果在 PostgreSQL |
-| `postgres` | 账号、加密 Cookie、真实额度快照、密钥、日志与模块设置 | 原有 `postgres-data` 命名卷 |
+| `app` | 统一面板、模块网关、管理和外调 API | 业务记录在 PostgreSQL |
+| `worker` | 导入队列、Logicc 会话保活与模型同步、桥接渠道维护 | 队列在 Redis，任务及账号结果在 PostgreSQL |
+| `postgres` | 账号、加密凭据、密钥、分组、日志与模块设置 | 原有 `postgres-data` 命名卷 |
 | `redis` | 任务队列、并发租约、会话亲和、短期缓存 | 原有 `redis-data` 命名卷；启用 AOF |
-| `edge` | 单一 HTTP 入口，分流面板与模型请求 | 使用仓库中的 Nginx 配置 |
+| `edge` | HTTP 入口：3000 分流面板与模型请求；3041 只提供加号页与外调 API | 使用仓库中的 Nginx 配置 |
 
-PostgreSQL 是业务数据的依据，Redis 承担多个进程共享的调度状态。缓存不替代官方数据源，真实额度也不从其他套餐或计数相减得到。六个服务都有独立健康检查；Worker 检查 Redis 心跳，避免进程存在而任务已停仍显示健康。
+PostgreSQL 是业务数据的依据，Redis 承担多个进程共享的调度状态。六个服务都有独立健康检查；Worker 检查 Redis 心跳，避免进程存在而任务已停仍显示健康。
 
-CPA 原生渠道由 CPA 选号；CommandCode 按官方 Chat / Messages 协议提供两个入口，池内部仍由同一个模块选号、原子占用和释放租约。每个入口是整个账号池，CPA 不会对池内账号重复选号。`core/` 源码保留为历史参考，不参加默认启动或调用；旧 `.env` 的 `KERNEL_URL` 可以保留，新的官方 API 通路不读取它。
+CPA 原生渠道由 CPA 选号；Logicc 渠道在 CPA 里只是一个整体渠道（关闭了 CPA 的重试和冷却），号池内部由模块按分组、并发和冷却选号，CPA 不会对池内账号重复选号。
 
 全新部署的 Compose 项目名为 `cpa-nexus`。如果需要迁移原数据，在旧 `.env` 显式设置 `NEXUS_COMPOSE_PROJECT=commandcode-manager` 以复用旧数据库与 Redis 卷，并保留 `APP_ENCRYPTION_KEY`。删除旧部署后全新安装不设置此选项，会生成独立 Nexus 数据卷与随机凭证。
 
@@ -103,7 +104,9 @@ proxy_send_timeout 3600s;
 proxy_ignore_client_abort off;
 ```
 
-外层 OpenResty 与内部 edge 都需要允许流式输出和客户端取消。这里的入口代理用于 HTTPS 与流量分流；CommandCode 模型调用直接访问官方 API，已经不走旧 GO 网页反代。
+外层 OpenResty 与内部 edge 都需要允许流式输出和客户端取消。这里的入口代理用于 HTTPS 与流量分流。
+
+**公网加号页（3041）**：edge 默认在 `${INTAKE_BIND_ADDRESS:-0.0.0.0}:${INTAKE_PORT:-3041}` 发布加号页。要加 HTTPS，可以在 1Panel 新建一个反向代理网站，代理到 `http://nexus-edge:3041`，并把 `.env` 里的 `INTAKE_BIND_ADDRESS` 改成 `127.0.0.1`。3041 上只有加号页和 `/api/external/*`，管理后台、模型接口和模块桥接在这个端口一律返回 404。记得在服务器防火墙或安全组放行对应端口。
 
 ## 常用运维命令
 
@@ -165,47 +168,38 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 
 若新服务器的 OpenResty 网络不同，先修改 `.env` 的 `PANEL_NETWORK`；恢复域名或修改 `APP_URL`，最后运行 `bash scripts/deploy.sh up --1panel`。未使用 1Panel 网络则去掉 `--1panel`。应用和 Worker 应在数据库、Redis、凭证恢复完之前保持停止。不要执行 `docker compose down -v`，它会删除数据卷。
 
-## 官方 API、模型与密钥
-
-导入 Cookie 后模块查询官方账号、订阅和额度，并获取或管理专用 API Key。推理携带 Bearer Key，不携带 Cookie。官网套餐说明与实际 API 模型权限分别获取和核对，不能只凭套餐名称假定授权；获取失败也不能解释为空模型或覆盖最后成功的结果。
+## 密钥与配置
 
 | 配置或密钥 | 用途 |
 |---|---|
-| `COMMANDCODE_API_URL` | 默认 `https://api.commandcode.ai/provider/v1`，官方推理地址 |
-| `COMMANDCODE_MANAGEMENT_URL` | 默认 `https://api.commandcode.ai`，官方账号管理地址 |
-| `CPA_MANAGEMENT_KEY` | 仅后台调用 CPA 管理接口，不能给模型客户端 |
+| `CPA_MANAGEMENT_KEY` | 仅内核层调用 CPA 管理接口，模块与客户端都拿不到 |
 | `CPA_CLIENT_KEY` | 平台调用 CPA 的内部凭证；保留在 CPA 的 access/api-keys 配置中 |
-| 统一模型 API Key | `ccm_` 前缀，选择一个或多个分组，跨 CPA 和 CommandCode 调用组内来源 |
-| CommandCode 桥接 Key | CPA 到模块的内部 `ccm_nexus_` Key，由模块接入建立，普通 Key 列表隐藏并禁止修改 |
-| 原有 `ccm_` Key | 原默认组升级为 CPA、CommandCode 两组的并集，保留自定义组、原客户端 Key 与调用地址 |
-| 外调服务 API Key | `ccm_service_` 前缀，专用于 CommandCode 的 `/api/external/*`，与模型 Key 独立验证 |
-| 历史 CPA 客户端 Key | 保留原生兼容调用，在统一页面的历史密钥区管理，不参与按 Key 的预设路由 |
+| `NEXUS_BRIDGE_BASE_URL` | CPA 回调模块桥接的地址，生产容器内为 `http://app:3000` |
+| `INTAKE_PORT` / `INTAKE_BIND_ADDRESS` | 公网加号页端口与绑定地址，默认 `3041` / `0.0.0.0` |
+| 统一模型 API Key | `ccm_` 前缀，选择一个或多个分组，跨 CPA 和 Logicc 调用组内来源；新 Key 默认带 CPA 与 Logicc 两组 |
+| 模块桥接 Key | `ccm_nexus_<模块>_`，由内核生成并写进桥接渠道，只能用于 CPA 回调该模块，不出现在 Key 列表 |
+| 外调服务 API Key | `ccm_service_` 前缀，平台级，按模块授权加号范围，见 [外调服务 API](external-api.md) |
+| 历史 CPA 客户端 Key | 保留原生兼容调用，在统一页面的历史密钥区管理，不参与分组和预设 |
 | `CPA_URL` | 生产容器内 `http://cpa:8317` |
-| `CPA_COMMANDCODE_BASE_URL` | 生产容器内 `http://app:3000/v1` |
 
-面板接入模块后建立内部桥接 Key，并向 CPA 注册兼容上游；模型别名带 `commandcode/`。官方目录和账号权限刷新后，模块更新可用模型；模型只能使用官方声明支持的 endpoint。
+旧 `.env` 中的 `COMMANDCODE_*`、`CPA_COMMANDCODE_BASE_URL`、`KERNEL_URL` 已不再读取，可以删除。
 
-客户端统一进入 **API Key → 创建 API Key**，模型类型选择一个或多个调用分组，不再选择单一模块。同一 Key 可调用所选分组中 CPA 和 CommandCode 的模型；来源账号也可绑定多个分组，选号与重试仅使用共同的已启用分组。CommandCode 开启时提供 **外调服务 API Key** 类型；停用后只暂停该模块来源与外调接口，CPA 来源继续可用。现有 Key 和数据保留。
+从含 CommandCode 的版本升级：先 `bash scripts/deploy.sh backup`，再 `bash scripts/deploy.sh update`。Worker 启动时自动执行迁移 021：删除 CommandCode 账号、官方目录、内部桥接 Key 和相关日志；原 CommandCode 默认分组原地改名为「Logicc」，选了它的 Key 继续有效；外调 Key 获得全部模块的加号权限。CPA 中原来的 `nexus-commandcode`、`nexus-commandcode-messages` 渠道由 Worker 在两分钟内自动清理（内核只清理自己 `nexus-` 前缀下已无模块声明的渠道，用户渠道不动）。
 
 历史 CPA 客户端 Key 可逐个迁移为模型 Key 并选择对应来源分组。迁移后仅撤销对应日常客户端旧 Key；`CPA_CLIENT_KEY` 仍用于内部转发。历史密钥节点的列表响应用 `x-nexus-reserved-key-index` 标记该内部凭证，保存或删除整个历史列表时平台会保留它。高级完整 JSON/YAML 配置编辑仍需保留这一凭证。
-
-官方 Provider 模型目录每 5 分钟刷新，官网套餐说明每 15 分钟刷新；记录来源、成功获取时间及刷新失败状态。面板可通过 `GET /api/official/catalog` 查询，通过 `POST /api/official/refresh` 手动更新，这两个接口要求管理员登录。具体套餐依据和刷新规则见 [官方目录说明](official-catalog.md)。
 
 ## 入口与原有端点
 
 | 公网路径 | 处理服务 | 权限 |
 |---|---|---|
-| `/api/accounts`、`/api/accounts/import`、`/api/accounts/actions`、`/api/accounts/:id` | app，原账号查询、导入、操作及详情 | 管理员登录 |
-| `/api/jobs/:id`、`/api/keys/*`、`/api/service-keys/*` | app，任务与两种 Key 管理 | 管理员登录 |
-| `POST /api/external/accounts` | app，原外调账号添加/批量导入入口 | 独立服务 Key |
-| `/api/external/accounts`、`/api/external/accounts/:id`、`/api/external/jobs/:id`、`/api/external/pool` | app，外调账号、任务与池信息 | 独立服务 Key |
-| `/api/cpa/*`、`/api/modules/*`、其余平台 `/api/*` | app，平台与 CPA 管理适配 | 管理员登录 |
-| `/v1/*`、`/v1beta/*`（含 `/openai/v1/*`、`/cpa-api/v1/*`、`/cpa-api/v1beta/*`）的标准 HTTP 请求 | app 统一入口：`ccm_` Key 按分组顺序／策略选择来源、应用该分组预设和 Devin 参数转换后交给 CPA；历史 CPA 客户端 Key 原样转发给 CPA（仅移除隐私请求头） | 统一模型 `ccm_` Key；历史 CPA 客户端 Key |
-| `/commandcode/v1/*` | app 模块兼容入口，验证来源分组后通过 CPA 转换格式 | 拥有 CommandCode 来源分组的 `ccm_` Key |
-| `/v1/systemone`、`/cpa-api/v1/systemone` | app，官方 System One 专门入口；CPA 未实现该协议 | 拥有 CommandCode 来源分组的 `ccm_` Key |
-| `/backend-api/codex/*`、`/api/provider/*`、其余 `/cpa-api/*`，以及 `/v1` WebSocket | CPA 原生模型协议；`/cpa-api/` 移除前缀 | 历史 CPA 客户端 Key；统一 `ccm_` Key 尚不适用于这些协议 |
+| `/api/jobs/:id`、`/api/keys/*`、`/api/service-keys/*` | app，导入任务与两种 Key 管理 | 管理员登录 |
+| `/api/external/*`（3000 与 3041） | app，按模块加号、任务与池信息 | 外调服务 Key |
+| `/api/modules/*/bridge/*` | 仅 Compose 网络内的 CPA 回调；公网一律 404 | 内核桥接 Key + 签名路由头 |
+| `/api/cpa/*`、`/api/modules/*`、`/api/logicc/*`、其余平台 `/api/*` | app，平台、CPA 管理适配与模块管理 | 管理员登录 |
+| `/v1/*`、`/v1beta/*`（含 `/openai/v1/*`、`/cpa-api/v1/*`、`/cpa-api/v1beta/*`）的标准 HTTP 请求 | app 统一入口：`ccm_` Key 按分组顺序／策略选择来源（Logicc 经桥接渠道、CPA 原生凭证），应用该分组预设和 Devin 参数转换后交给 CPA；历史 CPA 客户端 Key 原样转发 | 统一模型 `ccm_` Key；历史 CPA 客户端 Key |
+| `/backend-api/codex/*`、`/api/provider/*`、其余 `/cpa-api/*`，以及 `/v1` WebSocket | CPA 原生模型协议；`/cpa-api/` 移除前缀 | 历史 CPA 客户端 Key |
 
-所有统一模型 Key 使用同一个 `https://你的域名/v1` Base URL，由 Key 与账号的共同分组决定可用来源。迁移 013 将已有平台模型 Key 转为跨模块选择，内部桥接 Key 保持专用。`/commandcode/v1` 继续兼容原客户端，受相同的分组过滤约束。CommandCode 停用不阻断 CPA 来源。具体操作及协议边界见 [分组说明](groups.md)。
+所有统一模型 Key 使用同一个 `https://你的域名/v1` Base URL，由 Key 与账号的共同分组决定可用来源。Logicc 停用时它的桥接渠道会从 CPA 移除，不影响 CPA 来源。具体操作及协议边界见 [分组说明](groups.md)。
 
 酒馆预设是默认关闭的可选处理模块，按调用分组设置：请求由哪个分组处理，就叠加该分组已开启的预设（Chat/Messages/Responses 请求）。多分组 Key 自动切换到下一个分组时，预设也随之换成那个分组的设置。原有账号/模块预设记录保留，但统一 Key 不继承旧路由。完整操作和协议边界见 [预设模块](presets.md)。
 
@@ -221,7 +215,7 @@ docker run --rm --volume "$REDIS_VOLUME:/data" \
 docker compose --env-file .env --env-file .env.cpa -f compose.yml -f compose.dev.yml up -d postgres redis cpa
 ```
 
-本机 Nuxt 加载两份 env 文件。CPA 访问宿主 Nuxt 时，把 `.env.cpa` 的桥接地址改为 `http://host.docker.internal:3000/v1`，监听容器可达的接口，重启后刷新桥接。Linux 开发需配置 `host-gateway`。不要同时启动生产 app/edge 占用开发端口；生产会覆盖为容器内部地址。
+本机 Nuxt 加载两份 env 文件。CPA 访问宿主 Nuxt 时，把 `NEXUS_BRIDGE_BASE_URL` 设为 `http://host.docker.internal:3000`，监听容器可达的接口，然后在模块管理里点「同步桥接渠道」。Linux 开发需配置 `host-gateway`。不要同时启动生产 app/edge 占用开发端口；生产会覆盖为容器内部地址。
 
 Nexus 完整插件内核使用官方 v8.0.15 源码与运行镜像，保留原始 C ABI、全部路由和插件执行能力；`Dockerfile.cpa` 在固定提交上应用 `ops/cpa-nexus/nexus-plugins.patch`。适配增加真实插件能力发现和请求内分组校验，插件仍能改模型别名、调度或嵌套调用，最终账号选择始终限制在服务器授权集合内。成品镜像为 `cpa-nexus-core:v8.0.15-nexus1`。
 
@@ -244,7 +238,4 @@ edge 自动重新解析服务名。回退需要旧镜像以及匹配的配置、
 - [CPA 固定版本配置](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/config.example.yaml)
 - [CPA 固定版本 HTTP 路由](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/internal/api/server_routes.go)
 - [CPA 镜像发布流程](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/.github/workflows/docker-image.yml)
-- [CommandCode 官方](https://commandcode.ai/)
-- [GOAT 官方套餐说明](https://commandcode.ai/docs/plans/goat)
-- [CommandCode 官方 Provider API](https://commandcode.ai/docs/provider)
-- [官方价格及限制](https://commandcode.ai/docs/resources/pricing-limits)
+- [logicc2api（Logicc 网页接口参考，MIT）](https://github.com/JamesZhaoY/logicc2api)

@@ -4,19 +4,23 @@ import { validate } from '../../lib/account-validation'
 import { getDb } from '../../lib/db'
 import { accountGroupBindings } from '../../lib/groups'
 import { listCpaGroupSources } from '../../lib/cpa/group-routing'
-import type { GroupAccountView } from '../../../shared/groups'
+import { maskSession } from '../../modules/logicc/store'
+import { GROUP_MODULE_IDS, type GroupAccountView, type GroupModuleId } from '../../../shared/groups'
+
+/** Every source that can be bound to call groups: CPA kernel sources and pool-module accounts. */
 export default defineEventHandler(async event => {
-  const { moduleId } = validate(z.object({ moduleId: z.enum(['commandcode','cpa']).optional() }), getQuery(event))
+  const { moduleId } = validate(z.object({ moduleId: z.enum(GROUP_MODULE_IDS as [GroupModuleId, ...GroupModuleId[]]).optional() }), getQuery(event))
   const items: GroupAccountView[] = []
-  const issues: { moduleId: 'cpa' | 'commandcode'; message: string }[] = []
-  if (!moduleId || moduleId === 'commandcode') {
+  const issues: { moduleId: GroupModuleId; message: string }[] = []
+  if (!moduleId || moduleId === 'logicc') {
     try {
-      const rows = await getDb()`SELECT id,label,email,upstream_user_id,enabled FROM managed_accounts ORDER BY created_at DESC,id`
-      const bindings = await accountGroupBindings('commandcode', rows.map(row => row.id))
-      items.push(...rows.map(row => ({ id: row.id, sourceId: row.id, moduleId: 'commandcode' as const, sourceType: 'commandcode',
-        name: row.label || row.email || row.upstream_user_id || row.id, provider: 'CommandCode', enabled: row.enabled,
-        ...(bindings.get(row.id) ?? { groupIds: [], groupNames: [] }), routingSupported: true })))
-    } catch { issues.push({ moduleId: 'commandcode', message: 'CommandCode 来源暂时读取失败，请重试；尚未读取的账号不计为零，也不会更改其分组。' }) }
+      const rows = await getDb()`SELECT id,label,session_id,enabled,status FROM logicc_accounts ORDER BY created_at DESC,id`
+      const bindings = await accountGroupBindings('logicc', rows.map(row => String(row.id)))
+      items.push(...rows.map(row => ({ id: String(row.id), sourceId: String(row.id), moduleId: 'logicc' as const, sourceType: 'logicc',
+        name: row.label || maskSession(row.session_id) || String(row.id), provider: 'Logicc', enabled: row.enabled,
+        ...(bindings.get(String(row.id)) ?? { groupIds: [], groupNames: [] }), routingSupported: true,
+        ...(row.status === 'credential_expired' ? { message: '凭据已失效，请更新 __client Cookie 或 Session JWT' } : {}) })))
+    } catch { issues.push({ moduleId: 'logicc', message: 'Logicc 账号暂时读取失败，请重试；尚未读取的账号不计为零，也不会更改其分组。' }) }
   }
   if (!moduleId || moduleId === 'cpa') {
     try {

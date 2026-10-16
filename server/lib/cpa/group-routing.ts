@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { GroupAccountView } from '../../../shared/groups'
+import { KERNEL_CONFIG_LOCK } from './config-lock'
 import { createCpaClient, type CpaRequest } from './client'
 import { ensureCpaConfigAccountRoute, readCpaConfigGroupSources, readCpaManagedBridgeSources } from './preset-config-routing'
 import { resetCpaPresetAccountRoutes } from './preset-routing'
@@ -8,6 +9,7 @@ import { getDb } from '../db'
 import { platformError } from '../platform-error'
 import { ensureNativeCpaPrivacy } from './privacy'
 import { getNexusCpaCapabilities, resetNexusCpaCapabilities } from './nexus-capabilities'
+import { moduleForAlias } from './module-bridges'
 
 type JsonObject = Record<string, unknown>
 type Client = ReturnType<typeof createCpaClient>
@@ -63,7 +65,7 @@ async function readInventory(): Promise<Source[]> {
   }]))
   for (const credential of credentials as JsonObject[]) {
     if (managedIndexes.has(text(credential.auth_index)) || managedIDs.has(text(credential.id))) continue
-    // Config entries and the private CommandCode bridges are inventoried from the native config tree.
+    // Config entries and the kernel-owned module bridges are inventoried from the native config tree.
     if (credential.source !== 'file' && !text(credential.path)) {
       if (sources.has('config:' + text(credential.auth_index)) || /^.*:apikey:|^openai-compatibility:/.test(text(credential.id))) continue
       const id = 'runtime:' + (text(credential.auth_index) || text(credential.id) || text(credential.name))
@@ -93,7 +95,7 @@ async function readInventory(): Promise<Source[]> {
     if (!id) continue
     const existing = sources.get(id)
     if (existing) { if (!existing.authIds.includes(account.id)) existing.authIds.push(account.id); if (!existing.prefix && account.prefix) existing.prefix = account.prefix; continue }
-    // Internal managed bridge credentials remain owned by CommandCode rather than another
+    // Internal managed bridge credentials remain owned by their pool module rather than another
     // CPA source. Their runtime ID starts with the native compatibility/config family.
     if (account.source === 'config') continue
     sources.set(id, { id, name: account.fileName || account.id, provider: account.provider, enabled: !account.disabled, prefix: account.prefix || '',
@@ -183,6 +185,8 @@ export async function prepareCpaGroupSource(sourceId: string): Promise<void> {
   await getDb().begin(async transaction => {
     await transaction`SELECT pg_advisory_xact_lock(hashtextextended('nexus:cpa:preset-prefix',0))`
     await transaction`SELECT pg_advisory_xact_lock(71645203)`
+    // Also serialize with every other platform write to CPA's provider configuration.
+    await transaction`SELECT pg_advisory_xact_lock(${KERNEL_CONFIG_LOCK})`
     const sources = await readSources(true), source = sources.find(item => item.id === sourceId)
     if (!source) throw fail(404, 'CPA 来源账号不存在')
     if (!source.supported) throw fail(409, source.message || '此 CPA 来源无法独立分组')
@@ -277,7 +281,7 @@ export async function listCpaGroupOffers(groupIds: string[]): Promise<CpaGroupOf
   const client = createCpaClient()
   const models = new Map<string, string[]>()
   await each(sources, async source => {
-    try { models.set(source.id, (await accountModels(source, client)).map(model => model.id).filter(id => !id.startsWith('commandcode/'))) }
+    try { models.set(source.id, (await accountModels(source, client)).map(model => model.id).filter(id => !moduleForAlias(id))) }
     catch { models.set(source.id, []) }
   })
   const allowed = new Set(groupIds)
@@ -299,14 +303,14 @@ async function requireLegacyPrefixRouting(client: Client) {
   // requires the additive credential/plugin policy, never a plugin/version name whitelist.
   if (payload.plugins.some(plugin => object(plugin) && plugin.effective_enabled === true)) throw fail(503, '请更新 Nexus 内核以启用完整插件分组策略；原生客户端功能继续保留')
 }
-/** CommandCode aliases also execute through the stock core and must share this routing check. */
+/** Pool-module bridge aliases also execute through the core and must share this routing check. */
 export async function assertCpaGroupRoutingSafe(): Promise<void> {
   await requireVerifiedPluginRouting(createCpaClient())
 }
 export interface CpaGroupPolicySelection { model: string; selectedGroupId: string; allowedAuthIDs: string[]; allowedPluginIDs: string[]; legacyPrefix?: boolean }
 /** A router may rename an alias, but the complete chain stays in the selected group. */
 export async function resolveCpaGroupPolicy(model: string, groupIds: string[], _keyId: string): Promise<CpaGroupPolicySelection | null> {
-  if (model.startsWith('commandcode/') || !groupIds.length) return null
+  if (moduleForAlias(model) || !groupIds.length) return null
   const capabilities = await getNexusCpaCapabilities()
   if (!capabilities?.groupPolicy.enabled) throw fail(503, '请更新并配置 Nexus 内核以启用完整插件分组策略')
   const sources = await allowedSources(groupIds)
@@ -330,24 +334,24 @@ export async function resolveCpaGroupPolicy(model: string, groupIds: string[], _
   return { model, selectedGroupId, allowedAuthIDs: [...new Set(selectedSources.flatMap(source => source.authIds))],
     allowedPluginIDs: [...new Set(selectedSources.flatMap(source => source.pluginId ? [source.pluginId] : []))] }
 }
-export async function resolveCommandcodeBridgePolicy(_keyId: string): Promise<{ allowedAuthIDs: string[]; allowedPluginIDs: string[]; legacyPrefix?: boolean }> {
+export async function resolvePoolBridgePolicy(channelName: string): Promise<{ allowedAuthIDs: string[]; allowedPluginIDs: string[] }> {
   const capabilities = await getNexusCpaCapabilities()
-  if (!capabilities?.groupPolicy.enabled) throw fail(503, '请更新并配置 Nexus 内核以启用 CommandCode 插件分组策略')
-  const managed = await readCpaManagedBridgeSources(createCpaClient())
+  if (!capabilities?.groupPolicy.enabled) throw fail(503, '请更新并配置 Nexus 内核以启用模块桥接分组策略')
+  const managed = (await readCpaManagedBridgeSources(createCpaClient())).filter(source => source.channel === channelName)
   const indexes = new Set(managed.map(source => source.authIndex))
   const expectedIDs = new Set(managed.flatMap(source => source.authIDs))
   const allowedAuthIDs = capabilities.runtimeAccounts.filter(account => !account.disabled && (indexes.has(account.authIndex) || expectedIDs.has(account.id))).map(account => account.id)
-  if (!allowedAuthIDs.length) throw fail(503, 'CommandCode 托管渠道尚未注册到当前内核，请重新接入渠道')
+  if (!allowedAuthIDs.length) throw fail(503, '模块桥接渠道尚未注册到当前内核，请重新接入渠道')
   return { allowedAuthIDs: [...new Set(allowedAuthIDs)], allowedPluginIDs: [] }
 }
 function visibleModels(source: Source, models: CpaGroupModel[], preserveNativeIDs = false): CpaGroupModel[] {
   const visible = new Map<string, CpaGroupModel>()
   for (const model of models) {
-    if (model.id.startsWith('commandcode/')) continue
+    if (moduleForAlias(model.id)) continue
     // Prefixes belong to real credentials. The public catalog exposes familiar bare model aliases,
     // while original source-prefixed aliases remain accepted by resolveCpaGroupModel.
     const id = !preserveNativeIDs && source.prefix && model.id.startsWith(source.prefix + '/') ? model.id.slice(source.prefix.length + 1) : model.id
-    if (id && !id.startsWith('commandcode/')) visible.set(id, { ...model, id })
+    if (id && !moduleForAlias(id)) visible.set(id, { ...model, id })
   }
   return [...visible.values()]
 }
@@ -366,7 +370,7 @@ function modelParts(model: string) {
   return { base: match ? match[1]! : model, suffix: match ? match[2]! : '' }
 }
 export async function resolveCpaGroupModel(model: string, groupIds: string[], keyId: string): Promise<CpaGroupSelection | null> {
-  if (model.startsWith('commandcode/')) return null
+  if (moduleForAlias(model)) return null
   const parts = modelParts(model), sources = await allowedSources(groupIds), client = createCpaClient()
   const candidates: Source[] = []
   await each(sources, async source => {

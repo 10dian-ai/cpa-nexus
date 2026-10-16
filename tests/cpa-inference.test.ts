@@ -4,31 +4,29 @@ import { createApp, defineEventHandler, getRequestURL, toNodeListener } from 'h3
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const fixture = vi.hoisted(() => ({
-  presets: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), compat: vi.fn(), internal: vi.fn(), routing: vi.fn(),
-  offers: vi.fn(), ccModels: vi.fn(), candidates: vi.fn(), provider: vi.fn(), policy: vi.fn(), log: vi.fn(), bindings: vi.fn(),
+  presets: vi.fn(), authenticate: vi.fn(), module: vi.fn(), enabled: vi.fn(), routing: vi.fn(),
+  offers: vi.fn(), poolModels: vi.fn(), bridgePolicy: vi.fn(), trace: vi.fn(), policy: vi.fn(), log: vi.fn(), bindings: vi.fn(),
   capabilities: vi.fn(), devinLevels: vi.fn(), invalidate: vi.fn(), limit: 1, stalePolicyOnce: false, maxBody: 0,
   /** Core behaviour per model sent to CPA: status and JSON body. */
   core: new Map<string, { status: number; body: unknown }>(),
 }))
 vi.mock('../server/lib/modules', () => ({ requireModule: fixture.module, isModuleEnabled: fixture.enabled }))
 vi.mock('../server/lib/groups', () => ({ resolveKeyRouting: fixture.routing, accountGroupBindings: fixture.bindings }))
-vi.mock('../server/lib/cpa/group-routing', () => ({ listCpaGroupOffers: fixture.offers }))
+vi.mock('../server/lib/cpa/group-routing', () => ({ listCpaGroupOffers: fixture.offers, resolvePoolBridgePolicy: fixture.bridgePolicy }))
+vi.mock('../server/modules/logicc/store', () => ({ groupModels: fixture.poolModels }))
+vi.mock('../server/lib/bridge/trace', () => ({ readBridgeTrace: fixture.trace, writeBridgeTrace: async () => {} }))
 vi.mock('../server/lib/cpa/group-policy', () => ({ CPA_GROUP_POLICY_HEADER: 'x-nexus-group-policy', registerCpaGroupPolicy: fixture.policy, invalidateCpaGroupPolicy: fixture.invalidate }))
 vi.mock('../server/lib/cpa/nexus-capabilities', () => ({ getNexusCpaCapabilities: fixture.capabilities }))
 vi.mock('../server/lib/logs', () => ({ insertRequestLog: fixture.log }))
-vi.mock('../server/lib/gateway/accounts', () => ({ listGatewayModels: fixture.ccModels, listCandidates: fixture.candidates }))
-vi.mock('../server/lib/official-catalog', () => ({ getProviderModel: fixture.provider }))
 vi.mock('../server/lib/auth', () => ({ authenticateGatewayKey: fixture.authenticate }))
-vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: 'test-only-privacy-secret' }) }))
+vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: Buffer.alloc(32, 7).toString('base64') }) }))
 vi.mock('../server/lib/presets', () => ({ resolveGroupPresetStack: fixture.presets }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ maxRequestBodyMb: fixture.limit, upstreamTimeoutSeconds: 600, devinDefaultEffort: 'high', devinStripSampling: true, imageMaxEdge: 2048, imageQuality: 85 }) }))
-vi.mock('../server/lib/commandcode-compat', () => ({ handleCommandcodeCompatibility: fixture.compat, isCommandcodeFailure: (value: any) => !!value && value.failed === true }))
-vi.mock('../server/lib/gateway/handler', () => ({ handleGateway: fixture.internal }))
 vi.mock('../server/lib/routing/devin-params', async importOriginal => ({ ...await importOriginal<object>(), devinThinkingLevels: fixture.devinLevels }))
 import { handleNexusInference } from '../server/lib/cpa/inference'
 import { resetGlobalModelCache } from '../server/lib/routing/plan'
 import modelRoute from '../server/routes/v1/[...path]'
-import { signOriginalGatewayKey } from '../server/lib/commandcode-identity'
+import { verifyRouteHeaders } from '../server/lib/bridge/identity'
 
 const preset = (name = 'Default') => ({ id: name, sourceJson: { prompts: [{ identifier: 'main', role: 'system', content: name }, { identifier: 'chatHistory', marker: true }], prompt_order: [{ character_id: 100000, order: [{ identifier: 'main', enabled: true }, { identifier: 'chatHistory', enabled: true }] }], temperature: 0.4 }, variables: {} })
 const offer = (groupId: string, sourceId: string, models: string[]) => ({ groupId, sourceId, provider: 'fixture', prefix: '', authIds: [sourceId + '-auth'], models })
@@ -45,13 +43,11 @@ describe('unified model key router', () => {
     fixture.log.mockResolvedValue(undefined); fixture.capabilities.mockResolvedValue(null); fixture.bindings.mockResolvedValue(new Map())
     fixture.devinLevels.mockResolvedValue(new Map([['devin/claude-opus-4-8', ['low', 'medium', 'high', 'max']]]))
     fixture.offers.mockResolvedValue([offer('group-a', 'source-a', ['native-model', 'devin/claude-opus-4-8', 'gemini-3-pro'])])
-    fixture.ccModels.mockResolvedValue({ object: 'list', data: [{ id: 'cc-model' }] }); fixture.candidates.mockResolvedValue([]); fixture.provider.mockResolvedValue(null)
+    fixture.poolModels.mockResolvedValue(new Map()); fixture.trace.mockResolvedValue(null)
+    fixture.bridgePolicy.mockResolvedValue({ allowedAuthIDs: ['bridge-auth'], allowedPluginIDs: [] })
     fixture.authenticate.mockImplementation(async (secret: string) => secret === 'ccm_KA' || secret === 'ccm_KB'
       ? { id: secret.slice(4), name: secret.slice(4), moduleId: 'cpa' }
-      : secret === 'ccm_original' ? { id: 'original', name: 'legacy', moduleId: 'commandcode' }
-        : secret === 'ccm_auto' ? { id: 'auto', name: 'all sources', moduleId: 'auto' } : null)
-    fixture.compat.mockImplementation(event => { event.node.res.end('CCM') })
-    fixture.internal.mockImplementation(event => { event.node.res.end('internal bridge') })
+      : secret === 'ccm_auto' ? { id: '00000000-0000-4000-8000-0000000000aa', name: 'all sources', moduleId: 'auto' } : null)
     received = []; cancelled = false
     core = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk))
@@ -156,13 +152,20 @@ describe('unified model key router', () => {
       expect((await response.json()).models.map((model: { name: string }) => model.name)).toContain('models/claude-opus-4-8')
     })
 
-    it('combines both modules for auto keys and survives one catalog outage', async () => {
-      fixture.ccModels.mockResolvedValue({ object: 'list', data: [{ id: 'cc-model' }, { id: 'native-model' }] })
+    it('combines CPA sources and pool modules for auto keys and survives one catalog outage', async () => {
+      fixture.poolModels.mockResolvedValue(new Map([['group-a', ['lc-model', 'native-model']]]))
       const response = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_auto' } })
-      expect((await response.json()).data.map((model: { id: string }) => model.id)).toEqual(['cc-model', 'claude-opus-4-8', 'gemini-3-pro', 'native-model'])
+      expect((await response.json()).data.map((model: { id: string }) => model.id)).toEqual(['claude-opus-4-8', 'gemini-3-pro', 'lc-model', 'native-model'])
+      // CPA-only keys never see pool-module models.
+      const cpaOnly = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_KA' } })
+      expect((await cpaOnly.json()).data.map((model: { id: string }) => model.id)).not.toContain('lc-model')
       fixture.offers.mockRejectedValue(new Error('Core unavailable'))
       const degraded = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_auto' } })
-      expect((await degraded.json()).data.map((model: { id: string }) => model.id)).toEqual(['cc-model', 'native-model'])
+      expect((await degraded.json()).data.map((model: { id: string }) => model.id)).toEqual(['lc-model', 'native-model'])
+      // A stopped module contributes nothing.
+      fixture.offers.mockResolvedValue([offer('group-a', 'source-a', ['native-model'])]); fixture.enabled.mockImplementation(async (id: string) => id !== 'logicc')
+      const stopped = await fetch(url + '/models', { headers: { authorization: 'Bearer ccm_auto' } })
+      expect((await stopped.json()).data.map((model: { id: string }) => model.id)).toEqual(['native-model'])
     })
   })
 
@@ -233,7 +236,7 @@ describe('unified model key router', () => {
       fixture.routing.mockResolvedValue({ groupIds: [], strategy: 'failover' })
       const disabled = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
       expect(disabled.status).toBe(403); await disabled.text()
-      expect(generations()).toHaveLength(0); expect(fixture.compat).not.toHaveBeenCalled()
+      expect(generations()).toHaveLength(0)
     })
 
     it('lets CPA resolve router aliases inside the key groups', async () => {
@@ -366,60 +369,79 @@ describe('unified model key router', () => {
     })
   })
 
-  describe('CommandCode', () => {
-    it('restores original CCM keys on all original public model paths', async () => {
-      for (const path of ['models', 'chat/completions', 'messages', 'responses']) {
-        const response = await fetch(url + '/' + path, { method: path === 'models' ? 'GET' : 'POST', headers: { authorization: 'Bearer ccm_original' }, ...(path === 'models' ? {} : { body: '{}' }) })
-        expect(await response.text()).toBe('CCM')
-        expect(fixture.compat.mock.calls.at(-1)![1]).toEqual({ protocolPath: path })
-      }
-      expect(received).toHaveLength(0)
+  describe('pool modules through the kernel bridge', () => {
+    const AUTO_ID = '00000000-0000-4000-8000-0000000000aa'
+    beforeEach(() => { fixture.routing.mockResolvedValue({ groupIds: ['00000000-0000-4000-8000-00000000000a'], strategy: 'failover' }) })
+    const group = '00000000-0000-4000-8000-00000000000a'
+
+    it('sends the request to CPA under the module alias with signed route headers and the bridge policy', async () => {
+      fixture.offers.mockResolvedValue([])
+      fixture.poolModels.mockResolvedValue(new Map([[group, ['lc-model']]]))
+      fixture.trace.mockResolvedValue({ moduleId: 'logicc', accountId: 'logicc-account-1', attempts: [], usageSource: 'estimated' })
+      const response = await post({ model: 'lc-model', messages: [{ role: 'user', content: 'hi' }] }, 'ccm_auto')
+      expect(response.status).toBe(200)
+      const sent = generations().at(-1)!
+      expect(sent.body.model).toBe('logicc/lc-model')
+      expect(sent.headers['x-nexus-group-policy']).toBe('server-generated-private-policy')
+      expect(fixture.policy).toHaveBeenLastCalledWith({ keyId: AUTO_ID, allowedAuthIDs: ['bridge-auth'], allowedPluginIDs: [] })
+      expect(fixture.bridgePolicy).toHaveBeenCalledWith('nexus-logicc')
+      const context = verifyRouteHeaders('logicc', sent.headers as Record<string, string>)
+      expect(context).toMatchObject({ moduleId: 'logicc', keyId: AUTO_ID, groupId: group })
+      // Billing still asks for usage on streams; the module always reports it.
+      await vi.waitFor(() => expect(fixture.log).toHaveBeenCalled())
+      expect(fixture.log.mock.calls.at(-1)![0]).toMatchObject({ moduleId: 'logicc', sourceId: 'logicc-account-1', usage: { nexus: { moduleId: 'logicc', usageSource: 'estimated' } } })
     })
 
-    it('rejects Command Code models for CPA-only keys', async () => {
-      for (const protocol of ['chat/completions', 'messages', 'responses', 'systemone']) {
-        const response = await post({ model: 'commandcode/fixture', messages: [] }, 'ccm_KA', protocol)
-        expect(response.status).toBe(403); await response.text()
-      }
-      expect(received).toHaveLength(0); expect(fixture.compat).not.toHaveBeenCalled()
+    it('never forwards route headers supplied by the client', async () => {
+      fixture.offers.mockResolvedValue([])
+      fixture.poolModels.mockResolvedValue(new Map([[group, ['lc-model']]]))
+      const response = await fetch(url + '/chat/completions', { method: 'POST', headers: {
+        authorization: 'Bearer ccm_auto', 'content-type': 'application/json',
+        'x-nexus-route-group': '00000000-0000-4000-8000-0000000000ff', 'x-nexus-original-key-id': '00000000-0000-4000-8000-0000000000ff', 'x-nexus-route-signature': 'forged',
+      }, body: JSON.stringify({ model: 'lc-model', messages: [] }) })
+      expect(response.status).toBe(200); await response.arrayBuffer()
+      const sent = generations().at(-1)!
+      expect(sent.headers['x-nexus-route-group']).toBe(group)
+      expect(sent.headers['x-nexus-original-key-id']).toBe(AUTO_ID)
+      expect(verifyRouteHeaders('logicc', sent.headers as Record<string, string>)).not.toBeNull()
     })
 
-    it('uses a CommandCode account from the key groups without consuming the body twice', async () => {
-      fixture.provider.mockResolvedValue({ id: 'cc-model' }); fixture.candidates.mockResolvedValue([{ id: 'cc-account-a' }])
-      fixture.bindings.mockResolvedValue(new Map([['cc-account-a', { groupIds: ['group-a'] }]]))
-      const body = { model: 'cc-model', messages: [{ role: 'user', content: 'Group A' }], stream: true }
-      const response = await post(body, 'ccm_auto'); expect(await response.text()).toBe('CCM')
-      expect(fixture.candidates).toHaveBeenCalledWith('cc-model', 'auto')
-      expect(fixture.compat.mock.calls.at(-1)![1]).toEqual({ protocolPath: 'chat/completions', body, failover: false })
+    it('tries the pool first and fails over to a CPA source of the same model', async () => {
+      fixture.offers.mockResolvedValue([offer(group, 'source-a', ['native-model'])])
+      fixture.poolModels.mockResolvedValue(new Map([[group, ['native-model']]]))
+      fixture.core.set('logicc/native-model', { status: 503, body: { error: { message: 'Logicc accounts cooling down', code: 'logicc_unavailable' } } })
+      const response = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
+      expect(response.status).toBe(200)
+      expect((await response.json()).body.model).toBe('native-model')
+      expect(generations().map(item => item.body.model)).toEqual(['logicc/native-model', 'native-model'])
+    })
+
+    it('hands a request the module declines to the next source', async () => {
+      fixture.offers.mockResolvedValue([offer(group, 'source-a', ['native-model'])])
+      fixture.poolModels.mockResolvedValue(new Map([[group, ['native-model']]]))
+      fixture.core.set('logicc/native-model', { status: 422, body: { error: { message: 'Logicc 不支持 image_url', code: 'nexus_source_unsupported' } } })
+      const response = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
+      expect(response.status).toBe(200); await response.arrayBuffer()
+      expect(generations().map(item => item.body.model)).toEqual(['logicc/native-model', 'native-model'])
+    })
+
+    it('keeps CPA-only keys and stopped modules away from the pool', async () => {
+      fixture.offers.mockResolvedValue([])
+      fixture.poolModels.mockResolvedValue(new Map([[group, ['lc-model']], ['group-a', ['lc-model']]]))
+      const cpaOnly = await post({ model: 'lc-model', messages: [] }, 'ccm_KA')
+      expect(cpaOnly.status).toBe(404); await cpaOnly.arrayBuffer()
+      fixture.enabled.mockImplementation(async (id: string) => id !== 'logicc')
+      const stopped = await post({ model: 'lc-model', messages: [] }, 'ccm_auto')
+      expect(stopped.status).toBe(404); await stopped.arrayBuffer()
       expect(generations()).toHaveLength(0)
     })
 
-    it('fails over from CommandCode to a CPA source of the same model', async () => {
-      fixture.provider.mockResolvedValue({ id: 'native-model' }); fixture.candidates.mockResolvedValue([{ id: 'cc-account-a' }])
-      fixture.bindings.mockResolvedValue(new Map([['cc-account-a', { groupIds: ['group-a'] }]]))
-      fixture.compat.mockResolvedValue({ failed: true, status: 429, message: 'all accounts cooling down' })
-      const response = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
-      expect(response.status).toBe(200); expect((await response.json()).body.model).toBe('native-model')
-      expect(fixture.compat.mock.calls[0]![1]).toMatchObject({ failover: true })
-    })
-
-    it('handles signed bridge callbacks and rejects unsigned ones', async () => {
-      const direct = url.replace('/nexus/cpa/v1', '/v1')
-      const bridge = await fetch(direct + '/messages', { method: 'POST', headers: { authorization: 'Bearer ccm_nexus_internal' }, body: '{}' })
-      expect(await bridge.text()).toBe('internal bridge')
-      const signed = await fetch(url + '/chat/completions', { method: 'POST', headers: {
-        authorization: 'Bearer ccm_nexus_internal', 'content-type': 'application/json',
-        'x-nexus-original-key-id': 'legacy-callback-key', 'x-nexus-original-key-signature': signOriginalGatewayKey('legacy-callback-key'),
-      }, body: JSON.stringify({ model: 'fixture', messages: [] }) })
-      expect(await signed.text()).toBe('internal bridge')
-      expect(fixture.internal).toHaveBeenLastCalledWith(expect.anything(), { protocolPath: 'chat/completions' })
-      for (const signature of ['', 'invalid-signature']) {
-        const response = await fetch(url + '/messages', { method: 'POST', headers: {
-          authorization: 'Bearer ccm_nexus_internal', 'content-type': 'application/json', 'x-nexus-original-key-id': 'legacy-callback-key',
-          ...(signature ? { 'x-nexus-original-key-signature': signature } : {}),
-        }, body: JSON.stringify({ model: 'fixture', messages: [] }) })
-        expect(response.status).toBe(401); await response.text()
-      }
+    it('accepts the explicit module alias and restricts the request to that module', async () => {
+      fixture.offers.mockResolvedValue([offer(group, 'source-a', ['lc-model'])])
+      fixture.poolModels.mockResolvedValue(new Map([[group, ['lc-model']]]))
+      const response = await post({ model: 'logicc/lc-model', messages: [] }, 'ccm_auto')
+      expect(response.status).toBe(200); await response.arrayBuffer()
+      expect(generations().map(item => item.body.model)).toEqual(['logicc/lc-model'])
     })
   })
 })

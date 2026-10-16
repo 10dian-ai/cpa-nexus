@@ -1,20 +1,19 @@
+import { randomUUID } from 'node:crypto'
 import { getRequestURL, type H3Event } from 'h3'
-import { handleCommandcodeCompatibility, isCommandcodeFailure } from '../commandcode-compat'
-import { handleGateway } from '../gateway/handler'
-import { verifyOriginalGatewayKey } from '../commandcode-identity'
 import { resolveGroupPresetStack } from '../presets'
 import { authenticateGatewayKey } from '../auth'
 import { applyPresetStack, resolvePresetGenerationType } from '../presets/engine'
 import { getSettings } from '../settings'
-import { readJsonBodyLimited } from '../gateway/transport'
-import { isModuleEnabled, requireModule } from '../modules'
-import { gatewayCors } from '../gateway/cors'
-import { accountGroupBindings, resolveKeyRouting, type KeyGroupStrategy } from '../groups'
-import { listCandidates } from '../gateway/accounts'
-import { getProviderModel } from '../official-catalog'
-import { invalidateCpaGroupPolicy, registerCpaGroupPolicy } from './group-policy'
-import { listCpaGroupOffers, type CpaGroupOffer } from './group-routing'
+import { readJsonBodyLimited } from '../http/transport'
+import { requireModule, isModuleEnabled } from '../modules'
+import { gatewayCors } from '../http/cors'
+import { resolveKeyRouting, type KeyGroupStrategy } from '../groups'
+import { registerCpaGroupPolicy, invalidateCpaGroupPolicy } from './group-policy'
+import { listCpaGroupOffers, resolvePoolBridgePolicy, type CpaGroupOffer } from './group-routing'
 import { getNexusCpaCapabilities } from './nexus-capabilities'
+import { bridgeAlias, bridgeChannelName } from './module-bridges'
+import { routeHeaders } from '../bridge/identity'
+import { readBridgeTrace } from '../bridge/trace'
 import { forwardCpa, openCpaUpstream, pipeCpaResponse, readUpstreamText, type CpaUpstream, type PipeResult } from './forward'
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
 import { insertRequestLog } from '../logs'
@@ -22,11 +21,13 @@ import { redactModelResponseBody } from '../diagnostic-response'
 import { redactSensitiveText } from '../../../shared/log-privacy'
 import { modelErrorBody } from '../model-errors'
 import { upstreamIdleTimeoutMs } from '../timeouts'
-import { ResponseCapture } from '../gateway/response'
+import { ResponseCapture } from '../http/response-capture'
 import { compressRequestImages, type ImageCompressionStats } from '../media/image-compress'
 import type { AuthenticatedModelKey } from '../../../shared/keys'
 import type { SystemSettings } from '../../../shared/types'
-import { planCpaRoute, sequenceAttempts, type CpaRouteAttempt, type RouteAttempt } from '../routing/plan'
+import type { PoolModuleId } from '../../../shared/modules'
+import { planCpaRoute, sequenceAttempts, type CpaRouteAttempt, type PoolRouteAttempt, type RouteAttempt } from '../routing/plan'
+import { resolvePoolGroups } from '../routing/pool'
 import { applyDevinParams, devinThinkingLevels, isDevinModel } from '../routing/devin-params'
 import { errorMessageFrom, isFailoverResponse } from '../routing/failover'
 import { geminiModelList, listKeyModels } from '../routing/catalog'
@@ -36,21 +37,19 @@ import { geminiModelList, listKeyModels } from '../routing/catalog'
  *
  *   client ─► nginx ─► /nexus/cpa/{v1,v1beta}/… (here)
  *     native CPA key ──────────────► CPA, untouched
- *     ccm_ model key ─► key groups ─► attempts (group × source) ─► CPA / CommandCode
+ *     ccm_ model key ─► key groups ─► attempts (group × source) ─► CPA / pool bridge
  *
- * Each attempt uses the presets of the group it runs in, Devin parameter
- * conversion when the source is CPA's Devin provider, and a short-lived CPA
- * group policy so the kernel only selects credentials of that group. Failed
- * attempts (credentials, access, rate limit, upstream errors) move on to the
- * next source or group before anything reaches the client.
+ * A pool-module source (Logicc …) is reached through CPA's kernel-owned bridge
+ * channel: the request goes to CPA as `<alias>/<model>`, CPA converts the
+ * client's protocol to Chat Completions and calls the module back with signed
+ * route headers naming the serving group. Each attempt uses that group's
+ * SillyTavern presets; Devin parameter conversion applies only to CPA's native
+ * Devin provider. Failed attempts move to the next source or group.
  */
 type Protocol = 'chat/completions' | 'messages' | 'responses'
 type JsonObject = Record<string, unknown>
 const GENERATION: ReadonlySet<string> = new Set(['chat/completions', 'messages', 'responses'])
 const PRESET_PROTOCOL = { 'chat/completions': 'chat', messages: 'messages', responses: 'responses' } as const
-/** Bridge callbacks from CPA into the CommandCode gateway. */
-const BRIDGE_PATHS = new Set(['chat/completions', 'messages', 'responses', 'systemone'])
-// Kept for callers upgrading from the former native-key authentication cache.
 export function resetCpaInferenceAuthCache() {}
 
 function fail(event: H3Event, protocol: string, status: number, message: string, code?: string) {
@@ -65,18 +64,12 @@ function sendJson(event: H3Event, value: unknown) {
   event.node.res.end(JSON.stringify(value))
 }
 
-interface ParsedEndpoint {
-  family: 'v1' | 'v1beta'
-  /** Path below the family, e.g. `chat/completions` or `models/gemini-pro:generateContent`. */
-  path: string
-  search: URLSearchParams
-}
+interface ParsedEndpoint { family: 'v1' | 'v1beta'; path: string; search: URLSearchParams }
 function parseEndpoint(event: H3Event): ParsedEndpoint {
   const url = getRequestURL(event)
   const match = /^(?:\/nexus\/cpa)?\/(v1beta|v1)(?:\/(.*))?$/.exec(url.pathname)
   return { family: (match?.[1] as 'v1' | 'v1beta') || 'v1', path: (match?.[2] || '').replace(/\/$/, ''), search: url.searchParams }
 }
-
 function readSecret(event: H3Event, search: URLSearchParams): string {
   const authorization = event.node.req.headers.authorization
   if (typeof authorization === 'string' && /^Bearer\s+/i.test(authorization)) return authorization.replace(/^Bearer\s+/i, '').trim()
@@ -86,8 +79,6 @@ function readSecret(event: H3Event, search: URLSearchParams): string {
   }
   return search.get('key')?.trim() || ''
 }
-
-/** CPA path for a request, without the caller's own `key=` query credential. */
 function cpaPath(endpoint: ParsedEndpoint, path = endpoint.path) {
   const search = new URLSearchParams(endpoint.search)
   search.delete('key')
@@ -107,28 +98,15 @@ export async function handleNexusInference(event: H3Event) {
   const secret = readSecret(event, endpoint.search)
   let settings: SystemSettings | undefined
   try {
-    // Native CPA keys may use any non-empty value, but an absent credential
-    // must be rejected here instead of becoming a misleading upstream 502.
     if (!secret) { fail(event, label, 401, 'A valid model API key is required'); return }
-    // Existing native core keys keep their original protocol, path and authentication.
+    // Native CPA keys keep their original protocol, path and authentication.
     if (!secret.startsWith('ccm_')) {
       await forwardCpa({ event, path: `/${family}/${path}${endpoint.search.size ? '?' + endpoint.search.toString() : ''}`, timeoutMs: upstreamIdleTimeoutMs(await getSettings()) })
       return
     }
-    // A signed CommandCode bridge callback from CPA keeps the original key, groups and presets.
-    if (family === 'v1' && secret.startsWith('ccm_nexus_') && BRIDGE_PATHS.has(path) && verifyOriginalGatewayKey(event.node.req.headers)) {
-      return await handleGateway(event, { protocolPath: path as Protocol | 'systemone' })
-    }
     const key = await authenticateGatewayKey(secret)
-    if (!key || secret.startsWith('ccm_nexus_')) { fail(event, label, 401, 'A valid model API key is required'); return }
+    if (!key) { fail(event, label, 401, 'A valid model API key is required'); return }
     settings = await getSettings()
-    const moduleId = key.moduleId || 'commandcode'
-    if (moduleId === 'commandcode') {
-      if (family === 'v1' && ((path === 'models' && event.method === 'GET') || ((GENERATION.has(path) || path === 'systemone') && event.method === 'POST'))) {
-        return await handleCommandcodeCompatibility(event, { protocolPath: path })
-      }
-      fail(event, label, 404, 'This endpoint is only available for CPA sources', 'unsupported_endpoint'); return
-    }
     const routing = await resolveKeyRouting(key.id)
     if (!routing.groupIds.length) { fail(event, label, 403, '这个模型 API Key 没有已启用的分组'); return }
 
@@ -140,12 +118,7 @@ export async function handleNexusInference(event: H3Event) {
       if (!model) { fail(event, label, 404, 'Model not found', 'model_not_found'); return }
       return sendJson(event, family === 'v1beta' ? geminiModelList([model]).models[0] : model)
     }
-    if (family === 'v1' && path === 'systemone' && event.method === 'POST') {
-      if (moduleId === 'auto') return await handleCommandcodeCompatibility(event, { protocolPath: path })
-      fail(event, path, 403, 'System One requires a key with Command Code group access'); return
-    }
 
-    // Gemini: the model is part of the path, `models/<model>:<action>`.
     const gemini = family === 'v1beta' ? /^models\/(.+):([A-Za-z]+)$/.exec(path) : null
     const contentType = String(event.node.req.headers['content-type'] || '')
     const jsonBody = event.method === 'POST' && (!contentType || /json/i.test(contentType)) && (gemini || family === 'v1')
@@ -153,8 +126,6 @@ export async function handleNexusInference(event: H3Event) {
     if (event.node.req.headers['content-encoding']) { fail(event, label, 415, 'Model API keys require an uncompressed JSON request'); return }
     const body = await readJsonBodyLimited(event, settings.maxRequestBodyMb * 1024 * 1024)
     const model = gemini ? decodeURIComponent(gemini[1]!) : typeof body.model === 'string' ? body.model.trim() : ''
-    // JSON calls that name no model (job control such as `responses/{id}/cancel`)
-    // are left to CPA within the key's own sources.
     if (!gemini && body.model === undefined && !GENERATION.has(path)) return await forwardUnscoped(event, endpoint, key, routing.groupIds, settings, body)
     if (!model || model.length > 256) { fail(event, label, 400, 'model must be a non-empty string of at most 256 characters'); return }
     await runModelRequest({
@@ -165,8 +136,6 @@ export async function handleNexusInference(event: H3Event) {
     })
   } catch (error) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }
-    // Platform errors carry an explicit status and an actionable, redacted
-    // message. Only bare transport failures fall back to the generic message.
     const explicit = Number((error as { statusCode?: number }).statusCode)
     const status = explicit || (/timeout/i.test(String(error)) ? 504 : 502)
     fail(event, label, status, explicit && error instanceof Error && error.message ? redactSensitiveText(error.message) : 'CPA request failed; check the core connection',
@@ -177,48 +146,26 @@ export async function handleNexusInference(event: H3Event) {
 interface ModelRequest {
   event: H3Event; endpoint: ParsedEndpoint; key: AuthenticatedModelKey; groupIds: string[]; strategy: KeyGroupStrategy
   settings: SystemSettings; body: JsonObject; model: string
-  /** Set for generation endpoints: presets, billing and CommandCode apply. */
   protocol?: Protocol
   logProtocol: string
   cpaPathFor: (nativeModel: string) => string
-  /** Inline image resizing applied before routing, for logs. */
   images?: ImageCompressionStats & { maxEdge?: number; quality?: number; steps?: number }
-  /** The client's body before image resizing, kept for stronger retries after HTTP 413. */
   originalBody?: JsonObject
+  requestId?: string
 }
-interface AttemptRecord { kind: 'cpa' | 'commandcode'; groupId: string; model?: string; status: number; error: string }
-
-/** Groups (among the key's) holding a CommandCode account that can serve the model. */
-async function commandcodeGroups(model: string, key: AuthenticatedModelKey, groupIds: string[]): Promise<Set<string> | undefined> {
-  if (key.moduleId !== 'auto' || !await isModuleEnabled('commandcode')) return undefined
-  let provider: Awaited<ReturnType<typeof getProviderModel>> = null
-  try { provider = await getProviderModel(model) } catch { /* CPA can remain usable during a catalog outage. */ }
-  if (!provider) return undefined
-  const candidates = await listCandidates(model, key.id)
-  if (!candidates.length) return undefined
-  const bindings = await accountGroupBindings('commandcode', candidates.map(candidate => candidate.id))
-  const groups = new Set([...bindings.values()].flatMap(binding => binding.groupIds))
-  return new Set(groupIds.filter(id => groups.has(id)))
-}
+interface AttemptRecord { kind: 'cpa' | 'pool'; moduleId?: string; groupId: string; model?: string; status: number; error: string }
 
 async function runModelRequest(request: ModelRequest) {
   const { event, key, groupIds, protocol, model } = request
   const label = request.logProtocol
-  let attempts: RouteAttempt[]
-  if (model.startsWith('commandcode/')) {
-    if (key.moduleId !== 'auto') { fail(event, label, 403, 'This API key is bound to CPA and cannot call Command Code models'); return }
-    if (!protocol) { fail(event, label, 404, 'This endpoint is only available for CPA sources', 'unsupported_endpoint'); return }
-    attempts = [{ kind: 'commandcode', groupId: groupIds[0]! }]
-  } else {
-    await requireModule('cpa')
-    if (!process.env.CPA_CLIENT_KEY?.trim()) { fail(event, label, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
-    const plan = await planCpaRoute({ model, groupIds })
-    const ccGroups = protocol ? await commandcodeGroups(model, key, groupIds) : undefined
-    attempts = sequenceAttempts({ groupIds, strategy: request.strategy, rotationKey: key.id + '\0' + model, perGroup: plan.perGroup, commandcodeGroups: ccGroups })
-    if (!attempts.length) { fail(event, label, 404, '当前 Key 的分组中没有可调用的这个模型', 'model_not_found'); return }
-  }
-  // Shrink large inline images once, before any attempt, so every source
-  // (and every proxy on the way) receives the smaller request.
+  request.requestId = randomUUID()
+  await requireModule('cpa')
+  if (!process.env.CPA_CLIENT_KEY?.trim()) { fail(event, label, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
+  const plan = await planCpaRoute({ model, groupIds })
+  // Pool modules apply only to generation requests from unrestricted keys.
+  const poolGroups = protocol && key.moduleId === 'auto' ? await resolvePoolGroups(model, groupIds) : new Map<PoolModuleId, Map<string, string>>()
+  const attempts = sequenceAttempts({ groupIds, strategy: request.strategy, rotationKey: key.id + '\0' + model, perGroup: plan.perGroup, poolGroups })
+  if (!attempts.length) { fail(event, label, 404, '当前 Key 的分组中没有可调用的这个模型', 'model_not_found'); return }
   if (request.settings.imageMaxEdge > 0) {
     const compressed = await compressRequestImages(request.body, { maxEdge: request.settings.imageMaxEdge, quality: request.settings.imageQuality })
     if (compressed.stats.images) {
@@ -231,27 +178,16 @@ async function runModelRequest(request: ModelRequest) {
   const startedAt = Date.now()
   for (const [index, attempt] of attempts.entries()) {
     const last = index === attempts.length - 1
-    if (attempt.kind === 'commandcode') {
-      const result = await handleCommandcodeCompatibility(event, { protocolPath: protocol!, body: { ...request.body }, failover: !last })
-      if (isCommandcodeFailure(result)) { failures.push({ kind: 'commandcode', groupId: attempt.groupId, status: result.status, error: result.message }); continue }
-      return
-    }
-    let outcome = await runCpaAttempt(request, attempt, last, failures, startedAt)
-    // The same source rejected the body size: try it again with smaller images first.
-    while (outcome === 'retry') outcome = await runCpaAttempt(request, attempt, last, failures, startedAt)
+    let outcome = await runAttempt(request, attempt, last, failures, startedAt)
+    while (outcome === 'retry') outcome = await runAttempt(request, attempt, last, failures, startedAt)
     if (outcome === 'done') return
   }
-  // Every attempt failed over; report the last one.
   const lastFailure = failures.at(-1)
   const status = lastFailure?.status || 502
   fail(event, label, status, redactSensitiveText(lastFailure?.error || 'All sources for this model failed'))
   await logRequest(request, { status, startedAt, failures, error: lastFailure?.error || 'All sources failed', body: request.body })
 }
 
-/**
- * Stronger image settings tried in turn when a proxy rejects the body (HTTP 413).
- * nginx's default limit is 1 MB, so the last step aims at roughly 100–200 KB per photo.
- */
 const SHRINK_STEPS = [{ maxEdge: 1536, quality: 80 }, { maxEdge: 1024, quality: 75 }, { maxEdge: 768, quality: 70 }]
 async function shrinkAfterTooLarge(request: ModelRequest): Promise<boolean> {
   if (!request.originalBody || !request.images) return false
@@ -267,20 +203,89 @@ async function shrinkAfterTooLarge(request: ModelRequest): Promise<boolean> {
   return false
 }
 
-async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, last: boolean, failures: AttemptRecord[], startedAt: number): Promise<'done' | 'next' | 'retry'> {
-  const { event, key, protocol, settings } = request
+/** Build the request body for one attempt: the serving group's presets, then billing usage opt-in. */
+async function attemptBody(request: ModelRequest, groupId: string): Promise<{ body: JsonObject; presetIds: string[] }> {
   let body: JsonObject = { ...request.body }
   let presetIds: string[] = []
-  if (protocol) {
-    // The serving group decides the SillyTavern presets, never the key.
-    const presets = await resolveGroupPresetStack(attempt.groupId)
+  if (request.protocol) {
+    const presets = await resolveGroupPresetStack(groupId)
     if (presets.length) {
-      body = applyPresetStack(presets, body, { protocol: PRESET_PROTOCOL[protocol], generationType: resolvePresetGenerationType(body, event.node.req.headers) })
+      body = applyPresetStack(presets, body, { protocol: PRESET_PROTOCOL[request.protocol], generationType: resolvePresetGenerationType(body, request.event.node.req.headers) })
       presetIds = presets.map(preset => preset.id)
     }
     if (Object.hasOwn(body, 'generation_type')) delete body.generation_type
-    body = normalizeBillingRequest(body, protocol)
+    body = normalizeBillingRequest(body, request.protocol)
   }
+  return { body, presetIds }
+}
+
+type AttemptOutcome = 'done' | 'next' | 'retry'
+function runAttempt(request: ModelRequest, attempt: RouteAttempt, last: boolean, failures: AttemptRecord[], startedAt: number): Promise<AttemptOutcome> {
+  return attempt.kind === 'pool'
+    ? runPoolAttempt(request, attempt, last, failures, startedAt)
+    : runCpaAttempt(request, attempt, last, failures, startedAt)
+}
+
+/** A pool-module source, reached through its CPA bridge channel. */
+async function runPoolAttempt(request: ModelRequest, attempt: PoolRouteAttempt, last: boolean, failures: AttemptRecord[], startedAt: number): Promise<AttemptOutcome> {
+  const { event, key, settings } = request
+  const channelName = bridgeChannelName(attempt.moduleId)
+  const { body, presetIds } = await attemptBody(request, attempt.groupId)
+  const aliasModel = `${bridgeAlias(attempt.moduleId)}/${attempt.nativeModel}`
+  if (request.endpoint.family === 'v1') body.model = aliasModel
+  const record = (status: number, error: string) => failures.push({ kind: 'pool', moduleId: attempt.moduleId, groupId: attempt.groupId, model: aliasModel, status, error })
+  const timeoutMs = upstreamIdleTimeoutMs(settings)
+  let policy: string
+  let extraHeaders: Record<string, string>
+  try {
+    policy = await registerCpaGroupPolicy({ keyId: key.id, ...await resolvePoolBridgePolicy(channelName) })
+    extraHeaders = routeHeaders({ moduleId: attempt.moduleId, keyId: key.id, groupId: attempt.groupId, requestId: request.requestId! })
+  } catch (error) {
+    if (last) throw error
+    record(Number((error as { statusCode?: number }).statusCode) || 503, error instanceof Error ? error.message : '模块桥接策略不可用')
+    return 'next'
+  }
+  let upstream: CpaUpstream
+  try {
+    upstream = await openCpaUpstream({ event, path: request.cpaPathFor(aliasModel), method: 'POST', body, clientKey: process.env.CPA_CLIENT_KEY!.trim(), policy, extraHeaders, timeoutMs })
+  } catch (error) {
+    if (last) throw error
+    record(/timeout/i.test(String(error)) ? 504 : 502, error instanceof Error ? error.message : 'CPA connection failed')
+    return 'next'
+  }
+  const status = upstream.response.statusCode || 502
+  if (status >= 400 && (!last || status === 413)) {
+    const text = await readUpstreamText(upstream.response)
+    if (status === 413 && await shrinkAfterTooLarge(request)) { record(status, '请求体过大，缩小图片后重试'); return 'retry' }
+    // The module tells us to hand the request to another source.
+    if (!last && isFailoverResponse(status, text)) { record(status, errorMessageFrom(text)); return 'next' }
+    event.node.res.statusCode = status
+    event.node.res.setHeader('content-type', String(upstream.response.headers['content-type'] || 'application/json; charset=utf-8'))
+    event.node.res.end(Buffer.from(redactModelResponseBody(Buffer.from(text), status)))
+    await logRequest(request, { status, startedAt, failures, body, poolAttempt: attempt, presetIds, error: errorMessageFrom(text), responseBody: parseLogBody(text) })
+    return 'done'
+  }
+  if (presetIds.length) event.node.res.setHeader('x-nexus-preset-id', presetIds.join(','))
+  if (request.protocol) event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
+  const usageObserver = new BillingUsageObserver()
+  const capture = new ResponseCapture()
+  let piped: PipeResult | undefined
+  try {
+    piped = await pipeCpaResponse(event, upstream, { usageObserver, capture, timeoutMs })
+  } finally {
+    await logRequest(request, {
+      status: piped?.status ?? status, startedAt, failures, body, poolAttempt: attempt, presetIds, piped, usage: usageObserver.value(),
+      error: piped ? piped.outcome.errorMessage : '模块响应中断',
+      responseBody: capture.value(piped?.streaming ?? false), responseTruncated: capture.truncated,
+    })
+  }
+  return 'done'
+}
+
+async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, last: boolean, failures: AttemptRecord[], startedAt: number): Promise<AttemptOutcome> {
+  const { event, key, settings } = request
+  const { body: presetBody, presetIds } = await attemptBody(request, attempt.groupId)
+  let body = presetBody
   let nativeModel = attempt.opaque ? attempt.nativeModel : attempt.nativeModel + (attempt.parenSuffix !== undefined ? `(${attempt.parenSuffix})` : '')
   let devin: { level: string; source: string; removed: string[] } | undefined
   if (!attempt.opaque && isDevinModel(attempt.nativeModel)) {
@@ -312,7 +317,6 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
     }
     if (upstream.response.statusCode === 403 && round === 0) {
       errorText = await readUpstreamText(upstream.response)
-      // A cached policy CPA no longer holds (core restarted): register a new one once.
       if (errorText.includes('nexus_group_policy_invalid')) { invalidateCpaGroupPolicy(policyInput); errorText = undefined; continue }
     }
     break
@@ -320,29 +324,24 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
   const status = upstream.response.statusCode || 502
   if (status >= 400 && (!last || errorText !== undefined || status === 413)) {
     const text = errorText ?? await readUpstreamText(upstream.response)
-    if (status === 413 && await shrinkAfterTooLarge(request)) {
-      record(status, `请求体过大，缩小图片后重试（最长边 ${request.images!.maxEdge}px）`)
-      return 'retry'
-    }
+    if (status === 413 && await shrinkAfterTooLarge(request)) { record(status, `请求体过大，缩小图片后重试（最长边 ${request.images!.maxEdge}px）`); return 'retry' }
     if (!last && isFailoverResponse(status, text)) { record(status, errorMessageFrom(text)); return 'next' }
     if (status === 413) {
-      // Usually an nginx in front of the provider: explain instead of relaying its HTML page.
       const message = tooLargeMessage(body, request.images)
       fail(event, request.logProtocol, 413, message, 'request_too_large')
-      await logRequest(request, { status, startedAt, failures, error: message, body, attempt, presetIds, devin, responseBody: parseLogBody(text) })
+      await logRequest(request, { status, startedAt, failures, error: message, body, cpaAttempt: attempt, presetIds, devin, responseBody: parseLogBody(text) })
       return 'done'
     }
-    // A client error that another source would reject as well, or the last failure: return it as is.
     const res = event.node.res
     res.statusCode = status
     res.setHeader('content-type', String(upstream.response.headers['content-type'] || 'application/json; charset=utf-8'))
     res.end(Buffer.from(redactModelResponseBody(Buffer.from(text), status)))
-    await logRequest(request, { status, startedAt, failures, error: errorMessageFrom(text), body, attempt, presetIds, devin, responseBody: parseLogBody(text) })
+    await logRequest(request, { status, startedAt, failures, error: errorMessageFrom(text), body, cpaAttempt: attempt, presetIds, devin, responseBody: parseLogBody(text) })
     return 'done'
   }
   if (presetIds.length) event.node.res.setHeader('x-nexus-preset-id', presetIds.join(','))
   else event.node.res.removeHeader('x-nexus-preset-id')
-  if (protocol) event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
+  if (request.protocol) event.node.res.setHeader(BILLING_USAGE_POLICY_HEADER, BILLING_USAGE_POLICY)
   const usageObserver = new BillingUsageObserver()
   const capture = new ResponseCapture()
   let piped: PipeResult | undefined
@@ -350,7 +349,7 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
     piped = await pipeCpaResponse(event, upstream, { usageObserver, capture, timeoutMs })
   } finally {
     await logRequest(request, {
-      status: piped?.status ?? status, startedAt, failures, body, attempt, presetIds, devin, piped, usage: usageObserver.value(),
+      status: piped?.status ?? status, startedAt, failures, body, cpaAttempt: attempt, presetIds, devin, piped, usage: usageObserver.value(),
       error: piped ? piped.outcome.errorMessage : 'CPA response interrupted',
       responseBody: capture.value(piped?.streaming ?? false), responseTruncated: capture.truncated,
     })
@@ -373,7 +372,6 @@ function parseLogBody(text: string): unknown {
   try { return JSON.parse(text) } catch { return text ? { format: 'text', raw: text, truncated: false } : null }
 }
 
-/** Map CPA's selected auth index back to the Nexus source that owns it. */
 async function sourceForAuthIndex(authIndex: string | null, offers: CpaGroupOffer[] | undefined): Promise<string | null> {
   if (!authIndex) return null
   try {
@@ -385,23 +383,36 @@ async function sourceForAuthIndex(authIndex: string | null, offers: CpaGroupOffe
 
 async function logRequest(request: ModelRequest, input: {
   status: number; startedAt: number; failures: AttemptRecord[]; body: JsonObject; error?: string | null
-  attempt?: CpaRouteAttempt; presetIds?: string[]; devin?: { level: string; source: string; removed: string[] }
+  cpaAttempt?: CpaRouteAttempt; poolAttempt?: PoolRouteAttempt; presetIds?: string[]; devin?: { level: string; source: string; removed: string[] }
   piped?: PipeResult; usage?: Record<string, unknown> | null; responseBody?: unknown; responseTruncated?: boolean
 }) {
   try {
-    const offers = input.piped?.authIndex ? await listCpaGroupOffers(request.groupIds).catch(() => undefined) : undefined
-    const sourceId = await sourceForAuthIndex(input.piped?.authIndex ?? null, offers)
+    const pool = input.poolAttempt
+    const moduleId = pool ? pool.moduleId : 'cpa'
+    let sourceId: string | null = null
+    let usageSource: string | undefined
+    let usageDetail: Record<string, unknown> | undefined
+    if (pool) {
+      const trace = await readBridgeTrace(request.requestId!).catch(() => null)
+      sourceId = trace?.accountId || null
+      usageSource = trace?.usageSource
+      usageDetail = trace?.usageDetail
+    } else {
+      const offers = input.piped?.authIndex ? await listCpaGroupOffers(request.groupIds).catch(() => undefined) : undefined
+      sourceId = await sourceForAuthIndex(input.piped?.authIndex ?? null, offers)
+    }
     const status = input.piped ? input.piped.outcome.logStatus(input.piped.status) : 'error'
     await insertRequestLog({
-      keyId: request.key.id, accountId: null, moduleId: 'cpa', sourceId,
+      keyId: request.key.id, moduleId, sourceId,
       model: request.model, protocol: request.logProtocol,
       sessionId: typeof request.body.session_id === 'string' ? request.body.session_id : null,
       status, httpStatus: input.status, durationMs: Date.now() - input.startedAt, streaming: !!input.piped?.streaming,
       usage: {
         ...(input.usage || {}),
         nexus: {
-          moduleId: 'cpa', groupIds: [...request.groupIds], strategy: request.strategy,
-          ...(input.attempt ? { groupId: input.attempt.groupId, nativeModel: input.attempt.nativeModel } : {}),
+          moduleId, groupIds: [...request.groupIds], strategy: request.strategy,
+          ...(input.cpaAttempt ? { groupId: input.cpaAttempt.groupId, nativeModel: input.cpaAttempt.nativeModel } : {}),
+          ...(pool ? { groupId: pool.groupId, nativeModel: pool.nativeModel, ...(usageSource ? { usageSource } : {}), ...(usageDetail ? { usageDetail } : {}) } : {}),
           presetIds: input.presetIds || [],
           ...(input.devin ? { devin: input.devin } : {}),
           ...(input.piped?.authIndex ? { authIndex: input.piped.authIndex } : {}),
@@ -417,10 +428,6 @@ async function logRequest(request: ModelRequest, input: {
   }
 }
 
-/**
- * Requests without a JSON model field (multipart uploads, job polling): CPA
- * resolves the model; the policy still limits it to the key's own sources.
- */
 async function forwardUnscoped(event: H3Event, endpoint: ParsedEndpoint, key: AuthenticatedModelKey, groupIds: string[], settings: SystemSettings, body?: JsonObject) {
   await requireModule('cpa')
   const clientKey = process.env.CPA_CLIENT_KEY?.trim()

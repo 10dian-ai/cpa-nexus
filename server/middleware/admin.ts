@@ -3,14 +3,13 @@ import { requireAdmin, requireServiceKey } from '../lib/auth'
 export default defineEventHandler(async event => {
   const path = getRequestURL(event).pathname
   if (!path.startsWith('/api/')) return
-  // The bundled Phosphor icons are public static assets, including on the login
-  // page. SSR icon requests do not have an administrator session.
+  // Bundled Phosphor icons are public static assets, even on the login page.
   if (['GET', 'HEAD'].includes(event.method) && ['/api/_nuxt_icon/ph', '/api/_nuxt_icon/ph.json'].includes(path)) return
   setHeader(event, 'Cache-Control', 'no-store')
-  if (path.startsWith('/api/external/')) {
-    await requireServiceKey(event)
-    return
-  }
+  // Module bridge callbacks authenticate themselves (bridge secret + signed route headers).
+  if (/^\/api\/modules\/[a-z0-9-]+\/bridge(?:\/|$)/.test(path)) return
+  // External service API: a scoped service key, with its own rate limits.
+  if (path.startsWith('/api/external/')) { await requireServiceKey(event); return }
   if (!['GET', 'HEAD', 'OPTIONS'].includes(event.method)) {
     const origin = getHeader(event, 'origin')
     if (origin) {

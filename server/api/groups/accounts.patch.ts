@@ -5,17 +5,21 @@ import { getDb } from '../../lib/db'
 import { groupIdsSchema, setAccountGroups, assertGroupIds } from '../../lib/groups'
 import { publishUpdate } from '../../lib/events'
 import { validateCpaSource, prepareCpaGroupSource, invalidateCpaGroupBindings } from '../../lib/cpa/group-routing'
+import { accountExists } from '../../modules/logicc/store'
+import { reconcileModuleBridge } from '../../modules/bridge-maintenance'
+import { GROUP_MODULE_IDS, type GroupModuleId } from '../../../shared/groups'
 export default defineEventHandler(async event => {
-  const body = validate(z.object({ moduleId: z.enum(['commandcode','cpa']), sourceType: z.string().min(1), sourceId: z.string().min(1), groupIds: groupIdsSchema }).strict(), await readBody(event))
+  const body = validate(z.object({ moduleId: z.enum(GROUP_MODULE_IDS as [GroupModuleId, ...GroupModuleId[]]), sourceType: z.string().min(1), sourceId: z.string().min(1), groupIds: groupIdsSchema }).strict(), await readBody(event))
   if (body.sourceType !== body.moduleId) throw createError({ statusCode: 400, message: '来源类型与模块不一致' })
-  if (body.moduleId === 'commandcode') {
+  if (body.moduleId === 'logicc') {
     validate(z.string().uuid(), body.sourceId)
     await getDb().begin(async tx => {
-      const rows = await tx`SELECT id FROM managed_accounts WHERE id=${body.sourceId} FOR UPDATE`
-      if (!rows.length) throw createError({ statusCode: 404, message: '账号不存在' })
-      await setAccountGroups(tx, body.moduleId, body.sourceId, body.groupIds)
+      if (!await accountExists(body.sourceId, tx)) throw createError({ statusCode: 404, message: '账号不存在' })
+      await setAccountGroups(tx, 'logicc', body.sourceId, body.groupIds)
     })
-  } else if (body.moduleId === 'cpa') {
+    // A group change can change which models the bridge must advertise.
+    void reconcileModuleBridge('logicc').catch(() => {})
+  } else {
     const source = await validateCpaSource(body.sourceId)
     if (!source) throw createError({ statusCode: 404, message: 'CPA 账号来源不存在' })
     if (source.routingSupported === false) throw createError({ statusCode: 409, message: source.message || '此 CPA 账号暂不支持独立分组路由' })

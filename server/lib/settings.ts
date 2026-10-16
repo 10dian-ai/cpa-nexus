@@ -1,18 +1,11 @@
 import { z } from 'zod'
 import { getDb } from './db'
 import { DEFAULT_SETTINGS, type SystemSettings } from '../../shared/types'
-import { MAX_REFRESH_CONCURRENCY, MAX_REFRESH_RATE_PER_SECOND } from '../../shared/concurrency'
 
 import { UPSTREAM_TIMEOUT_LIMITS } from './timeouts'
 
 const settingsShape = {
-  activeRefreshSeconds: z.number().int().min(15).max(3600),
-  idleRefreshSeconds: z.number().int().min(60).max(86400),
-  activeWindowSeconds: z.number().int().min(60).max(86400),
-  refreshConcurrency: z.number().int().min(1).max(MAX_REFRESH_CONCURRENCY),
-  refreshRatePerSecond: z.number().int().min(1).max(MAX_REFRESH_RATE_PER_SECOND),
   logRetentionDays: z.number().int().min(1).max(365),
-  affinityTtlSeconds: z.number().int().min(60).max(604800),
   // Retain the field for older clients; zero means no imposed body-size cap.
   maxRequestBodyMb: z.number().int().nonnegative().transform(() => 0),
   /** Longest silence allowed from an upstream model before the request is aborted. */
@@ -28,10 +21,9 @@ const settingsShape = {
 }
 /** API input: unknown fields are rejected. */
 export const settingsSchema = z.object(settingsShape).strict()
-/** Stored rows may still carry retired fields (e.g. concurrency caps); they are dropped. */
+/** Stored rows may still carry retired fields (former CommandCode scheduling); they are dropped. */
 const storedSettingsSchema = z.object(settingsShape).strip()
 let cached: { value: SystemSettings; until: number } | undefined
-const ACCOUNT_CONCURRENCY_LOCK = 71645202
 
 export async function getSettings(): Promise<SystemSettings> {
   if (cached && cached.until > Date.now()) return { ...cached.value }

@@ -7,7 +7,7 @@ function loadLegacyKeys(event: Event) {
 </script>
 
 <template>
-  <AppPageHeader title="API Key" description="模型 Key 按所选分组调用各来源的模型，统一使用 /v1 入口。外调管理 Key 用于 CommandCode 的账号管理接口。" />
+  <AppPageHeader title="API Key" description="模型 Key 按所选分组调用各来源的模型，统一使用 /v1 入口。外调服务 Key 用于远程给 CPA 内核和 Logicc 等模块加号。" />
   <div class="form-stack">
     <KeyManager />
     <RoutingSettings />

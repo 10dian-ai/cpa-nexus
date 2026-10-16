@@ -1,6 +1,7 @@
 export const DEFAULT_GROUP_ID = '00000000-0000-4000-8000-000000000001'
 /** Source module that owns an account/integration binding. */
-export type GroupModuleId = 'commandcode' | 'cpa'
+export type GroupModuleId = 'cpa' | 'logicc'
+export const GROUP_MODULE_IDS: readonly GroupModuleId[] = ['cpa', 'logicc']
 export interface GroupBinding { groupIds: string[]; groupNames: string[] }
 export interface GroupView {
   id: string; name: string; description: string; enabled: boolean; isDefault: boolean

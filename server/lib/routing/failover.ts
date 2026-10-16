@@ -11,9 +11,11 @@ export function isFailoverStatus(status: number): boolean {
   return ALWAYS.has(status)
 }
 
-/** A 400 is retried elsewhere only when it means "this source does not have the model". */
+/** A 400 is retried elsewhere only when it means "this source does not have the model"; a module may also decline explicitly. */
 export function isFailoverResponse(status: number, body: string): boolean {
   if (isFailoverStatus(status)) return true
+  // A pool module declining this kind of request (images, structured output, tools by policy).
+  if (body.includes('nexus_source_unsupported')) return true
   return status === 400 && /model_not_found|unknown provider for model|model .*not (?:found|supported)|unsupported model/i.test(body)
 }
 

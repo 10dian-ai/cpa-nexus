@@ -93,10 +93,12 @@ describe('route planning', () => {
     expect(first).toEqual(['a', 'b', 'c']); expect(second).toEqual(['b', 'c', 'a'])
   })
 
-  it('adds the CommandCode pool once, at the first group that contains it', () => {
+  it('tries a pool module in each of its groups, before that group\'s CPA sources', () => {
     const perGroup = new Map([['b', [{ kind: 'cpa', groupId: 'b' }]]]) as never
-    const attempts = sequenceAttempts({ groupIds: ['a', 'b'], strategy: 'failover', rotationKey: 'k', perGroup, commandcodeGroups: new Set(['a', 'b']) })
-    expect(attempts.map(item => `${item.kind}:${item.groupId}`)).toEqual(['commandcode:a', 'cpa:b'])
+    const poolGroups = new Map([['logicc', new Map([['a', 'claude-x'], ['b', 'claude-x']])]]) as never
+    const attempts = sequenceAttempts({ groupIds: ['a', 'b', 'c'], strategy: 'failover', rotationKey: 'k', perGroup, poolGroups })
+    expect(attempts.map(item => `${item.kind}:${item.groupId}`)).toEqual(['pool:a', 'pool:b', 'cpa:b'])
+    expect(attempts[0]).toMatchObject({ moduleId: 'logicc', nativeModel: 'claude-x' })
   })
 })
 
@@ -106,6 +108,8 @@ describe('failover and stream outcome', () => {
     expect(isFailoverResponse(400, '{"error":{"message":"unknown provider for model x"}}')).toBe(true)
     expect(isFailoverResponse(400, '{"error":{"message":"messages: field required"}}')).toBe(false)
     expect(isFailoverResponse(422, '')).toBe(false)
+    // A pool module that declines a kind of request hands it to the next source.
+    expect(isFailoverResponse(422, '{"error":{"message":"Logicc 不支持 image_url","code":"nexus_source_unsupported"}}')).toBe(true)
     expect(errorMessageFrom('{"error":{"message":"permission_denied: an internal error occurred"}}')).toBe('permission_denied: an internal error occurred')
   })
 

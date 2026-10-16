@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
 import { redactSensitiveText } from '../../shared/log-privacy'
 export interface RequestLogInput {
-  id?: string; keyId: string | null; accountId: string | null; model: string
+  id?: string; keyId: string | null; model: string
   moduleId?: string | null; sourceId?: string | null
   /** Endpoint path below /v1, e.g. `chat/completions` or `gemini:generateContent`. */
   protocol: string; sessionId: string | null
@@ -36,18 +36,18 @@ export async function insertRequestLog(input: RequestLogInput) {
     } : redacted) as any)
   }
   const id = input.id ?? randomUUID()
-  const write = async (keyId: string | null, accountId: string | null) => {
-    await db`INSERT INTO request_logs(id,key_id,account_id,module_id,source_id,model,protocol,session_id,status,http_status,duration_ms,streaming,usage,error_message,request_body,response_body,response_truncated)
-      VALUES(${id},(SELECT id FROM gateway_keys WHERE id=${keyId}),(SELECT id FROM managed_accounts WHERE id=${accountId}),
+  const write = async (keyId: string | null) => {
+    await db`INSERT INTO request_logs(id,key_id,module_id,source_id,model,protocol,session_id,status,http_status,duration_ms,streaming,usage,error_message,request_body,response_body,response_truncated)
+      VALUES(${id},(SELECT id FROM gateway_keys WHERE id=${keyId}),
       ${input.moduleId ?? null},${input.sourceId ?? null},${redactSensitiveText(input.model)},${input.protocol},${input.sessionId ? redactSensitiveText(input.sessionId) : input.sessionId},${input.status},${input.httpStatus},${input.durationMs},${input.streaming},
       ${json(input.usage)}::jsonb,${input.errorMessage ? redactSensitiveText(input.errorMessage) : input.errorMessage},${json(input.requestBody)}::jsonb,${json(input.responseBody)}::jsonb,${input.responseTruncated})
       ON CONFLICT(id) DO NOTHING`
   }
-  try { await write(input.keyId, input.accountId) }
+  try { await write(input.keyId) }
   catch (error) {
-    // A referenced account/key can disappear while a request finishes. Keep the payload.
+    // A referenced key can disappear while a request finishes. Keep the payload.
     if ((error as { code?: string }).code !== '23503') throw error
-    await write(null, null)
+    await write(null)
   }
   return { id }
 }

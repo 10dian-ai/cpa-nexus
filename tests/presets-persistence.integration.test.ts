@@ -46,20 +46,20 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
     const modulePreset = await createPreset({ name: 'Module', sourceJson: document, variables: { char: 'Module' } })
     const accountPreset = await createPreset({ name: 'Account', sourceJson: document, variables: { char: 'Account' } })
     const accountId = randomUUID()
-    await sql`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext) VALUES(${accountId},${randomUUID()},'test-only-ciphertext')`
-    await setPresetBinding({ moduleId: 'commandcode', mode: 'preset', presetId: modulePreset.id })
-    expect(await resolvePresetRoute('commandcode', accountId)).toBeNull()
+    await sql`INSERT INTO logicc_accounts(id,session_id,client_cookie_ciphertext) VALUES(${accountId},${'sess_' + randomUUID().replaceAll('-', '')},'test-only-ciphertext')`
+    await setPresetBinding({ moduleId: 'logicc', mode: 'preset', presetId: modulePreset.id })
+    expect(await resolvePresetRoute('logicc', accountId)).toBeNull()
     await sql`UPDATE platform_modules SET enabled=true WHERE id='presets'`; resetPresetRouteCache()
-    expect((await resolvePresetRoute('commandcode', accountId))?.id).toBe(modulePreset.id)
-    await setPresetBinding({ moduleId: 'commandcode', accountId, mode: 'preset', presetId: accountPreset.id })
-    expect((await resolvePresetRoute('commandcode', accountId))?.variables.char).toBe('Account')
-    await setPresetBinding({ moduleId: 'commandcode', accountId, mode: 'bypass' })
-    expect(await resolvePresetRoute('commandcode', accountId)).toBeNull()
+    expect((await resolvePresetRoute('logicc', accountId))?.id).toBe(modulePreset.id)
+    await setPresetBinding({ moduleId: 'logicc', accountId, mode: 'preset', presetId: accountPreset.id })
+    expect((await resolvePresetRoute('logicc', accountId))?.variables.char).toBe('Account')
+    await setPresetBinding({ moduleId: 'logicc', accountId, mode: 'bypass' })
+    expect(await resolvePresetRoute('logicc', accountId)).toBeNull()
     expect((await listPresetBindings()).find(binding => binding.accountId === accountId)).toMatchObject({ mode: 'bypass', presetId: null })
-    await sql`DELETE FROM managed_accounts WHERE id=${accountId}`
-    await setPresetBinding({ moduleId: 'commandcode', accountId, mode: 'inherit' })
-    expect((await resolvePresetRoute('commandcode', accountId))?.id).toBe(modulePreset.id)
-    await expect(setPresetBinding({ moduleId: 'commandcode', accountId, mode: 'bypass' })).rejects.toMatchObject({ statusCode: 404 })
+    await sql`DELETE FROM logicc_accounts WHERE id=${accountId}`
+    await setPresetBinding({ moduleId: 'logicc', accountId, mode: 'inherit' })
+    expect((await resolvePresetRoute('logicc', accountId))?.id).toBe(modulePreset.id)
+    await expect(setPresetBinding({ moduleId: 'logicc', accountId, mode: 'bypass' })).rejects.toMatchObject({ statusCode: 404 })
   })
 
   it('protects bound presets in both API mutations and foreign-key enforcement', async () => {
@@ -89,7 +89,7 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
   it('persists key-specific routing, follows a changed module and cascades revoked keys', async () => {
     const keyA = randomUUID(), keyB = randomUUID()
     for (const [id, name] of [[keyA, 'KA'], [keyB, 'KB']]) {
-      await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${id!},${name!},'ccm_test',${randomUUID()},'commandcode')`
+      await sql`INSERT INTO gateway_keys(id,name,prefix,secret_hash,module_id) VALUES(${id!},${name!},'ccm_test',${randomUUID()},'auto')`
     }
     const preset = await createPreset({ name: 'Only KB', sourceJson: document, variables: { char: 'KB' } })
     await setKeyPresetBinding({ keyId: keyB, mode: 'preset', presetId: preset.id })
@@ -108,13 +108,13 @@ describe.skipIf(!databaseUrl)('real PostgreSQL preset persistence and routing co
 
   it('archives previous account choices without leaving an uneditable preset deletion constraint', async () => {
     const preset = await createPreset({ name: 'Legacy archived', sourceJson: document, variables: { char: 'Legacy' } })
-    await setPresetBinding({ moduleId: 'commandcode', mode: 'preset', presetId: preset.id })
+    await setPresetBinding({ moduleId: 'logicc', mode: 'preset', presetId: preset.id })
     await sql`DELETE FROM schema_migrations WHERE name='010_key_preset_bindings.sql'`
     await migrate(sql)
     expect(await listPresetBindings()).toEqual([])
-    expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='commandcode' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
+    expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='logicc' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
     await deletePreset(preset.id)
-    expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='commandcode' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
+    expect((await sql`SELECT preset_id FROM nexus_legacy_preset_bindings WHERE module_id='logicc' AND account_id=''`)[0]?.preset_id).toBe(preset.id)
   })
 
   it('retains preset routing on cross-module group keys', async () => {

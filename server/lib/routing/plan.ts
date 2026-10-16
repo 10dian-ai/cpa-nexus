@@ -1,4 +1,5 @@
 import { validateCpaBaseUrl, CPA_DEFAULT_URL } from '../cpa/client'
+import type { PoolModuleId } from '../../../shared/modules'
 import { listCpaGroupOffers, type CpaGroupOffer } from '../cpa/group-routing'
 import type { KeyGroupStrategy } from '../groups'
 import { parseRequestedModel, publicModelName, splitLevelSuffix, stripProviderNamespace, type RequestedModel, type ThinkingLevel } from './model-names'
@@ -104,25 +105,25 @@ export async function planCpaRoute(input: { model: string; groupIds: string[] })
   return { requested, perGroup, offers }
 }
 
-export interface CommandcodeRouteAttempt { kind: 'commandcode'; groupId: string }
-export type RouteAttempt = CpaRouteAttempt | CommandcodeRouteAttempt
+/** An attempt against one account-pool module (Logicc …) within a call group. */
+export interface PoolRouteAttempt { kind: 'pool'; moduleId: PoolModuleId; groupId: string; nativeModel: string }
+export type RouteAttempt = CpaRouteAttempt | PoolRouteAttempt
 
 /**
  * Final try order. Groups follow the key's order (failover) or rotate per
- * request (mixed); inside a group the CommandCode pool comes first, then CPA
- * sources from the best name match to the weakest.
+ * request (mixed); inside a group a pool-module source (its bridge) comes
+ * before the CPA credential sources, best name match to weakest. Each pool
+ * module is tried once per group.
  */
 export function sequenceAttempts(input: {
   groupIds: string[]; strategy: KeyGroupStrategy; rotationKey: string
-  perGroup: Map<string, CpaRouteAttempt[]>; commandcodeGroups?: Set<string>
+  perGroup: Map<string, CpaRouteAttempt[]>; poolGroups?: Map<PoolModuleId, Map<string, string>>
 }): RouteAttempt[] {
-  const usable = input.groupIds.filter(id => input.perGroup.has(id) || input.commandcodeGroups?.has(id))
+  const poolGroupSet = (groupId: string) => [...(input.poolGroups?.entries() ?? [])].filter(([, groups]) => groups.has(groupId))
+  const usable = input.groupIds.filter(id => input.perGroup.has(id) || poolGroupSet(id).length)
   const attempts: RouteAttempt[] = []
-  let commandcodeAdded = false
   for (const groupId of orderGroups(usable, input.strategy, input.rotationKey)) {
-    // The CommandCode gateway itself chooses among all of the key's accounts,
-    // so the pool is tried once, at the first group that contains it.
-    if (!commandcodeAdded && input.commandcodeGroups?.has(groupId)) { attempts.push({ kind: 'commandcode', groupId }); commandcodeAdded = true }
+    for (const [moduleId, groups] of poolGroupSet(groupId)) attempts.push({ kind: 'pool', moduleId, groupId, nativeModel: groups.get(groupId)! })
     attempts.push(...input.perGroup.get(groupId) || [])
   }
   return attempts

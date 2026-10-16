@@ -1,30 +1,33 @@
 import type { DashboardView } from '../../shared/types'
 import { getDb } from './db'
 import { getRedis } from './redis'
-import { commandcodeProviderHealthy } from './commandcode-health'
-import { summarizeDashboardQuota, type DashboardQuotaAccount } from './dashboard-quota'
+import { createCpaClient } from './cpa/client'
+import { findModule } from '../../shared/modules'
+import { summary as logiccSummary } from '../modules/logicc/store'
+import { LOGICC_POOL_ID } from '../modules/logicc/config'
+import { readInflightCounts } from './pool/scheduler'
+import { listCpaGroupSources } from './cpa/group-routing'
 
+/** Platform overview: each source module's pool, the last 24 hours of requests, and service health. */
 export async function getDashboardView(): Promise<DashboardView> {
   const db = getDb(); const redis = getRedis()
-  const [accounts, quotaAccounts, requests, heartbeat, inFlight, kernel] = await Promise.all([
-    db`SELECT count(*)::int AS total,count(*) FILTER(WHERE enabled)::int AS enabled,
-      count(*) FILTER(WHERE enabled AND status IN ('credential_expired','sync_error'))::int AS attention,
-      count(*) FILTER(WHERE last_sync_at IS NULL)::int AS pending,max(last_sync_at) AS last_sync_at FROM managed_accounts`,
-    db<DashboardQuotaAccount[]>`SELECT enabled,status,api_key_ciphertext IS NOT NULL AND api_key_ciphertext<>'' AS has_api_key,snapshot
-      FROM managed_accounts WHERE enabled AND status='ready' AND api_key_ciphertext IS NOT NULL AND api_key_ciphertext<>''`,
-    db`SELECT count(*)::int AS total,count(*) FILTER(WHERE status='success')::int AS success,count(*) FILTER(WHERE status='error')::int AS failed FROM request_logs
-      WHERE module_id IS DISTINCT FROM 'cpa'`,
+  const [logicc, logiccInFlight, cpaSources, requests, heartbeat, kernel] = await Promise.all([
+    logiccSummary().catch(() => null),
+    readInflightCounts(redis, LOGICC_POOL_ID, []).then(value => value.total).catch(() => 0),
+    listCpaGroupSources().catch(() => null),
+    db`SELECT count(*)::int AS total,count(*) FILTER(WHERE status='success')::int AS success,count(*) FILTER(WHERE status='error')::int AS failed
+      FROM request_logs WHERE created_at > now() - interval '24 hours'`,
     redis.get('ccm:worker:heartbeat'),
-    redis.zcount('ccm:gateway:leases:global', Date.now(), '+inf'),
-    commandcodeProviderHealthy(),
+    createCpaClient().status().then(status => status.connected).catch(() => false),
   ])
-  const a = accounts[0]!; const r = requests[0]!
-  const quota = summarizeDashboardQuota(quotaAccounts)
+  const modules: DashboardView['modules'] = []
+  if (cpaSources) modules.push({ id: 'cpa', name: findModule('cpa')!.name, accounts: cpaSources.length,
+    ready: cpaSources.filter(source => source.enabled).length, needsAttention: cpaSources.filter(source => source.enabled && source.routingSupported === false).length, inFlight: 0 })
+  if (logicc) modules.push({ id: 'logicc', name: findModule('logicc')!.name, accounts: logicc.total, ready: logicc.ready, needsAttention: logicc.needsAttention, inFlight: logiccInFlight })
+  const r = requests[0]!
   return {
-    counts: { total: a.total, enabled: a.enabled, ready: quota.accountCount, needsAttention: a.attention, notSynced: a.pending },
-    quota,
-    requests: { total: r.total, success: r.success, failed: r.failed, inFlight },
+    modules,
+    requests: { total: r.total, success: r.success, failed: r.failed, window: '24h' },
     services: { database: true, redis: true, workerLastSeen: heartbeat, kernel },
-    lastSyncAt: a.last_sync_at ? new Date(a.last_sync_at).toISOString() : null,
   }
 }

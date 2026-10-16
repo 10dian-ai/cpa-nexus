@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { privacyHeaders, privateSessionId } from '../server/lib/privacy-headers'
-import { makeInternalBridgeHeaders, makeProviderHeaders } from '../server/lib/gateway/transport'
+import { makeInternalBridgeHeaders, makeProviderHeaders } from '../server/lib/http/transport'
 
 describe('default OpenCode identity at the supplier boundary', () => {
   const secret = 'test-only-private-session-secret'

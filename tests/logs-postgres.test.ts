@@ -67,13 +67,11 @@ describe.skipIf(!databaseUrl)('log list over HTTP and PostgreSQL', () => {
     expect([...first.items, ...second.items].map((item: { id: string }) => item.id)).toEqual(ids.reverse())
   })
   it('stores redacted JSON payloads and preserves completed requests after references are deleted', async () => {
-    const accountId = randomUUID(), keyId = randomUUID(), id = randomUUID()
-    await sql!`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext,label)
-      VALUES(${accountId},${randomUUID()},'encrypted-test-cookie','log account')`
+    const sourceId = randomUUID(), keyId = randomUUID(), id = randomUUID()
     await sql!`INSERT INTO gateway_keys(id,name,prefix,secret_hash)
       VALUES(${keyId},'log client','test-prefix',${randomUUID()})`
     const input: RequestLogInput = {
-      id, keyId, accountId, model: 'test/log-payload', protocol: 'chat/completions', sessionId: 'test-session',
+      id, keyId, moduleId: 'logicc', sourceId, model: 'test/log-payload', protocol: 'chat/completions', sessionId: 'test-session',
       status: 'success', httpStatus: 200, durationMs: 15, streaming: false, usage: { total_tokens: 12 },
       errorMessage: null, requestBody: { messages: [{ role: 'user', content: 'hello' }], apiKey: 'test-secret' },
       responseBody: { choices: [{ message: { content: 'world' } }] }, responseTruncated: false,
@@ -83,14 +81,15 @@ describe.skipIf(!databaseUrl)('log list over HTTP and PostgreSQL', () => {
     expect(row.request_body).toEqual({ messages: [{ role: 'user', content: 'hello' }], apiKey: '[redacted]' })
     expect(row.response_body).toEqual(input.responseBody)
     expect(row.usage).toEqual({ total_tokens: 12 })
-    expect(row.account_id).toBe(accountId)
+    expect(row.module_id).toBe('logicc')
+    expect(row.source_id).toBe(sourceId)
     expect(row.key_id).toBe(keyId)
-    await sql!`DELETE FROM managed_accounts WHERE id=${accountId}`
     await sql!`DELETE FROM gateway_keys WHERE id=${keyId}`
     const lateId = randomUUID()
     await expect(insertRequestLog({ ...input, id: lateId })).resolves.toEqual({ id: lateId })
     const late = (await sql!`SELECT * FROM request_logs WHERE id=${lateId}`)[0]!
-    expect(late.account_id).toBeNull()
+    // A module account is referenced by ID only, so deleting accounts never loses logs.
+    expect(late.source_id).toBe(sourceId)
     expect(late.key_id).toBeNull()
     expect(late.response_body).toEqual(input.responseBody)
     expect(late.request_body.messages).toEqual([{ role: 'user', content: 'hello' }])
@@ -107,7 +106,7 @@ describe.skipIf(!databaseUrl)('log list over HTTP and PostgreSQL', () => {
     const requestBody = { ...value, authorization: 'private-test-key' }
     const redacted = { ...value, authorization: '[redacted]' }
     const input: RequestLogInput = {
-      keyId: null, accountId: null, model: 'test/unicode-log', protocol: 'chat/completions', sessionId: null,
+      keyId: null, model: 'test/unicode-log', protocol: 'chat/completions', sessionId: null,
       status: 'success', httpStatus: 200, durationMs: 1, streaming: false, usage: { total_tokens: 3 },
       errorMessage: null, requestBody, responseBody: value, responseTruncated: false,
     }
@@ -124,7 +123,7 @@ describe.skipIf(!databaseUrl)('log list over HTTP and PostgreSQL', () => {
   it('keeps valid Unicode pairs and literal JSON escape text as ordinary structured JSON', async () => {
     const value = { content: 'Emoji \ud83d\ude00 and literal \\u0000', ['key\ud83d\ude00']: 'value' }
     const { id } = await insertRequestLog({
-      keyId: null, accountId: null, model: 'test/unicode-log', protocol: 'chat/completions', sessionId: null,
+      keyId: null, model: 'test/unicode-log', protocol: 'chat/completions', sessionId: null,
       status: 'success', httpStatus: 200, durationMs: 1, streaming: false, usage: { total_tokens: 1 },
       errorMessage: null, requestBody: value, responseBody: value, responseTruncated: false,
     })

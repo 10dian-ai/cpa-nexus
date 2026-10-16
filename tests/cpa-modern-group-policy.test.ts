@@ -8,21 +8,19 @@ vi.mock('../server/lib/cpa/preset-routing', () => ({ resetCpaPresetAccountRoutes
 vi.mock('../server/lib/cpa/nexus-capabilities', () => ({ getNexusCpaCapabilities: async () => fixture.capabilities, resetNexusCpaCapabilities: () => {} }))
 vi.mock('../server/lib/db', () => ({ getDb: () => { const sql: any = async () => []; sql.begin = async (cb: any) => cb(sql); return sql } }))
 vi.mock('../server/lib/groups', () => ({ ensureAccountGroups: async (_sql: unknown, _module: unknown, id: string) => { if (!fixture.bindings.has(id)) fixture.bindings.set(id, { groupIds: ['default'], groupNames: ['default'] }) }, accountGroupBindings: async () => fixture.bindings }))
-import { listCpaGroupModels, listCpaGroupSources, resetCpaGroupRouting, resolveCpaGroupPolicy, resolveCommandcodeBridgePolicy } from '../server/lib/cpa/group-routing'
+import { listCpaGroupModels, listCpaGroupSources, resetCpaGroupRouting, resolveCpaGroupPolicy, resolvePoolBridgePolicy } from '../server/lib/cpa/group-routing'
 const index = (family: string, base: string, key: string) => createHash('sha256').update((family === 'openai-compatibility' ? family : family + '-api-key') + ':' + base + '+' + key).digest('hex').slice(0, 16)
 const response = (value: unknown) => ({ status: 200, body: Buffer.from(JSON.stringify(value)) })
 beforeEach(() => {
   fixture.bindings.clear(); fixture.credentials = []
   fixture.config = { codex: [{ name: 'private', 'base-url': 'http://local-private', keys: [{ 'api-key': 'synthetic-private-key' }, { 'api-key': 'synthetic-private-key' }] }],
-    'openai-compatibility': [{ name: 'nexus-commandcode', 'base-url': 'http://local-bridge/v1', keys: [{ 'api-key': 'synthetic-bridge-key' }] }],
-    claude: [{ name: 'nexus-commandcode-messages', 'base-url': 'http://local-bridge', keys: [{ 'api-key': 'synthetic-bridge-key' }] }] }
+    'openai-compatibility': [{ name: 'nexus-logicc', 'base-url': 'http://local-bridge/api/modules/logicc/bridge/v1', keys: [{ 'api-key': 'synthetic-bridge-key' }] }] }
   const privateIndex = index('codex', 'http://local-private', 'synthetic-private-key')
   fixture.bindings.set('config:' + privateIndex, { groupIds: ['private'], groupNames: ['private'] })
   fixture.capabilities = { schemaVersion: 1, groupPolicy: { enabled: true, protocol: 'opaque-hmac-sha256-v1' }, plugins: [], runtimeAccounts: [
     { id: 'actual-private-a', authIndex: privateIndex, fileName: '', provider: 'codex', source: 'config', sourcePath: '', disabled: false },
     { id: 'actual-private-b', authIndex: privateIndex, fileName: '', provider: 'codex', source: 'config', sourcePath: '', disabled: false },
-    { id: 'actual-managed-chat', authIndex: index('openai-compatibility', 'http://local-bridge/v1', 'synthetic-bridge-key'), fileName: '', provider: 'nexus-commandcode', source: 'config', sourcePath: '', disabled: false },
-    { id: 'actual-managed-messages', authIndex: index('claude', 'http://local-bridge', 'synthetic-bridge-key'), fileName: '', provider: 'claude', source: 'config', sourcePath: '', disabled: false },
+    { id: 'actual-managed-chat', authIndex: index('openai-compatibility', 'http://local-bridge/api/modules/logicc/bridge/v1', 'synthetic-bridge-key'), fileName: '', provider: 'nexus-logicc', source: 'config', sourcePath: '', disabled: false },
   ] }
   fixture.request.mockImplementation(async (input: any) => {
     if (input.path === 'credentials') return response({ files: fixture.credentials })
@@ -55,9 +53,11 @@ describe('modern CPA runtime source policy inventory', () => {
     expect([...fixture.bindings.keys()].some(id => id.startsWith('runtime:'))).toBe(false)
   })
   it('never exposes managed bridge credentials as another default CPA source', async () => {
-    fixture.credentials = [{ id: 'actual-managed-chat', auth_index: index('openai-compatibility', 'http://local-bridge/v1', 'synthetic-bridge-key'), source: 'memory', runtime_only: true }]
+    fixture.credentials = [{ id: 'actual-managed-chat', auth_index: index('openai-compatibility', 'http://local-bridge/api/modules/logicc/bridge/v1', 'synthetic-bridge-key'), source: 'memory', runtime_only: true }]
     expect((await listCpaGroupSources()).some(source => source.sourceId.includes('managed') || source.sourceId.startsWith('runtime:'))).toBe(false)
-    expect(await resolveCommandcodeBridgePolicy('model-key')).toEqual({ allowedAuthIDs: ['actual-managed-chat', 'actual-managed-messages'], allowedPluginIDs: [] })
+    // Only the module's own kernel-owned channel is granted to its bridge requests.
+    expect(await resolvePoolBridgePolicy('nexus-logicc')).toEqual({ allowedAuthIDs: ['actual-managed-chat'], allowedPluginIDs: [] })
+    await expect(resolvePoolBridgePolicy('nexus-other')).rejects.toMatchObject({ statusCode: 503 })
   })
   it('keeps memory-reported credentials and virtual children in their physical file group', async () => {
     fixture.credentials = [{ id: 'file-runtime', auth_index: 'file-index', name: 'project-child', source: 'memory', path: '/isolated/private-file.json', provider: 'codex' }]

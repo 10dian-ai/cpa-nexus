@@ -20,9 +20,9 @@ vi.mock('../server/lib/db', () => ({
     throw new Error('Unexpected modules fixture query: ' + query)
   },
 }))
-vi.mock('../server/lib/config', () => ({ getConfig: () => ({ kernelUrl: 'http://commandcode.test:3050' }) }))
 vi.mock('../server/lib/cpa/client', () => ({ createCpaClient: () => ({ status: async () => fixture.cpa }) }))
-vi.mock('../server/lib/commandcode-health',()=>({commandcodeProviderHealthy:async()=>true}))
+vi.mock('../server/modules/registry', () => ({ poolModule: () => ({ health: async () => ({ status: 'ready', message: 'fixture pool ready' }) }) }))
+vi.mock('../server/modules/bridge-maintenance', () => ({ reconcileModuleBridge: async () => {} }))
 
 import { isModuleEnabled, listModules, resetModuleCache, setModuleEnabled } from '../server/lib/modules'
 import modulesMiddleware from '../server/middleware/modules'
@@ -38,7 +38,7 @@ describe('persistent module state and real HTTP gating', () => {
     const app = createApp()
     app.use(modulesMiddleware)
     const router = createRouter()
-    for (const path of ['/v1/chat/completions', '/v1/models', '/nexus/cpa/v1/models', '/commandcode/v1/chat/completions', '/commandcode/v1/models', '/api/accounts', '/api/accounts/actions', '/api/external/accounts', '/api/jobs/test', '/api/accounts-other']) {
+    for (const path of ['/v1/chat/completions', '/v1/models', '/nexus/cpa/v1/models', '/api/logicc/accounts', '/api/logicc/accounts/actions', '/api/logicc/settings', '/api/external/modules/logicc/accounts', '/api/jobs/test', '/api/accounts-other']) {
       router.use(path, defineEventHandler(() => ({ ok: true })))
     }
     router.patch('/api/modules/:id', updateModuleHandler)
@@ -54,23 +54,25 @@ describe('persistent module state and real HTTP gating', () => {
   })
 
   it('persists a toggle, invalidates cached state immediately, and blocks only new module work', async () => {
-    expect(await isModuleEnabled('commandcode')).toBe(true)
-    const update = await fetch(base + '/api/modules/commandcode', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"enabled":false}' })
+    expect(await isModuleEnabled('logicc')).toBe(true)
+    const update = await fetch(base + '/api/modules/logicc', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"enabled":false}' })
     expect(update.status).toBe(200)
-    expect(await update.json()).toEqual({ id: 'commandcode', enabled: false })
-    expect(fixture.states.get('commandcode')).toBe(false)
+    expect(await update.json()).toEqual({ id: 'logicc', enabled: false })
+    expect(fixture.states.get('logicc')).toBe(false)
     for (const [path, method, expected] of [
       // Unified model handlers validate the selected key's module themselves.
       ['/v1/chat/completions', 'POST', 200], ['/v1/models', 'GET', 200], ['/nexus/cpa/v1/models', 'GET', 200],
-      ['/commandcode/v1/chat/completions', 'POST', 503], ['/commandcode/v1/models', 'GET', 503],
-      ['/api/accounts', 'POST', 503], ['/api/accounts/actions', 'POST', 503], ['/api/external/accounts', 'POST', 503],
-      ['/api/accounts', 'GET', 200], ['/api/external/accounts', 'GET', 200], ['/api/jobs/test', 'GET', 200], ['/api/accounts-other', 'POST', 200],
+      // Account writes of a stopped pool module are refused; reads and settings stay available.
+      ['/api/logicc/accounts', 'POST', 503], ['/api/logicc/accounts/actions', 'POST', 503],
+      ['/api/logicc/accounts', 'GET', 200], ['/api/logicc/settings', 'PATCH', 200],
+      // The external API checks the module itself (with the key's scope) in its handler.
+      ['/api/external/modules/logicc/accounts', 'POST', 200], ['/api/jobs/test', 'GET', 200], ['/api/accounts-other', 'POST', 200],
     ] as const) {
       const response = await fetch(base + path, { method })
       expect(response.status, path + ' ' + method).toBe(expected)
       await response.arrayBuffer()
     }
-    await setModuleEnabled('commandcode', true)
+    await setModuleEnabled('logicc', true)
     const restored = await fetch(base + '/v1/chat/completions', { method: 'POST' })
     expect(restored.status).toBe(200)
     await restored.arrayBuffer()
@@ -79,7 +81,7 @@ describe('persistent module state and real HTTP gating', () => {
   it('rejects unsupported toggles and malformed payloads without mutating persisted state', async () => {
     for (const [id, payload, expected] of [
       ['cpa', { enabled: false }, 409], ['platform', { enabled: false }, 409],
-      ['missing', { enabled: true }, 404], ['commandcode', { enabled: 'false' }, 400], ['commandcode', { enabled: false, extra: true }, 400],
+      ['missing', { enabled: true }, 404], ['logicc', { enabled: 'false' }, 400], ['logicc', { enabled: false, extra: true }, 400],
     ] as const) {
       const response = await fetch(base + '/api/modules/' + id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
       expect(response.status).toBe(expected)
@@ -98,37 +100,32 @@ describe('persistent module state and real HTTP gating', () => {
     expect(await isModuleEnabled('presets')).toBe(true)
     await setModuleEnabled('presets', false)
     expect(await isModuleEnabled('presets')).toBe(false)
-    expect(await isModuleEnabled('commandcode')).toBe(true)
+    expect(await isModuleEnabled('logicc')).toBe(true)
   })
 
   it('caches routine state checks but refreshes worker-visible changes after cache expiry', async () => {
     let now = 10_000
     vi.spyOn(Date, 'now').mockImplementation(() => now)
-    await isModuleEnabled('commandcode'); await isModuleEnabled('commandcode')
+    await isModuleEnabled('logicc'); await isModuleEnabled('logicc')
     expect(fixture.reads).toBe(1)
-    fixture.states.set('commandcode', false)
-    expect(await isModuleEnabled('commandcode')).toBe(true)
+    fixture.states.set('logicc', false)
+    expect(await isModuleEnabled('logicc')).toBe(true)
     now += 2001
-    expect(await isModuleEnabled('commandcode')).toBe(false)
+    expect(await isModuleEnabled('logicc')).toBe(false)
     expect(fixture.reads).toBe(2)
     expect(await isModuleEnabled('cpa')).toBe(true)
     await expect(isModuleEnabled('unknown')).rejects.toMatchObject({ statusCode: 404 })
   })
 
-  it('reports native CPA setup and installed version independently from CommandCode health', async () => {
-    const nativeFetch = globalThis.fetch
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      if (String(input) === 'http://commandcode.test:3050/health') return new Response('healthy')
-      return nativeFetch(input, init)
-    })
+  it('reports native CPA setup and installed version independently from pool module health', async () => {
     let modules = await listModules()
     expect(modules.find(module => module.id === 'cpa')).toMatchObject({ status: 'unconfigured', runtimeVersion: null })
-    expect(modules.find(module => module.id === 'commandcode')).toMatchObject({ status: 'ready' })
+    expect(modules.find(module => module.id === 'logicc')).toMatchObject({ status: 'ready', message: 'fixture pool ready' })
     fixture.cpa = { ...fixture.cpa, configured: true, connected: true, version: 'v8.0.15', error: null }
-    fixture.states.set('commandcode', false)
+    fixture.states.set('logicc', false)
     modules = await listModules()
     expect(modules.find(module => module.id === 'cpa')).toMatchObject({ status: 'ready', runtimeVersion: 'v8.0.15' })
-    expect(modules.find(module => module.id === 'commandcode')).toMatchObject({ status: 'disabled', enabled: false })
+    expect(modules.find(module => module.id === 'logicc')).toMatchObject({ status: 'disabled', enabled: false })
     expect(modules.find(module => module.id === 'platform')).toMatchObject({ status: 'ready', enabled: true })
   })
 })

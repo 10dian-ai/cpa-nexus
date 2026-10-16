@@ -4,27 +4,26 @@ import type { Sql, TransactionSql } from 'postgres'
 import { z } from 'zod'
 import { getDb } from './db'
 import { publishUpdate } from './events'
-import type { GroupBinding, GroupModuleId, GroupView } from '../../shared/groups'
+import { GROUP_MODULE_IDS, type GroupBinding, type GroupModuleId, type GroupView } from '../../shared/groups'
 
 type Database = Sql | TransactionSql
 export const groupIdsSchema = z.array(z.string().uuid()).min(1, '请至少选择一个分组')
 export const groupInputSchema = z.object({ name: z.string().trim().min(1), description: z.string().optional(), enabled: z.boolean().optional() }).strict()
 const emptyBinding = (): GroupBinding => ({ groupIds: [], groupNames: [] })
-export async function getModuleDefaultGroupIds(sql: Database = getDb()): Promise<{ commandcode: string; cpa: string }> {
+export async function getModuleDefaultGroupIds(sql: Database = getDb()): Promise<Record<GroupModuleId, string>> {
   const rows = await sql`SELECT module_id,group_id FROM nexus_module_group_defaults`
-  const commandcode = rows.find(row => row.module_id === 'commandcode')?.group_id as string | undefined
-  const cpa = rows.find(row => row.module_id === 'cpa')?.group_id as string | undefined
-  if (!commandcode || !cpa) throw createError({ statusCode: 503, message: '模块默认分组尚未初始化，请完成数据库迁移' })
-  return { commandcode, cpa }
+  const result: Partial<Record<GroupModuleId, string>> = {}
+  for (const row of rows) if ((GROUP_MODULE_IDS as readonly string[]).includes(row.module_id)) result[row.module_id as GroupModuleId] = String(row.group_id)
+  if (GROUP_MODULE_IDS.some(id => !result[id])) throw createError({ statusCode: 503, message: '模块默认分组尚未初始化，请完成数据库迁移' })
+  return result as Record<GroupModuleId, string>
 }
 export async function getModuleDefaultGroupId(moduleId: GroupModuleId, sql: Database = getDb()) {
-  const id = (await getModuleDefaultGroupIds(sql))[moduleId]
-  if (!id) throw createError({ statusCode: 503, message: '该模块默认分组尚未初始化，请完成数据库迁移' })
-  return id
+  return (await getModuleDefaultGroupIds(sql))[moduleId]
 }
+/** New model keys reach every source module through its default group (CPA first). */
 export async function getDefaultModelKeyGroupIds(sql: Database = getDb()) {
   const defaults = await getModuleDefaultGroupIds(sql)
-  return [...new Set([defaults.cpa, defaults.commandcode])]
+  return [...new Set(GROUP_MODULE_IDS.map(id => defaults[id]))]
 }
 export async function assertGroupIds(groupIds?: string[], sql: Database = getDb()): Promise<string[]> {
   const ids = [...new Set(groupIds ?? await getDefaultModelKeyGroupIds(sql))]

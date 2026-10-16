@@ -37,7 +37,7 @@ export default defineEventHandler(async event => {
       const keys = method === 'DELETE' ? [] : parseAccessKeys(rawBody || new Uint8Array())
       body = new TextEncoder().encode(JSON.stringify(withReservedClientKey(keys, reservedKey))).buffer
       // Deleting the client node revokes historical keys but retains the private
-      // credential used by unified model keys and CommandCode protocol conversion.
+      // credential used by unified model keys and module bridge protocol conversion.
       method = 'PUT'
     }
     const response = await client.request({

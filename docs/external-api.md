@@ -1,234 +1,122 @@
-# 外调服务 API
+# 外调服务 API 与公网加号页
 
-外部服务可以通过这组端点添加账号、查询账号邮箱及详情、查询导入任务和获取池状态。先在模块管理启用 CommandCode，再进入统一 **API Key → 创建 API Key**，选择 **外调服务 API Key** 类型，保存创建时显示的完整密钥。
+外调 API 是 CPAN 的平台功能，不属于某个模块。持有外调服务 Key 的人或程序可以给 CPA 内核和 Logicc 等模块远程加号、查询导入进度和池子状态。服务器 3041 端口上的公网加号页面使用的是同一组接口。
 
-外调服务 Key 使用 `ccm_service_` 前缀，与模型调用的 `ccm_` Key 在同一页面管理，并独立验证。外调 Key 专用于 CommandCode 的账号与池信息接口，不能调用 `/v1/*`；模型 Key 不能调用 `/api/external/*`。后台登录 Cookie 也不能替代外调 Key。CommandCode 停用后，所有外调接口暂停；已有服务 Key 保留，可继续在后台修改名称、停用或撤销。
+## 外调服务 Key
 
-## 更新已有部署
+在 **API Key → 创建 API Key** 中选择「外调服务 API Key」，勾选它可以加号的模块（默认全部）。完整密钥只显示一次，以 `ccm_service_` 开头。
 
-CPA Nexus 保留这组接口与原有 `002_service_keys.sql` 迁移。Docker 部署执行 `bash scripts/deploy.sh up` 后，Worker 启动时自动应用缺失迁移；确认 Worker 正常启动后再使用新界面。本地开发在启动应用前执行 `npm run db:migrate`。已有账号和服务 Key 保留；迁移 `013_routing_groups.sql` 将平台模型 Key 设为跨模块调用，旧 Key 和账号加入默认组，继续支持 `/v1` 和 `/commandcode/v1`。新模型 Key 仅选择调用分组，可访问匹配的 CPA 与 CommandCode 来源。创建和编辑模型 Key 时选择调用分组、顺序和多分组策略；酒馆预设由处理请求的分组决定。外调服务 Key 不经过酒馆模块。历史 CPA 客户端 Key 继续按原生方式调用，在同一页面的历史密钥区管理。`CPA_CLIENT_KEY` 是平台内部凭证，专用历史密钥节点会自动保留它。
+- 外调 Key 只能访问 `/api/external/*`，不能调用模型；模型 Key 和后台登录也不能访问外调接口。
+- Key 的模块范围可以随时修改，停用或撤销立即生效。
+- 某个模块停用时，给它加号会返回 503，Key 本身和其他模块不受影响。
+- 安全限制：同一来源地址 10 分钟内验证失败 30 次后锁定 10 分钟（返回 429）；每个 Key 每分钟最多 240 次请求。3041 端口另有按地址的 nginx 限速。
 
-## 认证
-
-每个请求都需要下面两种请求头之一：
+请求头二选一：
 
 ```http
 Authorization: Bearer ccm_service_你的完整密钥
-```
-
-或：
-
-```http
 x-api-key: ccm_service_你的完整密钥
 ```
 
-外部调用使用站点根地址，例如 `https://manager.example.com`；不要在根地址后预先加 `/v1`。以下 curl 示例适用于 Linux/macOS/Ubuntu 终端。将域名、密钥和账号凭证替换为自己的值。
+## 公网加号页面（3041）
+
+`compose.yml` 让 edge（nginx）额外监听 `${INTAKE_BIND_ADDRESS:-0.0.0.0}:${INTAKE_PORT:-3041}`。这个端口上**只有两样东西**：加号页面（`ops/intake/`，纯静态）和 `/api/external/*`。管理后台、模型接口和模块桥接在这个端口上都不存在；转发时会去掉 Cookie、Origin、Referer。
+
+使用流程：打开 `http://服务器:3041/`，输入外调 Key，选择模块（只显示这把 Key 能加号的模块），然后粘贴账号或上传文件，提交后实时显示进度和每条失败的原因。Key 只保存在当前标签页，关闭即清除。
+
+正式对公网开放时，建议用 1Panel 的反向代理为 3041 加 HTTPS，并把 `INTAKE_BIND_ADDRESS` 改为 `127.0.0.1`，只让反代访问。
+
+## 接口
+
+外部调用使用站点根地址，不要加 `/v1`。
 
 ```sh
-export CCM_URL='https://manager.example.com'
-export CCM_SERVICE_KEY='ccm_service_替换为后台创建的完整密钥'
+export CCM_URL='http://服务器:3041'
+export CCM_SERVICE_KEY='ccm_service_…'
 ```
 
-## 添加账号
+### 可加号的模块
 
-`POST /api/external/accounts`
+`GET /api/external/modules`
 
-请求体必须是 JSON，在 `text`、`token`、`cookie` 中**只提供一个**，可选传入 `groupIds`（一个或多个分组 UUID）以及兼容旧分类备注的 `groupName`。`groupName` 不参与选号；新账号不传 `groupIds` 使用默认组，重新导入已有账号不传时保留原组。
+```json
+{
+  "key": { "name": "远程加号" },
+  "modules": [
+    { "id": "logicc", "name": "Logicc", "enabled": true, "accept": ".json,.txt,.csv",
+      "formats": [{ "id": "client-session", "label": "__client + Session ID", "description": "…", "example": "…" }] },
+    { "id": "cpa", "name": "CPA 内核", "enabled": true, "accept": ".json,.txt,.csv,.jsonl", "formats": [ … ] }
+  ]
+}
+```
+
+### 加号
+
+`POST /api/external/modules/{moduleId}/accounts`
 
 | 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `text` | string | 批量导入，每行一个 Token 或完整 Cookie；应用不限制行数或文本大小。 |
-| `token` | string | 单个账号的原始会话 Token，不限制长度，不允许换行。 |
-| `cookie` | string | 单个账号的 Cookie，不限制长度，不允许换行。 |
-| `groupName` | string | 可选分组，首尾空白会被去除，最多 100 个字符。 |
+|---|---|---|
+| `text` | string | 粘贴的内容：每行一个账号，或一个 JSON 文档，格式自动识别 |
+| `files` | `{name, content}[]` | 上传的文本文件，最多 500 个，按同样的规则识别 |
+| `items` | unknown[] | 结构化条目，例如 `[{"clientCookie":"…","sessionId":"sess_…"}]` |
+| `groupIds` | uuid[] | 可选。新账号加入这些调用分组；不传则进入模块的默认分组。已存在的账号保留原分组 |
 
-Cookie 支持 `__Secure-commandcode_prod_.session_token=实际Token`，也支持带其他 Cookie 字段的完整 Cookie 请求头；可包含开头的 `Cookie:`。每行必须恰好包含一个正确名称的会话 Cookie。原始 Token 至少为 16 个可打印 ASCII 字符，不能包含空白、分号、逗号、双引号或反斜杠。凭证不会被 URL 解码或修补。
-
-单个账号：
+至少要提供 `text`、`files`、`items` 中的一项，单次请求最大 32 MB。
 
 ```sh
-curl --fail-with-body "$CCM_URL/api/external/accounts" \
-  -H "Authorization: Bearer $CCM_SERVICE_KEY" \
-  -H 'Content-Type: application/json' \
-  --data '{"token":"替换为实际会话Token","groupName":"自动导入"}'
+curl --fail-with-body "$CCM_URL/api/external/modules/logicc/accounts" \
+  -H "Authorization: Bearer $CCM_SERVICE_KEY" -H 'Content-Type: application/json' \
+  --data '{"text":"__client值----sess_xxxxxxxx\n__client值2----sess_yyyyyyyy"}'
 ```
 
-使用 Cookie：
-
-```sh
-curl --fail-with-body "$CCM_URL/api/external/accounts" \
-  -H "x-api-key: $CCM_SERVICE_KEY" \
-  -H 'Content-Type: application/json' \
-  --data '{"cookie":"__Secure-commandcode_prod_.session_token=替换为实际会话Token","groupName":"自动导入"}'
-```
-
-批量添加，JSON 中用 `\n` 分隔每行：
-
-```sh
-curl --fail-with-body "$CCM_URL/api/external/accounts" \
-  -H "Authorization: Bearer $CCM_SERVICE_KEY" \
-  -H 'Content-Type: application/json' \
-  --data '{"text":"替换为第一个实际Token\n替换为第二个实际Token","groupName":"批量导入"}'
-```
-
-成功排队返回 **HTTP 202**，示例：
+返回 **202**（有条目入队）或 **200**（没有需要导入的条目）：
 
 ```json
-{
-  "jobId": "f7c51393-d9c4-48f1-b9b7-1d8e37b457cb",
-  "accepted": 2,
-  "rejected": 0,
-  "duplicates": 0
-}
+{ "jobId": "…", "moduleId": "logicc", "accepted": 2, "rejected": 1, "duplicates": 0,
+  "errors": [{ "line": 3, "message": "Session JWT 已过期；请同时提供 __client Cookie 以自动续期" }] }
 ```
 
-- `accepted`：通过本地格式校验、去重后，提交给 Worker 处理的凭证数量。
-- `rejected`：格式无效的非空行数量。
-- `duplicates`：本批重复及数据库中已经存在的相同凭证数量。
-- 空行会忽略；行号按原始文本计数。
+- `accepted`：通过格式校验、去重后交给 Worker 的数量。
+- `rejected` 和 `errors`：格式错误的条目。行号的计算顺序是：先粘贴文本，再逐个文件，最后是结构化条目。
+- `duplicates`：本次提交内重复的条目，以及池中已有的条目。
 
-HTTP 202 只表示任务已排队。身份、订阅、额度和上游 Key 由 Worker 后续验证，最终成功数量需查询任务结果。重复凭证会跳过；同一账号的新凭证在身份确认后可更新已有账号。
+### 导入进度
 
-## 查询账号列表和邮箱
-
-`GET /api/external/accounts`
-
-返回与后台账号列表相同的分页结构：`{items,total,page,pageSize,groups}`。`items` 中每个账号的 `id` 是本地账号 UUID，`email` 是从上游账号身份同步的邮箱；未提供或尚未同步时为 `null`。
-
-| 查询参数 | 含义 |
-| --- | --- |
-| `q` | 按账号名称或邮箱搜索，最多 200 个字符。 |
-| `status` | 可选 `pending`、`ready`、`credential_expired`、`sync_error`；省略或空字符串表示全部。 |
-| `group` | 按分组名称精确筛选，最多 100 个字符。 |
-| `page` | 页码，默认 1，范围 1–100,000。 |
-| `pageSize` | 每页数量，默认 50，范围 1–200。 |
-
-```sh
-curl --fail-with-body --get "$CCM_URL/api/external/accounts" \
-  -H "Authorization: Bearer $CCM_SERVICE_KEY" \
-  --data-urlencode 'page=1' \
-  --data-urlencode 'pageSize=100'
-```
-
-筛选邮箱时增加 `--data-urlencode 'q=你的账号邮箱'`。获取整个池子的邮箱时按页读取，直到 `page * pageSize >= total`；默认包含停用账号。
-
-列表还包含账号名称 `label`、分组 `groupName`、备注 `note`、启用状态 `enabled`、同步状态 `status`、最近同步时间 `lastSyncAt`、并发占用 `inFlight` 和最近同步快照 `snapshot`。不会返回登录 Cookie、会话 Token、上游 API Key 或其密文。
-
-## 查询单个账号
-
-`GET /api/external/accounts/:id`
-
-将 `:id` 替换为账号列表中的 `id`。直接返回账号对象，包含 `email` 及列表中的其他账号字段，并增加该账号的模型权限观察列表 `observedModels`。格式无效的 ID 返回 400，账号不存在返回 404。
-
-```sh
-curl --fail-with-body "$CCM_URL/api/external/accounts/替换为账号UUID" \
-  -H "Authorization: Bearer $CCM_SERVICE_KEY"
-```
-
-以上两个查询读取本地已有数据，不触发上游刷新。
-
-## 查询导入进度
-
-`GET /api/external/jobs/:id`
-
-将 `:id` 替换为添加账号时返回的 `jobId`：
-
-```sh
-curl --fail-with-body "$CCM_URL/api/external/jobs/f7c51393-d9c4-48f1-b9b7-1d8e37b457cb" \
-  -H "Authorization: Bearer $CCM_SERVICE_KEY"
-```
-
-完成后的响应示例：
+`GET /api/external/jobs/{jobId}`
 
 ```json
-{
-  "id": "f7c51393-d9c4-48f1-b9b7-1d8e37b457cb",
-  "status": "completed",
-  "progress": { "processed": 2, "total": 2 },
-  "result": {
-    "imported": 1,
-    "updated": 1,
-    "failed": 0,
-    "skipped": 0,
-    "errors": []
-  },
-  "error": null
-}
+{ "id": "…", "moduleId": "logicc", "status": "completed", "progress": { "processed": 2, "total": 2 },
+  "result": { "imported": 1, "updated": 1, "skipped": 0, "failed": 0, "errors": [] }, "error": null }
 ```
 
-常见 `status` 为 `waiting`、`active`、`delayed`、`completed` 和 `failed`。`progress.total` 是实际排队的凭证数，不含格式拒绝和重复条目。非完成状态的 `result` 为 `null`；任务整体失败时 `error` 提供说明。
+Worker 会逐条验证：Logicc 会刷新会话并读取模型目录，CPA 会把凭证写入内核。验证失败的条目计入 `failed` 并附上原因。导入失败不会删除已有账号。只能查询这把 Key 有权限的模块的任务。
 
-`completed` 表示队列任务处理结束，仍应检查 `result.failed` 和 `result.errors`：
+### 查询
 
-- `imported` / `updated`：成功新建 / 更新并完成同步的账号数。
-- `failed`：包括预先拒绝的格式错误及处理中的失败数量。
-- `skipped`：跳过的重复凭证数量。
-- `errors`：`{ "line": 2, "message": "失败原因" }` 列表。
+| 接口 | 内容 |
+|---|---|
+| `GET /api/external/modules/{id}/accounts?page=1&pageSize=50&q=` | 模块账号列表，不含任何凭据 |
+| `GET /api/external/modules/{id}/pool` | 池子计数（总数、可用、需处理、模型覆盖等） |
 
-可以每隔几秒查询一次，收到 `completed` 或 `failed` 后停止。任务记录会按保留策略清理，ID 不存在或已清理时返回 404。
+### 各模块接受的格式
 
-## 获取池状态
+**Logicc**：见 [Logicc 模块](logicc-module.md#账号与凭据)。
 
-`GET /api/external/pool`
+**CPA 内核**：
 
-```sh
-curl --fail-with-body "$CCM_URL/api/external/pool" \
-  -H "Authorization: Bearer $CCM_SERVICE_KEY"
-```
+| 格式 | 示例 | 写入位置 |
+|---|---|---|
+| CPA 或各 CLI 导出的 OAuth 凭证 JSON（Codex、Claude、Gemini、Qwen、iFlow、Antigravity 等） | `{"type":"codex","email":"…","access_token":"…"}` | 内核凭证库 |
+| Google 服务账号 JSON（可带 `location`） | `{"type":"service_account","client_email":"…","private_key":"…"}` | Vertex 导入 |
+| API Key，每行一个，自动识别 | `AIza…` → Gemini，`sk-ant-…` → Claude，`xai-…` → xAI，`sk-…` → OpenAI/Codex | 渠道配置 |
+| 指定渠道 | `claude|sk-ant-…|https://relay.example.com|socks5://proxy` | 渠道配置 |
+| OpenAI 兼容渠道 | `openai-compatibility|名称|sk-…|https://api.example.com/v1` | 渠道配置 |
+| Key JSON | `{"provider":"gemini","apiKey":"AIza…","baseUrl":"…","prefix":"team"}` | 渠道配置 |
 
-响应结构与后台概览相同，以下仅为字段示例：
+Key 会追加到对应渠道族中名为 `remote-intake`（或你指定名称）的分组里，已经存在的 Key 会跳过；内核保留的 `nexus-` 名称不能使用。写入 CPA 配置的操作在内核层串行执行，并且只改动目标渠道族。
 
-```json
-{
-  "counts": {
-    "total": 12,
-    "enabled": 10,
-    "ready": 8,
-    "needsAttention": 1,
-    "notSynced": 1
-  },
-  "requests": {
-    "total": 240,
-    "success": 225,
-    "failed": 12,
-    "inFlight": 3
-  },
-  "services": {
-    "database": true,
-    "redis": true,
-    "workerLastSeen": "2026-09-12T08:00:00.000Z",
-    "kernel": true
-  },
-  "lastSyncAt": "2026-09-12T07:59:50.000Z"
-}
-```
+## 兼容旧接口
 
-| 字段 | 实际含义 |
-| --- | --- |
-| `counts.total` | 池中全部账号数量。 |
-| `counts.enabled` | 已启用账号数量。 |
-| `counts.ready` | 已启用、同步状态为 `ready`、已保存上游 API Key，且最近同步快照未显示配额耗尽的账号数量。 |
-| `quota.accountCount` | 参与配额汇总的账号数量，与 `counts.ready` 相同。 |
-| `quota.fiveHour` / `quota.weekly` / `quota.monthly` | 分别返回 `used`、`cap`、`remaining`、`knownAccounts`、`unknownAccounts`，表示已用、总额、剩余及该窗口数据已知/未知的账号数。 |
-| `counts.needsAttention` | 已启用且状态为 `credential_expired` 或 `sync_error` 的账号数量。 |
-| `counts.notSynced` | 尚无成功同步时间的账号数量，包含停用账号。 |
-| `requests.total/success/failed` | 当前保留的真实请求日志分别统计的总量、成功量和错误量。 |
-| `requests.inFlight` | Redis 中尚未过期的全局请求租约数量。 |
-| `services.database/redis` | 本次查询成功读取数据库及 Redis 时为 `true`；读取失败时接口返回错误。 |
-| `services.kernel` | 本次内核健康检查是否返回成功。 |
-| `services.workerLastSeen` | 最近一次 Worker 心跳时间；没有记录时为 `null`。 |
-| `lastSyncAt` | 全部账号中最近的成功同步时间；不表示所有账号都在该时间同步，没有记录时为 `null`。 |
+`POST /api/external/accounts` 仍然可用：`text`、`token`、`cookie` 会合并成粘贴内容，用 `moduleId` 指定模块；如果 Key 只能给一个模块加号，可以省略 `moduleId`。新脚本请改用 `/api/external/modules/{id}/accounts`。
 
-配额按正常且已启用账号的最近快照逐项汇总；未提供的窗口不参与该项总额，并计入 `unknownAccounts`。账号列表和详情增加 `quotaPaused`、`quotaResumeAt`，用于区分系统因配额暂停与手动停用。完整语义见[号池配额与自动恢复](quota-management.md)。
-
-账号统计读取本地最近同步状态，**查询池状态不会触发上游额度刷新**。`ready` 不代表当前额度足够、特定模型已授权或当前还有并发空位。各计数按自身条件独立统计，存在重叠，不能用总数相减推导其他分类。请求日志统计也不代表上游账单或剩余额度。
-
-## 错误与密钥管理
-
-- **400**：JSON 结构、字段、分页筛选参数、账号或任务 ID 格式无效。逐行凭证格式错误通常记录到 `rejected`，随后可在任务结果中查看。
-- **401**：外调 Key 缺失、无效、停用或已撤销，或使用了模型 Key。
-- **404**：账号不存在，或导入任务不存在、已过期。
-- **503**：CommandCode 模块已停用，或者数据库、队列等依赖暂时不可用。
-- **5xx**：服务或依赖暂时不可用，应保留错误信息并重试。
-
-外调 Key 的创建、修改名称、停用、启用、撤销都在后台统一 **API Key** 页面操作；创建类型只在 CommandCode 开启时出现。每个启用的外调 Key 在模块开启时都具有这组五个端点的访问权限；这组端点不提供 Key 管理接口，不能代替管理员登录后台。
+后台导入（各模块的「导入账号」）调用 `POST /api/modules/{id}/import`，和外调接口使用同一套解析、队列和 Worker。

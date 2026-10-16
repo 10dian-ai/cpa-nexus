@@ -8,7 +8,7 @@ import { privacyHeaders } from '../privacy-headers'
 import { getConfig } from '../config'
 import { BILLING_USAGE_POLICY_HEADER, type BillingUsageObserver } from '../billing'
 import { DiagnosticResponseFilter } from '../diagnostic-response'
-import { writeWithBackpressure } from '../gateway/transport'
+import { writeWithBackpressure } from '../http/transport'
 import { StreamOutcome } from '../routing/stream-outcome'
 
 /**
@@ -59,6 +59,8 @@ export interface OpenCpaInput {
   body?: Record<string, unknown>
   clientKey?: string
   policy?: string
+  /** Signed bridge route headers forwarded verbatim to a module bridge channel. */
+  extraHeaders?: Record<string, string>
   timeoutMs: number
 }
 
@@ -68,6 +70,7 @@ export function openCpaUpstream(input: OpenCpaInput): Promise<CpaUpstream> {
   // Inspect diagnostics as text even when the caller advertises compression.
   headers['accept-encoding'] = 'identity'
   if (input.policy) headers[CPA_GROUP_POLICY_HEADER] = input.policy
+  for (const [name, value] of Object.entries(input.extraHeaders || {})) headers[name.toLowerCase()] = value
   let payload: Buffer | undefined
   if (input.body) {
     payload = Buffer.from(JSON.stringify(input.body))

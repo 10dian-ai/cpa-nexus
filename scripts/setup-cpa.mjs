@@ -74,7 +74,6 @@ export async function setupCpa(directory = process.cwd(), log = console.log) {
     CPA_URL: 'http://127.0.0.1:8317',
     CPA_MANAGEMENT_KEY: randomBytes(32).toString('base64url'),
     CPA_CLIENT_KEY: 'nexus_' + randomBytes(32).toString('base64url'),
-    CPA_COMMANDCODE_BASE_URL: 'http://app:3000/v1',
   }
   const missing = Object.entries(defaults).filter(([key]) => environment[key] === undefined)
   if (missing.length > 0) {
@@ -90,8 +89,8 @@ export async function setupCpa(directory = process.cwd(), log = console.log) {
     await mkdir(resolve(directory, '.runtime/cpa', folder), { recursive: true, mode: 0o700 })
   }
   if (existingConfiguration === null) {
-    // v8 layout from the pinned official config.example.yaml. The bridge is
-    // registered through authenticated reconciliation after the database exists.
+    // v8 layout from the pinned official config.example.yaml. Module bridge
+    // channels are registered by the kernel layer after the database exists.
     const yaml = [
       '# CPA Nexus: managed through the admin adapter. Existing config is never reset by setup.',
       'config-version: 8',

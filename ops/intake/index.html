@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>远程加号 · CPA Nexus</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="intake.css">
+</head>
+<body>
+<main class="shell">
+  <header class="brand">
+    <svg class="mascot" viewBox="30 4 140 136" width="64" height="62" aria-hidden="true">
+      <ellipse cx="100" cy="94" rx="60" ry="56" fill="#b29fdc"/>
+      <path d="M58 64 L62 12 L92 44 Z" fill="#cbbbe9"/><path d="M142 64 L138 12 L108 44 Z" fill="#cbbbe9"/>
+      <path d="M66 54 L68 26 L84 44 Z" fill="#e48aa8" opacity=".75"/><path d="M134 54 L132 26 L116 44 Z" fill="#e48aa8" opacity=".75"/>
+      <ellipse cx="100" cy="102" rx="45" ry="40" fill="#fff3ec"/>
+      <path d="M54 92 Q58 48 100 44 Q142 48 146 92 Q136 74 126 84 Q120 66 108 78 Q100 62 92 78 Q80 66 74 84 Q64 74 54 92 Z" fill="#cbbbe9"/>
+      <g class="eyes"><ellipse cx="82" cy="106" rx="9" ry="11" fill="#5a4791"/><ellipse cx="118" cy="106" rx="9" ry="11" fill="#5a4791"/>
+      <circle cx="85" cy="101" r="3.4" fill="#fff"/><circle cx="121" cy="101" r="3.4" fill="#fff"/></g>
+      <ellipse cx="68" cy="122" rx="7" ry="4" fill="#e48aa8" opacity=".4"/><ellipse cx="132" cy="122" rx="7" ry="4" fill="#e48aa8" opacity=".4"/>
+      <path d="M93 122 Q96.5 126 100 122 Q103.5 126 107 122" fill="none" stroke="#8a5470" stroke-width="1.8" stroke-linecap="round"/>
+      <ellipse cx="74" cy="138" rx="13" ry="9" fill="#fff" stroke="#d6cde6" stroke-width="1.5"/><ellipse cx="126" cy="138" rx="13" ry="9" fill="#fff" stroke="#d6cde6" stroke-width="1.5"/>
+    </svg>
+    <div><h1>远程加号</h1><p>CPA Nexus · 给号池添加账号</p></div>
+  </header>
+
+  <!-- Step 1: service key -->
+  <section id="step-key" class="card">
+    <h2>输入外调 Key</h2>
+    <p class="muted">管理员在「API Key」页面创建的外调服务 Key，以 <code>ccm_service_</code> 开头。Key 只保存在当前标签页，关闭即清除。</p>
+    <form id="key-form" class="stack" autocomplete="off">
+      <label class="field"><span>外调服务 Key</span><input id="key-input" type="password" required spellcheck="false" placeholder="ccm_service_…" autocomplete="off"></label>
+      <p id="key-error" class="error" role="alert" hidden></p>
+      <button id="key-submit" class="button primary" type="submit">进入</button>
+    </form>
+  </section>
+
+  <!-- Step 2: choose module -->
+  <section id="step-modules" class="card" hidden>
+    <div class="row between"><h2>选择要加号的模块</h2><button id="logout" class="link" type="button">换一个 Key</button></div>
+    <p class="muted">当前 Key：<strong id="key-name"></strong></p>
+    <div id="module-list" class="modules" role="list"></div>
+  </section>
+
+  <!-- Step 3: add accounts -->
+  <section id="step-intake" class="card" hidden>
+    <div class="row between"><h2 id="intake-title">添加账号</h2><button id="back" class="link" type="button">← 换模块</button></div>
+    <p id="intake-description" class="muted"></p>
+    <details class="formats"><summary>支持的格式（自动识别，可混合粘贴）</summary><ul id="format-list"></ul></details>
+    <form id="intake-form" class="stack">
+      <label class="field"><span>粘贴账号</span><textarea id="intake-text" rows="9" spellcheck="false" placeholder="每行一个，或直接粘贴 JSON"></textarea></label>
+      <label class="field"><span>或上传文件 <small>可多选</small></span><input id="intake-files" type="file" multiple></label>
+      <p id="file-summary" class="muted small" hidden></p>
+      <p class="muted small">新账号进入该模块的默认分组，分组可由管理员之后调整。已存在的账号会自动跳过或更新凭据。</p>
+      <p id="intake-error" class="error" role="alert" hidden></p>
+      <button id="intake-submit" class="button primary" type="submit">提交加号</button>
+    </form>
+  </section>
+
+  <!-- Step 4: progress -->
+  <section id="step-result" class="card" hidden aria-live="polite">
+    <h2 id="result-title">正在导入…</h2>
+    <dl class="counts">
+      <div><dt>已排队</dt><dd id="r-accepted">0</dd></div>
+      <div><dt>格式错误</dt><dd id="r-rejected">0</dd></div>
+      <div><dt>重复跳过</dt><dd id="r-duplicates">0</dd></div>
+    </dl>
+    <progress id="r-progress" max="1" value="0"></progress>
+    <p id="r-progress-text" class="muted small"></p>
+    <dl id="r-final" class="counts" hidden>
+      <div><dt>新增</dt><dd id="r-imported">0</dd></div>
+      <div><dt>更新</dt><dd id="r-updated">0</dd></div>
+      <div><dt>跳过</dt><dd id="r-skipped">0</dd></div>
+      <div><dt>失败</dt><dd id="r-failed">0</dd></div>
+    </dl>
+    <div id="r-errors" class="issues" hidden><h3>需要留意的条目</h3><ul id="r-error-list"></ul></div>
+    <div class="row"><button id="again" class="button" type="button">继续加号</button><button id="to-modules" class="button" type="button">换模块</button></div>
+  </section>
+
+  <footer class="foot">此页面只能加号，不能查看或导出任何凭据。</footer>
+</main>
+<script src="intake.js"></script>
+</body>
+</html>

@@ -1,7 +1,6 @@
 import { platformError as createError } from './platform-error'
 import { getDb } from './db'
-import { MODULE_MANIFESTS, findModule, type ModuleView } from '../../shared/modules'
-import { commandcodeProviderHealthy } from './commandcode-health'
+import { MODULE_MANIFESTS, findModule, isPoolModuleId, type ModuleView } from '../../shared/modules'
 import { createCpaClient } from './cpa/client'
 
 const stateCache = new Map<string, { enabled: boolean; until: number }>()
@@ -30,26 +29,24 @@ export async function setModuleEnabled(id: string, enabled: boolean) {
   return { id, enabled }
 }
 export async function listModules(): Promise<ModuleView[]> {
-  const [states, cpa, commandcodeHealthy] = await Promise.all([
-    getDb()`SELECT id,enabled FROM platform_modules`,
-    createCpaClient().status(),
-    commandcodeProviderHealthy(),
-  ])
-  return MODULE_MANIFESTS.map(manifest => {
+  // Loaded lazily: pool modules import platform services that import this file.
+  const { poolModule } = await import('../modules/registry')
+  const [states, cpa] = await Promise.all([getDb()`SELECT id,enabled FROM platform_modules`, createCpaClient().status()])
+  return Promise.all(MODULE_MANIFESTS.map(async (manifest): Promise<ModuleView> => {
     const state = states.find(state => state.id === manifest.id)
     const enabled = manifest.required || (state ? state.enabled === true : manifest.defaultEnabled !== false)
-    if (!enabled) return { ...manifest, enabled, status: 'disabled', message: '新调用和新同步任务已暂停；进行中的任务会正常结束。' }
+    if (!enabled) return { ...manifest, enabled, status: 'disabled', message: '新调用和新同步任务已暂停；进行中的任务会正常结束，账号与配置保留。' }
     if (manifest.id === 'cpa') return {
       ...manifest, enabled, status: cpa.connected ? 'ready' : cpa.configured ? 'unavailable' : 'unconfigured',
       runtimeVersion: cpa.version,
       message: cpa.error?.message || '已连接 CPA 管理接口。',
     }
-    if (manifest.id === 'commandcode') return {
-      ...manifest, enabled, status: commandcodeHealthy ? 'ready' : 'unavailable',
-      message: commandcodeHealthy ? '官方 Provider 模型目录已同步，账号池使用官方 API。' : '官方 Provider 目录尚未同步或更新失败，请刷新官方目录。',
+    if (isPoolModuleId(manifest.id)) {
+      try { return { ...manifest, enabled, ...await poolModule(manifest.id).health() } }
+      catch { return { ...manifest, enabled, status: 'unavailable', message: '模块状态暂时无法读取，请检查数据库与 Redis。' } }
     }
     if (manifest.id === 'platform') return { ...manifest, enabled, status: 'ready', message: '平台管理服务可访问。' }
     if (manifest.id === 'presets') return { ...manifest, enabled, status: 'ready', message: '已启用；每个调用分组按自己的设置叠加预设，没有开启预设的分组按原样调用。' }
     return { ...manifest, enabled, status: 'unconfigured', message: '此扩展尚未提供运行状态检查，请完成模块接入。' }
-  })
+  }))
 }

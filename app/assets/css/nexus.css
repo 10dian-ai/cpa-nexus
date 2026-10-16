@@ -266,3 +266,11 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px soli
 .login-panel { position: relative; margin-top: 84px; }
 .login-mascot { position: absolute; top: -110px; right: 30px; }
 .sidebar-footer .admin-avatar { background: var(--primary-tint); overflow: hidden; border-radius: 10px; display: grid; place-items: end center; }
+
+/* Checkbox rows inside form fields (module scopes, multi-select options). */
+.checkbox-line { display: flex; align-items: center; gap: .5rem; padding: .25rem 0; font-weight: 500; cursor: pointer; }
+fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; }
+.intake-formats { padding: 14px 20px 18px; }
+.intake-formats code { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap; }
+.usage-factor-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 900px) { .usage-factor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

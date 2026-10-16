@@ -17,6 +17,7 @@ vi.mock('../server/lib/auth', async () => {
     if (getHeader(event, 'cookie') !== 'ccm_session=groups-admin-test') throw createError({ statusCode: 401, message: 'Admin required' })
   }, requireServiceKey: async () => { throw createError({ statusCode: 401 }) } }
 })
+vi.mock('../server/modules/bridge-maintenance', () => ({ reconcileModuleBridge: async () => {} }))
 vi.mock('../server/lib/cpa/group-routing', async () => {
   const { createError } = await import('h3')
   const inventory = async () => { if (fixture.failInventory) throw createError({ statusCode: 502, message: 'CPA unavailable' }); return fixture.sources }
@@ -53,7 +54,7 @@ describe.skipIf(!databaseUrl)('group administration over HTTP and PostgreSQL', (
     app.use(router); server = createServer(toNodeListener(app)); await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     accountId = randomUUID()
-    await sql`INSERT INTO managed_accounts(id,credential_fingerprint,cookie_ciphertext,label) VALUES(${accountId},${randomUUID()},'test-cookie','CC Source')`
+    await sql`INSERT INTO logicc_accounts(id,session_id,client_cookie_ciphertext,label) VALUES(${accountId},${'sess_' + randomUUID().replaceAll('-', '')},'test-cookie','Logicc Source')`
   }, 30_000)
   afterAll(async () => {
     if (server) await new Promise<void>(resolve => { server.close(resolve); server.closeAllConnections() })
@@ -79,14 +80,18 @@ describe.skipIf(!databaseUrl)('group administration over HTTP and PostgreSQL', (
     expect(update.status).toBe(200); expect(await update.json()).toMatchObject({ description: 'Changed', enabled: false })
     await request('/api/groups/' + groupId, 'PATCH', { enabled: true })
   })
-  it('lists and rebinds a CommandCode account without changing its credential or legacy label', async () => {
-    const initial = await (await request('/api/groups/accounts?moduleId=commandcode')).json()
-    expect(initial.items).toContainEqual(expect.objectContaining({ sourceId: accountId, sourceType: 'commandcode', groupIds: [(await getModuleDefaultGroupIds()).commandcode] }))
-    const update = await request('/api/groups/accounts', 'PATCH', { moduleId: 'commandcode', sourceType: 'commandcode', sourceId: accountId, groupIds: [groupId,DEFAULT_GROUP_ID] })
+  it('lists a new Logicc account in the Logicc group and rebinds it without touching its credential', async () => {
+    const initial = await (await request('/api/groups/accounts?moduleId=logicc')).json()
+    expect(initial.items).toContainEqual(expect.objectContaining({ sourceId: accountId, sourceType: 'logicc', name: 'Logicc Source', groupIds: [(await getModuleDefaultGroupIds()).logicc] }))
+    const update = await request('/api/groups/accounts', 'PATCH', { moduleId: 'logicc', sourceType: 'logicc', sourceId: accountId, groupIds: [groupId,DEFAULT_GROUP_ID] })
     expect(update.status).toBe(200); await update.arrayBuffer()
-    const binding = (await accountGroupBindings('commandcode', [accountId])).get(accountId)!
+    const binding = (await accountGroupBindings('logicc', [accountId])).get(accountId)!
     expect(new Set(binding.groupIds)).toEqual(new Set([groupId,DEFAULT_GROUP_ID]))
-    expect((await sql`SELECT cookie_ciphertext,group_name FROM managed_accounts WHERE id=${accountId}`)[0]).toMatchObject({ cookie_ciphertext: 'test-cookie', group_name: '' })
+    expect((await sql`SELECT client_cookie_ciphertext FROM logicc_accounts WHERE id=${accountId}`)[0]).toMatchObject({ client_cookie_ciphertext: 'test-cookie' })
+    const missing = await request('/api/groups/accounts', 'PATCH', { moduleId: 'logicc', sourceType: 'logicc', sourceId: randomUUID(), groupIds: [groupId] })
+    expect(missing.status).toBe(404); await missing.arrayBuffer()
+    const removedModule = await request('/api/groups/accounts', 'PATCH', { moduleId: 'commandcode', sourceType: 'commandcode', sourceId: accountId, groupIds: [groupId] })
+    expect(removedModule.status).toBe(400); await removedModule.arrayBuffer()
     const remove = await request('/api/groups/' + groupId, 'DELETE'); expect(remove.status).toBe(409); await remove.arrayBuffer()
   })
   it('exposes missing CPA ledger entries without automatically deleting their retained permission', async () => {
@@ -103,7 +108,7 @@ describe.skipIf(!databaseUrl)('group administration over HTTP and PostgreSQL', (
       const mixed = await request('/api/groups/accounts')
       expect(mixed.status).toBe(200)
       const result = await mixed.json()
-      expect(result.items).toContainEqual(expect.objectContaining({ sourceId: accountId, moduleId: 'commandcode' }))
+      expect(result.items).toContainEqual(expect.objectContaining({ sourceId: accountId, moduleId: 'logicc' }))
       expect(result.items.some((item: GroupAccountView) => item.moduleId === 'cpa')).toBe(false)
       expect(result.issues).toEqual([expect.objectContaining({ moduleId: 'cpa', message: expect.any(String) })])
       const isolated = await (await request('/api/groups/accounts?moduleId=cpa')).json()
@@ -128,7 +133,7 @@ describe.skipIf(!databaseUrl)('group administration over HTTP and PostgreSQL', (
     expect(removed.status).toBe(200); expect(await removed.json()).toEqual({ ok: true })
     expect((await accountGroupBindings('cpa')).has('deleted-oauth.json')).toBe(false)
     expect((await accountGroupBindings('cpa')).has(activeSource)).toBe(true)
-    const invalid = await request('/api/groups/accounts', 'DELETE', { moduleId: 'commandcode', sourceType: 'commandcode', sourceId: accountId })
+    const invalid = await request('/api/groups/accounts', 'DELETE', { moduleId: 'logicc', sourceType: 'logicc', sourceId: accountId })
     expect(invalid.status).toBe(400); await invalid.arrayBuffer()
   })
 })

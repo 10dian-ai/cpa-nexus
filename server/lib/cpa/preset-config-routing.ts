@@ -9,7 +9,7 @@ interface Entry {
   family: string; groupIndex: number; keyIndex: number; id: string; authIndex: string; prefix: string; managed: boolean; name: string; enabled: boolean
 }
 const FAMILIES = ['gemini', 'interactions', 'claude', 'codex', 'xai', 'meta', 'openai-compatibility', 'vertex']
-const MANAGED_CHANNELS = new Set(['nexus-commandcode', 'nexus-commandcode-messages'])
+const isManagedChannel = (name: string) => name.startsWith('nexus-')
 const object = (value: unknown): value is JsonObject => !!value && typeof value === 'object' && !Array.isArray(value)
 const string = (value: unknown) => typeof value === 'string' ? value.trim() : ''
 const hash = (value: string, length: number) => createHash('sha256').update(value).digest('hex').slice(0, length)
@@ -72,7 +72,7 @@ function entries(config: JsonObject): Entry[] {
           ? (family === 'openai-compatibility' ? family : indexFamily + '-api-key') + ':' + base + '+' + apiKey
           : 'id:' + id
         result.push({ family, groupIndex, keyIndex: keys.length ? keyIndex : -1, id, authIndex: hash(seed, 16), prefix,
-          managed: MANAGED_CHANNELS.has(string(group.name)), name: (string(group.name) || family) + (expanded.length > 1 ? ' · Key ' + (keyIndex + 1) : ''),
+          managed: isManagedChannel(string(group.name)), name: (string(group.name) || family) + (expanded.length > 1 ? ' · Key ' + (keyIndex + 1) : ''),
           enabled: group.disabled !== true && key.disabled !== true && !(Array.isArray(effective['excluded-models']) && effective['excluded-models'].includes('*')) })
       })
     })
@@ -84,9 +84,9 @@ export interface CpaConfigGroupSource {
   accountId: string; name: string; provider: string; prefix: string; authIds: string[]; enabled: boolean; supported: boolean; reason?: string
 }
 /** Safe internal bridge identities; never grant the rest of the native account pool. */
-export async function readCpaManagedBridgeSources(client: CpaConfigRoutingClient): Promise<{ authIndex: string; authIDs: string[] }[]> {
+export async function readCpaManagedBridgeSources(client: CpaConfigRoutingClient): Promise<{ channel: string; authIndex: string; authIDs: string[] }[]> {
   const all = entries(await readConfig(client)).filter(entry => entry.managed)
-  return all.map(entry => ({ authIndex: entry.authIndex, authIDs: [entry.id] }))
+  return all.map(entry => ({ channel: entry.name.replace(/ · Key \d+$/, ''), authIndex: entry.authIndex, authIDs: [entry.id] }))
 }
 
 /** Safe source metadata for group routing; runtime IDs identify registry owners, never upstream secrets. */
@@ -123,7 +123,7 @@ function match(all: Entry[], credential: CpaConfigCredential): Entry | undefined
 }
 function route(entry: Entry): CpaConfigAccountRoute {
   return { accountId: 'config:' + entry.authIndex, prefix: entry.prefix, supported: !entry.managed, name: entry.name, provider: entry.family,
-    ...(entry.managed ? { reason: 'CommandCode 托管桥接渠道由模块管理，请在 CommandCode 账号页绑定预设' } : {}) }
+    ...(entry.managed ? { reason: '模块桥接渠道由内核管理，预设在对应模块按分组设置' } : {}) }
 }
 
 export async function readCpaConfigAccountRoutes(client: CpaConfigRoutingClient, credentials: CpaConfigCredential[]): Promise<CpaConfigAccountRoute[]> {
@@ -158,7 +158,7 @@ export async function ensureCpaConfigAccountRoute(client: CpaConfigRoutingClient
   const all = entries(config)
   const found = match(all, credential)
   if (!found) bad('无法唯一匹配 CPA 配置账号，未修改配置')
-  if (found.managed) bad('CommandCode 托管桥接渠道不可作为 CPA 原生账号修改')
+  if (found.managed) bad('模块桥接渠道由内核管理，不可作为 CPA 原生账号修改')
   if (all.some(entry => entry.authIndex !== found.authIndex && entry.prefix === prefix)) bad('该路由前缀已被其他 CPA 账号使用')
   if (found.prefix === prefix) return
   const groups = structuredClone(config[found.family]) as JsonObject[]
@@ -189,4 +189,15 @@ export async function ensureCpaConfigAccountRoute(client: CpaConfigRoutingClient
   // Read persisted configuration after CPA reload. Native runtime IDs change with prefix; auth_index stays stable.
   const persisted = entries(await readConfig(client)).filter(entry => entry.authIndex === found.authIndex)
   if (persisted.length !== 1 || persisted[0]!.prefix !== prefix) bad('CPA 账号路由前缀保存后核对失败', 502)
+}
+
+/**
+ * The group-routing source ID CPA will give one API-key config entry, using the
+ * same Auth.EnsureIndex seed as `entries` above. Lets the kernel bind a key it
+ * just added to call groups before the next inventory read.
+ */
+export function configKeySourceId(family: string, baseUrl: string, apiKey: string): string {
+  const indexFamily = family === 'interactions' ? 'interactions' : family
+  const seed = (family === 'openai-compatibility' ? family : indexFamily + '-api-key') + ':' + baseUrl.trim() + '+' + apiKey.trim()
+  return 'config:' + hash(seed, 16)
 }

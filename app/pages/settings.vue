@@ -1,19 +1,42 @@
 <script setup lang="ts">
 import type { SystemSettings } from '#shared/types'
-import { MAX_REFRESH_CONCURRENCY, MAX_REFRESH_RATE_PER_SECOND } from '#shared/concurrency'
-interface SettingsView { settings: SystemSettings; kernel: { version: string | null; upstreamCommit: string | null; cliVersion: string | null }; provider?: {baseUrl:string;authentication:string;credentialManagement:string} }
-useHead({ title: 'CommandCode 设置 · CPA Nexus' })
+useHead({ title: '平台设置 · CPA Nexus' })
 const api = useRequestFetch()
-const { data, pending, error, refresh } = await useFetch<SettingsView>('/api/settings')
+const { data, pending, error, refresh } = await useFetch<{ settings: SystemSettings }>('/api/settings', { key: 'nexus-system-settings' })
 const { form, dirty, reset } = useEditableFields(() => data.value?.settings)
 const { busy, run } = useApiAction()
 async function save() {
   if (!form.value) return
-  const result = await run(() => api<SettingsView>('/api/settings', { method: 'PATCH', body: { ...form.value } }), '模块设置已保存')
+  const result = await run(() => api<{ settings: SystemSettings }>('/api/settings', { method: 'PATCH', body: { ...form.value } }), '平台设置已保存')
   if (result.ok) { reset(result.value.settings); await refresh() }
 }
 useLiveRefresh(refresh)
 </script>
 <template>
-  <AppPageHeader title="CommandCode 设置" description="调整这个账号池的调度、同步与日志参数，查看官方 API 接入方式。"><button class="button" :disabled="pending" @click="refresh()"><UIcon name="i-ph-arrow-clockwise-bold" :class="{ spinning: pending }" />重新读取</button><button v-if="form" form="settings-form" class="button primary" :disabled="busy || !dirty"><UIcon v-if="busy" name="i-ph-circle-notch-bold" class="spinning" />保存设置</button></AppPageHeader><AppState v-if="error" :error="error" @retry="refresh()" /><AppState v-else-if="!data || !form" :loading="pending" /><template v-else><form id="settings-form" class="settings-form" @submit.prevent="save"><fieldset :disabled="busy"><section class="settings-section"><div class="settings-description"><UIcon name="i-ph-git-branch-bold" /><h2>请求调度</h2><p>这些参数只控制 CommandCode 账号池。CPA 原生渠道在内核配置中管理。</p></div><div class="settings-fields"><div class="field"><span>并发</span><strong>不限制</strong><small>账号池不设总并发或单账号并发上限；调度优先选择进行中请求最少的账号，并保留会话亲和。</small></div><label class="field"><span>会话亲和保留时间 <small>秒</small></span><input v-model.number="form.affinityTtlSeconds" type="number" required min="60" max="604800" step="1"><small>保留会话与账号绑定的时间。</small></label><div class="field"><span>请求体大小</span><strong>不限制</strong><small>预设、上传和模型请求没有人为大小上限。</small></div></div></section><section class="settings-section"><div class="settings-description"><UIcon name="i-ph-arrows-clockwise-bold" /><h2>账号同步</h2><p>刷新实际额度与账号状态。失败会记录原因，已有快照保留获取时间。</p></div><div class="settings-fields"><label class="field"><span>活跃账号刷新间隔 <small>秒</small></span><input v-model.number="form.activeRefreshSeconds" type="number" required min="15" max="3600" step="1"></label><label class="field"><span>闲置账号刷新间隔 <small>秒</small></span><input v-model.number="form.idleRefreshSeconds" type="number" required min="60" max="86400" step="1"></label><label class="field"><span>活跃账号判断窗口 <small>秒</small></span><input v-model.number="form.activeWindowSeconds" type="number" required min="60" max="86400" step="1"><small>此时间内有实际调用的账号视为活跃。</small></label><label class="field"><span>同步任务并发数</span><input v-model.number="form.refreshConcurrency" type="number" required min="1" :max="MAX_REFRESH_CONCURRENCY" step="1"></label><label class="field"><span>每秒最多查询请求数</span><input v-model.number="form.refreshRatePerSecond" type="number" required min="1" :max="MAX_REFRESH_RATE_PER_SECOND" step="1"><small>一次账号同步会发出多个官方查询请求；这里只限制同步查询的频率，模型调用不受影响。</small></label></div></section><section class="settings-section"><div class="settings-description"><UIcon name="i-ph-clock-countdown-bold" /><h2>日志保留</h2><p>保存请求元数据及请求、回复内容，用于查看实际调用情况。</p></div><div class="settings-fields"><label class="field"><span>日志保留期限 <small>天</small></span><input v-model.number="form.logRetentionDays" type="number" required min="1" max="365" step="1"><small>超过期限的日志会按清理任务删除，调整后请留意历史记录范围。</small></label></div></section></fieldset><div class="settings-save-bar"><span>{{ dirty ? '设置有未保存的修改' : '当前设置已保存' }}</span><div class="inline-actions"><button type="button" class="button" :disabled="busy || !dirty" @click="reset()">还原修改</button><button class="button primary" :disabled="busy || !dirty">保存设置</button></div></div></form><section class="panel kernel-panel"><div class="panel-heading"><h2><UIcon name="i-ph-plugs-connected-bold" />官方 API 接入</h2><span class="status-badge green">Provider API</span></div><dl class="kernel-fields"><div><dt>模型调用地址</dt><dd class="mono">{{ data.provider?.baseUrl || 'https://api.commandcode.ai/provider/v1' }}</dd></div><div><dt>调用认证</dt><dd>账号专用 API Key</dd></div><div><dt>账号管理</dt><dd>Cookie 同步身份、额度及专用 Key</dd></div></dl><p class="panel-note">账号池直接调用官方 Provider API。Cookie 用于账号管理；模型与套餐范围在官方目录页面自动更新。</p></section></template>
+  <AppPageHeader title="平台设置" description="整个平台共用的请求与日志参数。各模块自己的参数在模块设置页调整。">
+    <button class="button" :disabled="pending" @click="refresh()"><UIcon name="i-ph-arrow-clockwise-bold" :class="{ spinning: pending }" />重新读取</button>
+    <button v-if="form" form="settings-form" class="button primary" :disabled="busy || !dirty"><UIcon v-if="busy" name="i-ph-circle-notch-bold" class="spinning" />保存设置</button>
+  </AppPageHeader>
+  <AppState v-if="error" :error="error" @retry="refresh()" />
+  <AppState v-else-if="!data || !form" :loading="pending" />
+  <form v-else id="settings-form" class="settings-form" @submit.prevent="save">
+    <fieldset :disabled="busy">
+      <section class="settings-section">
+        <div class="settings-description"><UIcon name="i-ph-timer-bold" /><h2>上游等待</h2><p>模型长时间没有返回任何数据时中止请求，避免连接一直挂着。</p></div>
+        <div class="settings-fields"><label class="field"><span>上游静默超时 <small>秒</small></span><input v-model.number="form.upstreamTimeoutSeconds" type="number" required min="30" max="7200" step="1"><small>思考很久的模型需要更长时间；CPA 内核和 Logicc 等模块共用此值。</small></label></div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-description"><UIcon name="i-ph-image-bold" /><h2>请求图片</h2><p>在路由之前统一缩小过大的内嵌图片，所有来源和代理收到的都是缩小后的请求。</p></div>
+        <div class="settings-fields">
+          <label class="field"><span>图片最长边 <small>像素</small></span><input v-model.number="form.imageMaxEdge" type="number" required min="0" max="8192" step="1"><small>0 表示原样发送，否则需在 512–8192 之间。</small></label>
+          <label class="field"><span>缩放质量</span><input v-model.number="form.imageQuality" type="number" required min="40" max="100" step="1"></label>
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-description"><UIcon name="i-ph-clock-countdown-bold" /><h2>日志保留</h2><p>保存请求元数据及请求、回复内容，用于查看实际调用情况。</p></div>
+        <div class="settings-fields"><label class="field"><span>日志保留期限 <small>天</small></span><input v-model.number="form.logRetentionDays" type="number" required min="1" max="365" step="1"><small>超过期限的日志由后台清理任务删除。</small></label></div>
+      </section>
+    </fieldset>
+    <div class="settings-save-bar"><span>{{ dirty ? '设置有未保存的修改' : '当前设置已保存' }}</span><div class="inline-actions"><button type="button" class="button" :disabled="busy || !dirty" @click="reset()">还原修改</button><button class="button primary" :disabled="busy || !dirty">保存设置</button></div></div>
+  </form>
 </template>

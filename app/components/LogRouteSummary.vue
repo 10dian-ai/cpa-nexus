@@ -13,7 +13,9 @@ const rows = computed(() => {
   const items: Array<[string, string]> = [['处理分组', groupName(route.groupId)]]
   if ((route.groupIds?.length || 0) > 1) items.push(['可用分组', route.groupIds!.map(groupName).join('、') + '（' + (STRATEGY[route.strategy || ''] || route.strategy || '—') + '）'])
   if (route.nativeModel) items.push(['实际模型', route.nativeModel])
+  if (route.moduleId && route.moduleId !== 'cpa') items.push(['来源模块', route.moduleId === 'logicc' ? 'Logicc（经 CPA 桥接）' : route.moduleId])
   if (route.authIndex) items.push(['CPA 凭证', route.authIndex])
+  if (route.usageSource) items.push(['用量来源', route.usageSource === 'estimated' ? '本地计算（只多不少）' : '上游返回'])
   items.push(['酒馆预设', route.presetIds?.length ? `叠加 ${route.presetIds.length} 个` : '未叠加'])
   if (route.devin?.level) items.push(['Devin 思考档位', `${route.devin.level}（来自${DEVIN_SOURCE[route.devin.source || ''] || route.devin.source}）`])
   if (route.devin?.removed?.length) items.push(['已移除参数', route.devin.removed.join('、')])
@@ -29,7 +31,7 @@ const rows = computed(() => {
       <h3>切换记录</h3>
       <ol>
         <li v-for="(item, index) in route.failover" :key="index">
-          <strong>{{ groupName(item.groupId) }}</strong><span class="muted">{{ item.kind === 'commandcode' ? 'CommandCode' : item.model || 'CPA' }} · HTTP {{ item.status ?? '—' }}</span>
+          <strong>{{ groupName(item.groupId) }}</strong><span class="muted">{{ item.kind === 'pool' ? (item.moduleId === 'logicc' ? 'Logicc' : item.moduleId || '模块') + (item.model ? ' · ' + item.model : '') : item.model || 'CPA' }} · HTTP {{ item.status ?? '—' }}</span>
           <p>{{ item.error }}</p>
         </li>
       </ol>

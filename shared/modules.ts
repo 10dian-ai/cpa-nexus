@@ -32,11 +32,24 @@ export interface ModuleView extends ModuleManifest {
   message?: string
   runtimeVersion?: string | null
 }
+
+/**
+ * Account-pool modules sit below the CPA kernel. Each one reaches clients only
+ * through a kernel-owned bridge channel, and its models are published to CPA
+ * under `<alias>/<model id>`. The alias is part of the public routing contract.
+ */
+export const POOL_MODULE_IDS = ['logicc'] as const
+export type PoolModuleId = typeof POOL_MODULE_IDS[number]
+export const POOL_MODULE_ALIASES: Record<PoolModuleId, string> = { logicc: 'logicc' }
+export function isPoolModuleId(value: unknown): value is PoolModuleId {
+  return typeof value === 'string' && (POOL_MODULE_IDS as readonly string[]).includes(value)
+}
+
 export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
   {
     id: 'cpa', name: 'CPA 核心', kind: 'kernel', tier: 'core', navLabel: 'CPA 内核 · 一级', icon: 'i-ph-cpu-bold', required: true, version: 'v8',
-    description: '统一模型调用入口，管理原生渠道、凭证、配置与插件。',
-    capabilities: ['完整原版控制台', '原生模型入口', '渠道与凭证', 'OAuth 登录', '供应商配额', '配置与路由', '日志与插件'],
+    description: '统一模型调用入口，管理原生渠道、凭证、配置与插件；扩展模块只能通过内核声明的桥接渠道接入。',
+    capabilities: ['完整原版控制台', '原生模型入口', '渠道与凭证', 'OAuth 登录', '供应商配额', '配置与路由', '模块桥接', '日志与插件'],
     navigation: [
       { to: '/cpa', label: '内核运行', icon: 'i-ph-cpu-bold' },
       { to: '/cpa/quick-start', label: '快速开始', icon: 'i-ph-rocket-launch-bold' },
@@ -62,28 +75,27 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
     navigation: [{ to: '/presets', label: '酒馆预设', icon: 'i-ph-mask-happy-bold' }],
   },
   {
-    id: 'commandcode', name: 'CommandCode', kind: 'extension', tier: 'module', navLabel: 'CommandCode 模块', icon: 'i-ph-command-bold', required: false, version: '0.2.0',
-    description: 'GOAT 官方 API 账号池，保留真实额度与会话亲和。',
-    capabilities: ['官方 API', '官网目录与套餐', 'Cookie 保活', '真实额度', '会话亲和'],
+    id: 'logicc', name: 'Logicc', kind: 'extension', tier: 'module', navLabel: 'Logicc 模块', icon: 'i-ph-lightning-bold', required: false, defaultEnabled: true, version: '0.1.0',
+    description: 'Logicc 网页会话账号池：Clerk 凭据自动续期，经 CPA 内核桥接渠道统一调用，本地计算 usage。',
+    capabilities: ['Clerk 自动续期', '批量与远程加号', '模型目录同步', '并发与冷却', '工具调用模拟', 'usage 本地计算'],
     navigation: [
-      { to: '/commandcode', label: '账号池概览', icon: 'i-ph-chart-bar-bold' },
-      { to: '/accounts', label: '账号管理', icon: 'i-ph-users-three-bold' },
-      { to: '/groups/accounts?module=commandcode', label: '账号分组', icon: 'i-ph-user-switch-bold' },
-      { to: '/official', label: '官方模型与套餐', icon: 'i-ph-book-open-bold' },
-      { to: '/models', label: '模型观察', icon: 'i-ph-binoculars-bold' },
-      { to: '/settings', label: '模块设置', icon: 'i-ph-sliders-horizontal-bold' },
+      { to: '/logicc', label: '号池概览', icon: 'i-ph-lightning-bold' },
+      { to: '/logicc/accounts', label: '账号管理', icon: 'i-ph-address-book-bold' },
+      { to: '/groups/accounts?module=logicc', label: '账号分组', icon: 'i-ph-users-bold' },
+      { to: '/logicc/settings', label: '模块设置', icon: 'i-ph-faders-bold' },
     ],
   },
   {
-    id: 'platform', name: '平台管理', kind: 'platform', tier: 'platform', navLabel: '平台', icon: 'i-ph-squares-four-bold', required: true, version: '0.2.0',
-    description: '统一管理员登录、模块管理和部署配置。',
-    capabilities: ['管理员会话', '模块状态', 'API Key 与分组', '请求日志', '部署与版本适配'],
+    id: 'platform', name: '平台管理', kind: 'platform', tier: 'platform', navLabel: '平台', icon: 'i-ph-squares-four-bold', required: true, version: '0.3.0',
+    description: '统一管理员登录、模块管理、API Key、外调服务与部署配置。',
+    capabilities: ['管理员会话', '模块状态', 'API Key 与分组', '外调服务 API', '请求日志', '部署与版本适配'],
     navigation: [
       { to: '/', label: '平台概览', icon: 'i-ph-squares-four-bold' },
       { to: '/modules', label: '模块管理', icon: 'i-ph-stack-bold' },
       { to: '/keys', label: 'API Key', icon: 'i-ph-key-bold' },
       { to: '/groups', label: '调用分组', icon: 'i-ph-users-four-bold' },
       { to: '/logs', label: '请求日志', icon: 'i-ph-list-bullets-bold' },
+      { to: '/settings', label: '平台设置', icon: 'i-ph-sliders-horizontal-bold' },
     ],
   },
 ]
@@ -92,9 +104,12 @@ export function findModule(id: string): ModuleManifest | undefined {
   return MODULE_MANIFESTS.find(module => module.id === id)
 }
 
+/**
+ * Admin write paths owned by an optional module. While the module is stopped
+ * these return 503; reads stay available so data can still be inspected.
+ */
 export function gatedModuleForRequest(path: string, method: string): string | null {
-  if (/^\/commandcode\/v1(?:\/|$)/.test(path)) return 'commandcode'
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) &&
-      /^\/api\/(?:accounts|external\/accounts)(?:\/|$)/.test(path)) return 'commandcode'
-  return null
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) return null
+  const match = /^\/api\/(?:modules\/)?([a-z0-9-]+)\/(?:accounts|import|sync)(?:\/|$)/.exec(path)
+  return match && isPoolModuleId(match[1]) ? match[1] : null
 }

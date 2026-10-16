@@ -20,8 +20,8 @@ export function usageTokens(usage: Usage): { input?: number; output?: number; to
 
 export interface NexusRouteRecord {
   moduleId?: string; groupId?: string; groupIds?: string[]; strategy?: string; nativeModel?: string
-  authIndex?: string; presetIds?: string[]; devin?: { level?: string; source?: string; removed?: string[] }
-  failover?: Array<{ kind?: string; groupId?: string; model?: string; status?: number; error?: string }>
+  authIndex?: string; presetIds?: string[]; usageSource?: string; usageDetail?: Record<string, unknown>; devin?: { level?: string; source?: string; removed?: string[] }
+  failover?: Array<{ kind?: string; moduleId?: string; groupId?: string; model?: string; status?: number; error?: string }>
 }
 
 /** Provider usage without the routing record, and the routing record itself. */

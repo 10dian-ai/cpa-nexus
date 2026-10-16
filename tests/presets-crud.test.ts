@@ -32,13 +32,13 @@ vi.mock('../server/lib/db', () => {
     if (query.startsWith('SELECT b.*,k.module_id')) return [...fixture.keyBindings.values()].map(row => ({ ...row, module_id: fixture.keys.get(row.key_id)?.module_id }))
     if (query.startsWith('SELECT b.mode,b.preset_id')) {
       const binding = fixture.keyBindings.get(values[0]), key = fixture.keys.get(values[0])
-      return binding && key && !key.prefix.startsWith('ccm_nexus_') && ['commandcode', 'cpa'].includes(key.module_id) ? [binding] : []
+      return binding && key && !key.prefix.startsWith('ccm_nexus_') && ['auto', 'cpa'].includes(key.module_id) ? [binding] : []
     }
     if (query.startsWith('SELECT id,module_id FROM gateway_keys')) {
       const key = fixture.keys.get(values[0])
-      return key && !key.prefix.startsWith('ccm_nexus_') && ['commandcode', 'cpa'].includes(key.module_id) ? [key] : []
+      return key && !key.prefix.startsWith('ccm_nexus_') && ['auto', 'cpa'].includes(key.module_id) ? [key] : []
     }
-    if (query.startsWith('SELECT id FROM managed_accounts')) return fixture.accounts.has(values[0]) ? [{ id: values[0] }] : []
+    if (query.startsWith('SELECT id FROM logicc_accounts')) return fixture.accounts.has(values[0]) ? [{ id: values[0] }] : []
     if (query.startsWith('INSERT INTO platform_modules')) return []
     if (query.startsWith('DELETE FROM nexus_key_preset_bindings')) { fixture.keyBindings.delete(values[0]); return [] }
     if (query.startsWith('INSERT INTO nexus_key_preset_bindings')) {
@@ -89,7 +89,7 @@ describe('persistent preset CRUD, model key routing and request validation', () 
   const create = async (sourceJson: unknown = document) => (await (await request('/api/presets', 'POST', { name: 'Demo', sourceJson })).json()) as any
   beforeEach(async () => {
     fixture.presets.clear(); fixture.bindings.clear(); fixture.keyBindings.clear(); fixture.keys.clear(); fixture.accounts.clear(); fixture.prefixCalls = []; fixture.enabled = false; fixture.routeReads = 0; resetPresetRouteCache()
-    fixture.keys.set(keyA, { id: keyA, module_id: 'commandcode', prefix: 'ccm_ka' })
+    fixture.keys.set(keyA, { id: keyA, module_id: 'auto', prefix: 'ccm_ka' })
     fixture.keys.set(keyB, { id: keyB, module_id: 'cpa', prefix: 'ccm_kb' })
     const router = createRouter()
     router.get('/api/presets', listHandler); router.post('/api/presets', createHandler)
@@ -130,8 +130,8 @@ describe('persistent preset CRUD, model key routing and request validation', () 
 
   it('applies only the selected key preset and never inherits legacy account or module presets', async () => {
     const created = await create(); fixture.accounts.add(accountId)
-    await setPresetBinding({ moduleId: 'commandcode', mode: 'preset', presetId: created.id })
-    await setPresetBinding({ moduleId: 'commandcode', accountId, mode: 'preset', presetId: created.id })
+    await setPresetBinding({ moduleId: 'logicc', mode: 'preset', presetId: created.id })
+    await setPresetBinding({ moduleId: 'logicc', accountId, mode: 'preset', presetId: created.id })
     expect((await request('/api/presets/routes', 'PUT', { keyId: keyB, mode: 'preset', presetId: created.id })).status).toBe(200)
     expect(await resolveKeyPresetRoute(keyB)).toBeNull()
     fixture.enabled = true
@@ -149,9 +149,9 @@ describe('persistent preset CRUD, model key routing and request validation', () 
     await request('/api/presets/routes', 'PUT', { keyId: keyB, mode: 'preset', presetId: second.id })
     expect((await resolveKeyPresetRoute(keyA))?.id).toBe(first.id)
     expect((await resolveKeyPresetRoute(keyB))?.id).toBe(second.id)
-    fixture.keys.get(keyB).module_id = 'commandcode'
+    fixture.keys.get(keyB).module_id = 'auto'
     expect(fixture.prefixCalls).toEqual([])
-    expect((await (await request('/api/presets/routes')).json()) as any).toMatchObject({ bindings: expect.arrayContaining([expect.objectContaining({ moduleId: 'commandcode', keyId: keyB, presetId: second.id })]) })
+    expect((await (await request('/api/presets/routes')).json()) as any).toMatchObject({ bindings: expect.arrayContaining([expect.objectContaining({ moduleId: 'auto', keyId: keyB, presetId: second.id })]) })
   })
 
   it('does not delete bound presets or permit incompatible edits of active routes', async () => {
