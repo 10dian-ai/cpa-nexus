@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { LogiccError } from './errors'
+import { generationFailure, invalidRequest, unsupportedRequest } from './errors'
 
 /**
  * Logicc generates from a single prompt per chat. CPA hands this module an
@@ -11,8 +11,9 @@ import { LogiccError } from './errors'
  */
 type Json = Record<string, unknown>
 const object = (value: unknown): value is Json => value !== null && typeof value === 'object' && !Array.isArray(value)
-const invalid = (message: string): never => { throw new LogiccError('client', 400, message) }
-const unsupported = (message: string): never => { throw new LogiccError('unsupported', 422, message) }
+// Messages here reach API callers: English, and never naming the upstream service.
+const invalid = (message: string): never => { throw invalidRequest(message) }
+const unsupported = (message: string): never => { throw unsupportedRequest(message) }
 
 export interface ChatMessage { role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string; tool_calls?: HistoryCall[] }
 export interface HistoryCall { id: string; name: string; arguments: Json }
@@ -29,14 +30,14 @@ export interface NormalizedChat {
 function textContent(content: unknown): string {
   if (content == null) return ''
   if (typeof content === 'string') return content
-  if (!Array.isArray(content)) invalid('content 必须为文本或内容块数组')
+  if (!Array.isArray(content)) invalid('content must be a string or an array of content parts')
   return (content as unknown[]).map(part => {
     const item = object(part) ? part : {}
     if (['text', 'input_text', 'output_text'].includes(String(item.type)) && typeof item.text === 'string') return item.text
     if (item.type === 'refusal' && typeof item.refusal === 'string') return item.refusal
     if (['thinking', 'redacted_thinking', 'reasoning'].includes(String(item.type))) return ''
     // Images, audio and files cannot be forwarded to Logicc's single text prompt.
-    return unsupported(`Logicc 不支持 ${String(item.type || 'unknown')} 类型的内容，已交给其他来源处理`)
+    return unsupported(`Content of type ${String(item.type || 'unknown').slice(0, 40)} is not supported for this model`)
   }).filter(Boolean).join('\n')
 }
 
@@ -44,30 +45,30 @@ function argumentsObject(value: unknown): Json {
   let parsed = value
   if (typeof value === 'string') {
     if (!value.trim()) return {}
-    try { parsed = JSON.parse(value) } catch { invalid('历史工具调用的 arguments 不是有效 JSON') }
+    try { parsed = JSON.parse(value) } catch { invalid('tool call arguments in the conversation history are not valid JSON') }
   }
-  if (!object(parsed)) invalid('历史工具调用的 arguments 必须为 JSON 对象')
+  if (!object(parsed)) invalid('tool call arguments in the conversation history must be a JSON object')
   return parsed as Json
 }
 
 function historyCall(call: unknown): HistoryCall {
-  if (!object(call)) invalid('工具调用必须为对象')
+  if (!object(call)) invalid('each tool call must be an object')
   const value = call as Json
   const fn = object(value.function) ? value.function : value
-  const id = typeof value.id === 'string' && value.id.trim() ? value.id : invalid('tool call id 不能为空')
-  const name = typeof fn.name === 'string' && fn.name.trim() ? fn.name : invalid('tool name 不能为空')
+  const id = typeof value.id === 'string' && value.id.trim() ? value.id : invalid('tool call id must not be empty')
+  const name = typeof fn.name === 'string' && fn.name.trim() ? fn.name : invalid('tool name must not be empty')
   return { id: id as string, name: name as string, arguments: argumentsObject(fn.arguments ?? fn.input ?? {}) }
 }
 
 function messagesFrom(input: unknown): ChatMessage[] {
-  if (!Array.isArray(input) || !input.length) invalid('messages 需要非空数组')
+  if (!Array.isArray(input) || !input.length) invalid('messages must be a non-empty array')
   return (input as unknown[]).map(raw => {
-    if (!object(raw) || !['system', 'developer', 'user', 'assistant', 'tool'].includes(String(raw.role))) invalid('消息 role 不正确')
+    if (!object(raw) || !['system', 'developer', 'user', 'assistant', 'tool'].includes(String(raw.role))) invalid('invalid message role')
     const message = raw as Json
     const normalized: ChatMessage = { role: message.role as ChatMessage['role'], content: textContent(message.content) }
-    if (message.role === 'tool') normalized.tool_call_id = typeof message.tool_call_id === 'string' && message.tool_call_id ? message.tool_call_id : invalid('tool 消息缺少 tool_call_id')
+    if (message.role === 'tool') normalized.tool_call_id = typeof message.tool_call_id === 'string' && message.tool_call_id ? message.tool_call_id : invalid('tool message is missing tool_call_id')
     if (message.tool_calls !== undefined && message.tool_calls !== null) {
-      if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) invalid('tool_calls 必须位于 assistant 消息中')
+      if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) invalid('tool_calls are only allowed on assistant messages')
       if ((message.tool_calls as unknown[]).length) normalized.tool_calls = (message.tool_calls as unknown[]).map(historyCall)
     }
     return normalized
@@ -77,29 +78,29 @@ function messagesFrom(input: unknown): ChatMessage[] {
 const BUILTIN_TOOLS: Record<string, string> = { web_search: 'web-search', 'web-search': 'web-search', web_search_preview: 'web-search', image_generation: 'image-generation', 'image-generation': 'image-generation' }
 
 function toolsFrom(body: Json) {
-  if (body.tools !== undefined && body.tools !== null && !Array.isArray(body.tools)) invalid('tools 必须为数组')
+  if (body.tools !== undefined && body.tools !== null && !Array.isArray(body.tools)) invalid('tools must be an array')
   const list = (body.tools as unknown[] | undefined) || []
-  if (list.length > 256) invalid('最多支持 256 个工具')
+  if (list.length > 256) invalid('at most 256 tools are supported')
   const tools: ToolDefinition[] = []
   const builtins: string[] = []
   for (const raw of list) {
-    if (!object(raw)) invalid('工具定义必须为对象')
+    if (!object(raw)) invalid('each tool definition must be an object')
     const tool = raw as Json
     const fn = (tool.type === 'function' || tool.type === undefined) && object(tool.function) ? tool.function : tool
     const name = typeof fn.name === 'string' ? fn.name : ''
     if (BUILTIN_TOOLS[String(tool.type)] || BUILTIN_TOOLS[name]) { builtins.push(BUILTIN_TOOLS[String(tool.type)] || BUILTIN_TOOLS[name]!); continue }
-    if (tool.type !== undefined && tool.type !== 'function') invalid(`不支持的工具类型：${String(tool.type)}`)
-    if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(name)) invalid('工具名称格式不正确')
-    if (tools.some(item => item.name === name)) invalid('工具名称不能重复')
-    if (fn.parameters !== undefined && !object(fn.parameters)) invalid('工具 parameters 必须为对象')
+    if (tool.type !== undefined && tool.type !== 'function') invalid(`unsupported tool type: ${String(tool.type).slice(0, 40)}`)
+    if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(name)) invalid('invalid tool name')
+    if (tools.some(item => item.name === name)) invalid('tool names must be unique')
+    if (fn.parameters !== undefined && !object(fn.parameters)) invalid('tool parameters must be an object')
     tools.push({ name, description: typeof fn.description === 'string' ? fn.description : '', parameters: (fn.parameters as Json) || { type: 'object', properties: {} } })
   }
   let choice: unknown = body.tool_choice ?? 'auto'
   if (object(choice)) choice = object(choice.function) ? choice.function.name : choice.name ?? choice.type
-  if (typeof choice !== 'string') invalid('tool_choice 不正确')
+  if (typeof choice !== 'string') invalid('invalid tool_choice')
   const name = choice as string
-  if (!['auto', 'none', 'required', ...tools.map(tool => tool.name)].includes(name) && !BUILTIN_TOOLS[name]) invalid('tool_choice 引用了未定义的工具')
-  if (name === 'required' && !tools.length && !builtins.length) invalid('tool_choice=required 需要至少一个工具')
+  if (!['auto', 'none', 'required', ...tools.map(tool => tool.name)].includes(name) && !BUILTIN_TOOLS[name]) invalid('tool_choice references an undefined tool')
+  if (name === 'required' && !tools.length && !builtins.length) invalid('tool_choice=required needs at least one tool')
   let active = name === 'none' ? [] : tools
   if (tools.some(tool => tool.name === name)) active = tools.filter(tool => tool.name === name)
   const forcedBuiltin = BUILTIN_TOOLS[name]
@@ -114,22 +115,22 @@ function toolsFrom(body: Json) {
 
 const EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'])
 export function normalizeChatRequest(input: unknown): NormalizedChat {
-  if (!object(input)) invalid('请求体必须为 JSON 对象')
+  if (!object(input)) invalid('request body must be a JSON object')
   const body = input as Json
   const model = typeof body.model === 'string' ? body.model.trim() : ''
-  if (!model) invalid('model 不能为空')
-  if (body.stream !== undefined && body.stream !== null && typeof body.stream !== 'boolean') invalid('stream 必须为布尔值')
-  if (body.n !== undefined && body.n !== null && body.n !== 1) invalid('仅支持 n=1')
+  if (!model) invalid('model must not be empty')
+  if (body.stream !== undefined && body.stream !== null && typeof body.stream !== 'boolean') invalid('stream must be a boolean')
+  if (body.n !== undefined && body.n !== null && body.n !== 1) invalid('only n=1 is supported')
   const format = object(body.response_format) ? body.response_format.type : undefined
-  if (format && format !== 'text') unsupported('Logicc 不支持结构化输出 response_format，已交给其他来源处理')
+  if (format && format !== 'text') unsupported('response_format structured output is not supported for this model')
   const max = body.max_completion_tokens ?? body.max_tokens
-  if (max !== undefined && max !== null && (!Number.isInteger(max) || Number(max) <= 0)) invalid('输出 token 上限必须为正整数')
+  if (max !== undefined && max !== null && (!Number.isInteger(max) || Number(max) <= 0)) invalid('the output token limit must be a positive integer')
   const messages = messagesFrom(body.messages)
-  if (!messages.some(message => message.content || message.tool_calls?.length)) invalid('请求没有有效消息')
+  if (!messages.some(message => message.content || message.tool_calls?.length)) invalid('the request contains no usable messages')
   const callIds = new Set<string>()
   for (const message of messages) {
     for (const call of message.tool_calls || []) callIds.add(call.id)
-    if (message.role === 'tool' && !callIds.has(message.tool_call_id!)) invalid('工具结果没有对应的历史工具调用')
+    if (message.role === 'tool' && !callIds.has(message.tool_call_id!)) invalid('a tool result has no matching tool call in the conversation')
   }
   const effort = typeof body.reasoning_effort === 'string' ? body.reasoning_effort.toLowerCase()
     : object(body.reasoning) && typeof body.reasoning.effort === 'string' ? body.reasoning.effort.toLowerCase() : undefined
@@ -164,7 +165,7 @@ ${JSON.stringify(request.messages)}
 Return the next assistant turn JSON now.${limit}`
 }
 
-const toolFailure = (message: string): never => { throw new LogiccError('generation', 502, message) }
+const toolFailure = (message: string): never => { throw generationFailure(message) }
 function envelope(raw: string): Json | null {
   let text = raw.trim()
   const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/i.exec(text)
@@ -176,29 +177,29 @@ function checkArguments(value: unknown, schema: unknown, depth = 0) {
   const types = schema.type ? [schema.type].flat().map(String) : []
   const matches = (type: string) => type === 'null' ? value === null : type === 'array' ? Array.isArray(value) : type === 'object' ? object(value)
     : type === 'integer' ? Number.isInteger(value) : type === 'number' ? typeof value === 'number' : typeof value === type
-  if (types.length && !types.some(matches)) toolFailure('模型生成的工具参数类型不符合 schema')
-  if (Array.isArray(schema.enum) && !schema.enum.some(item => JSON.stringify(item) === JSON.stringify(value))) toolFailure('模型生成的工具参数不在允许的枚举值中')
+  if (types.length && !types.some(matches)) toolFailure('the model produced tool arguments that do not match the schema')
+  if (Array.isArray(schema.enum) && !schema.enum.some(item => JSON.stringify(item) === JSON.stringify(value))) toolFailure('the model produced a tool argument outside the allowed values')
   if (object(value)) {
-    for (const key of Array.isArray(schema.required) ? schema.required : []) if (typeof key === 'string' && !Object.hasOwn(value, key)) toolFailure('模型生成的工具参数缺少必填字段')
+    for (const key of Array.isArray(schema.required) ? schema.required : []) if (typeof key === 'string' && !Object.hasOwn(value, key)) toolFailure('the model produced tool arguments without a required field')
     for (const [key, item] of Object.entries(value)) {
       const property = object(schema.properties) && Object.hasOwn(schema.properties, key) ? schema.properties[key] : undefined
-      if (schema.additionalProperties === false && property === undefined) toolFailure('模型生成的工具参数包含未允许的字段')
+      if (schema.additionalProperties === false && property === undefined) toolFailure('the model produced tool arguments with an unexpected field')
       checkArguments(item, property ?? schema.additionalProperties, depth + 1)
     }
   } else if (Array.isArray(value)) for (const item of value) checkArguments(item, schema.items, depth + 1)
 }
 function validateCalls(raw: unknown, request: NormalizedChat): ToolCall[] {
-  if (!Array.isArray(raw) || raw.length > 32) toolFailure('模型返回了无效的工具调用列表')
+  if (!Array.isArray(raw) || raw.length > 32) toolFailure('the model returned an invalid list of tool calls')
   const list = raw as unknown[]
-  if (!request.parallel && list.length > 1) toolFailure('模型返回了多个工具调用，但请求禁用了并行调用')
+  if (!request.parallel && list.length > 1) toolFailure('the model returned several tool calls but parallel tool calls are disabled')
   return list.map(item => {
     const value = object(item) ? item : {}
     const fn = object(value.function) ? value.function : value
     const tool = request.activeTools.find(entry => entry.name === fn.name)
-    if (!tool) toolFailure('模型请求了未声明或不允许的工具')
+    if (!tool) toolFailure('the model called a tool that was not declared or is not allowed')
     let args = fn.arguments ?? value.arguments ?? value.input ?? {}
-    if (typeof args === 'string') { try { args = JSON.parse(args) } catch { toolFailure('模型生成的工具参数不是有效 JSON') } }
-    if (!object(args)) toolFailure('模型生成的工具参数必须为 JSON 对象')
+    if (typeof args === 'string') { try { args = JSON.parse(args) } catch { toolFailure('the model produced tool arguments that are not valid JSON') } }
+    if (!object(args)) toolFailure('the model produced tool arguments that are not a JSON object')
     checkArguments(args, tool!.parameters)
     return { id: 'call_' + randomUUID().replaceAll('-', ''), name: tool!.name, arguments: args as Json }
   })
@@ -210,11 +211,11 @@ export function parseToolOutput(text: string, request: NormalizedChat): { text: 
   const raw = value ? value.tool_calls ?? (value.tool_call ? [value.tool_call] : undefined) : undefined
   if (raw !== undefined) {
     const calls = validateCalls(raw, request)
-    if (request.required && !calls.length) toolFailure('模型没有按 tool_choice 返回工具调用')
-    if (value!.content != null && typeof value!.content !== 'string') toolFailure('工具响应中的 content 必须为字符串或 null')
+    if (request.required && !calls.length) toolFailure('the model did not call a tool as required by tool_choice')
+    if (value!.content != null && typeof value!.content !== 'string') toolFailure('the model returned tool-call content that is not a string or null')
     return { text: typeof value!.content === 'string' ? value!.content : '', calls }
   }
-  if (request.required) toolFailure('模型没有生成有效的工具调用 JSON')
+  if (request.required) toolFailure('the model did not produce a valid tool call')
   // A plain answer is valid in auto mode; JSON quoted inside prose is never executed.
   return { text, calls: [] }
 }

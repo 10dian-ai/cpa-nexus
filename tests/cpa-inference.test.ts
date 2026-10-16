@@ -273,7 +273,7 @@ describe('unified model key router', () => {
       expect(response.status).toBe(413)
       const payload = await response.json()
       expect(payload.error.code).toBe('request_too_large')
-      expect(payload.error.message).toContain('client_max_body_size')
+      expect(payload.error.message).toContain('too large')
     })
 
     it('shrinks large inline images before they reach CPA', async () => {
@@ -315,7 +315,7 @@ describe('unified model key router', () => {
       const response = await post({ model: 'native-model', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + image } }] }] }, 'ccm_KA')
       expect(response.status).toBe(413)
       const message = (await response.json()).error.message as string
-      expect(message).toContain('已从'); expect(message).toContain('最长边 768px')
+      expect(message).toContain('compressed from'); expect(message).toContain('longest edge 768px')
     })
 
     it('records the credential CPA actually used', async () => {
@@ -414,6 +414,25 @@ describe('unified model key router', () => {
       expect(response.status).toBe(200)
       expect((await response.json()).body.model).toBe('native-model')
       expect(generations().map(item => item.body.model)).toEqual(['logicc/native-model', 'native-model'])
+    })
+
+    it('never shows callers the channel: English errors, no module name, no bridge alias', async () => {
+      fixture.offers.mockResolvedValue([])
+      fixture.poolModels.mockResolvedValue(new Map([[group, ['native-model']]]))
+      fixture.core.set('logicc/native-model', { status: 503, body: { error: { message: 'Logicc 会话刷新 拒绝了账号凭据（HTTP 403） https://clerk.logicc.com', type: 'api_error', code: 'logicc_unavailable' } } })
+      const failed = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
+      expect(failed.status).toBe(503)
+      const text = await failed.text()
+      expect(text).not.toMatch(/logicc|clerk|https?:|[\u4e00-\u9fff]/i)
+      expect(JSON.parse(text).error).toMatchObject({ code: 'service_unavailable', message: expect.stringMatching(/^[\x20-\x7e]+$/) })
+
+      fixture.core.delete('logicc/native-model')
+      const ok = await post({ model: 'native-model', messages: [] }, 'ccm_auto')
+      expect(ok.status).toBe(200)
+      const body = await ok.text()
+      expect(generations().at(-1)!.body.model).toBe('logicc/native-model')
+      expect(body).not.toContain('logicc/')
+      expect(JSON.parse(body).body.model).toBe('native-model')
     })
 
     it('hands a request the module declines to the next source', async () => {

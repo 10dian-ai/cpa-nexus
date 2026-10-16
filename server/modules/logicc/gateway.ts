@@ -7,9 +7,10 @@ import { writeBridgeTrace, type BridgeTrace } from '../../lib/bridge/trace'
 import { getDb } from '../../lib/db'
 import { LOGICC_POOL_ID } from './config'
 import { LogiccError, redactLogiccText } from './errors'
+import { clearCredentialStrikes, recordCredentialFailure } from './credentials'
 import { buildPrompt, normalizeChatRequest, parseToolOutput, type NormalizedChat } from './prompt'
 import { createChat, generate, parseAiSdkStream, reportedUsage } from './client'
-import { listCandidates, markAccountStatus, touchAccount } from './store'
+import { listCandidates, touchAccount } from './store'
 import { getLogiccSettings } from './settings'
 import { calibrateOutputSample, computeUsage, localTokens, officialCount, recordOfficialCount, tokenFamily } from './tokens'
 import { ChatOutput, sendChatError } from './output'
@@ -28,13 +29,24 @@ async function modelProvider(model: string): Promise<string> {
   return rows[0]?.provider ? String(rows[0].provider) : ''
 }
 
+/** Public error code for a failure kind: never names the upstream service. */
+export function publicErrorCode(error: LogiccError): string {
+  if (error.kind === 'unsupported') return SOURCE_UNSUPPORTED_CODE
+  if (error.kind === 'client') return 'invalid_request'
+  if (error.kind === 'rate_limit') return 'rate_limit_exceeded'
+  if (error.kind === 'generation') return 'generation_error'
+  return 'service_unavailable'
+}
+
+// Responses carry only the English public message; the detailed (admin) message stays in the trace.
 function respondFailure(event: H3Event, error: LogiccError) {
-  if (error.kind === 'unsupported') return sendChatError(event.node.res, 422, error.message, SOURCE_UNSUPPORTED_CODE)
-  if (error.kind === 'client') return sendChatError(event.node.res, error.status >= 400 && error.status < 500 ? error.status : 400, error.message, 'invalid_request')
-  if (error.kind === 'rate_limit') return sendChatError(event.node.res, 429, error.message, 'rate_limited', 30)
-  if (error.kind === 'generation') return sendChatError(event.node.res, 502, error.message, 'generation_error')
+  const code = publicErrorCode(error)
+  if (error.kind === 'unsupported') return sendChatError(event.node.res, 422, error.publicMessage, code)
+  if (error.kind === 'client') return sendChatError(event.node.res, error.status >= 400 && error.status < 500 ? error.status : 400, error.publicMessage, code)
+  if (error.kind === 'rate_limit') return sendChatError(event.node.res, 429, error.publicMessage, code, 30)
+  if (error.kind === 'generation') return sendChatError(event.node.res, 502, error.publicMessage, code)
   // Credentials, models and transient upstream failures: the router may try another group or source.
-  return sendChatError(event.node.res, 503, error.message, 'logicc_unavailable', 10)
+  return sendChatError(event.node.res, 503, error.publicMessage, code, 10)
 }
 
 interface AttemptResult { output: string; toolResults: string[]; reasoning: string; finishReason: string; reported: { input: number; output: number } | null }
@@ -56,15 +68,15 @@ export async function handleLogiccChat(event: H3Event, body: Record<string, unkn
   let request: NormalizedChat
   try {
     request = normalizeChatRequest(body)
-    if (settings.toolPolicy === 'reject' && request.tools.length) throw new LogiccError('unsupported', 422, 'Logicc 模块设置为不处理工具调用请求，已交给其他来源')
+    if (settings.toolPolicy === 'reject' && request.tools.length) throw new LogiccError('unsupported', 422, 'Logicc 模块设置为不处理工具调用请求，已交给其他来源', { publicMessage: 'Tool calls are not supported for this model' })
   } catch (error) {
-    const failure = error instanceof LogiccError ? error : new LogiccError('client', 400, '请求格式不正确')
+    const failure = error instanceof LogiccError ? error : new LogiccError('client', 400, '请求格式不正确', { publicMessage: 'Invalid request' })
     trace.attempts.push({ accountId: '', status: failure.status, error: failure.message })
     await saveTrace()
     return respondFailure(event, failure)
   }
   const prompt = buildPrompt(request)
-  if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) { await saveTrace(); return respondFailure(event, new LogiccError('unsupported', 422, '合并后的上下文超过 Logicc 单次提示上限，已交给其他来源')) }
+  if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) { await saveTrace(); return respondFailure(event, new LogiccError('unsupported', 422, '合并后的上下文超过 Logicc 单次提示上限，已交给其他来源', { publicMessage: 'The request context is too large for this model' })) }
 
   const family = tokenFamily(request.model, await modelProvider(request.model).catch(() => ''))
   const usageKeyed = family === 'claude' || family === 'gemini'
@@ -92,7 +104,7 @@ export async function handleLogiccChat(event: H3Event, body: Record<string, unkn
       const acquired = await acquireLease(redis, LOGICC_POOL_ID, { candidates })
       if (!acquired.ok) {
         lastError = acquired.reason === 'busy'
-          ? new LogiccError('rate_limit', 429, 'Logicc 账号并发已满，请稍后重试')
+          ? new LogiccError('rate_limit', 429, 'Logicc 账号并发已满，请稍后重试', { publicMessage: 'All capacity for this model is busy, please retry shortly' })
           : new LogiccError('upstream', 503, '这个分组的 Logicc 账号正在冷却，请稍后重试')
         break
       }
@@ -112,17 +124,18 @@ export async function handleLogiccChat(event: H3Event, body: Record<string, unkn
         await saveTrace()
         output.finish({ text: parsed.text, reasoning: result.reasoning, calls: parsed.calls, finishReason: result.finishReason, usage: usage.usage }, toolMode)
         void touchAccount(lease.accountId).catch(() => {})
+        void clearCredentialStrikes(lease.accountId).catch(() => {})
         void calibrateOutputSample(family, result.output + result.reasoning, settings).catch(() => {})
         return
       } catch (error) {
         const failure = error instanceof LogiccError ? error
-          : controller.signal.aborted ? new LogiccError('client', 499, '客户端已取消请求')
+          : controller.signal.aborted ? new LogiccError('client', 499, '客户端已取消请求', { publicMessage: 'Request cancelled' })
           : new LogiccError('upstream', 502, redactLogiccText(error instanceof Error ? error.message : 'Logicc 请求失败'))
         trace.attempts.push({ accountId: lease.accountId, status: failure.status, error: failure.message })
         if (failure.accountSpecific) {
           if (failure.cooldownSeconds) await cooldownAccount(redis, LOGICC_POOL_ID, lease.accountId, failure.cooldownSeconds).catch(() => {})
           if (failure.kind === 'model') await redis.set(modelDeniedKey(lease.accountId, request.model), '1', 'EX', 600).catch(() => {})
-          if (failure.kind === 'credential') await markAccountStatus(lease.accountId, 'credential_expired', failure.message).catch(() => {})
+          if (failure.kind === 'credential') await recordCredentialFailure(lease.accountId, failure).catch(() => {})
         }
         lastError = failure
         if (output.committed || controller.signal.aborted || !failure.accountSpecific) break
@@ -134,7 +147,7 @@ export async function handleLogiccChat(event: H3Event, body: Record<string, unkn
     if (controller.signal.aborted) return
     const failure = lastError ?? new LogiccError('upstream', 503, 'Logicc 请求失败')
     await saveTrace()
-    if (output.committed) output.fail(failure.message, failure.kind)
+    if (output.committed) output.fail(failure.publicMessage, publicErrorCode(failure))
     else respondFailure(event, failure)
   } finally {
     output.dispose()

@@ -112,8 +112,8 @@ export function parseTraceAuthIndex(value: string | string[] | undefined): strin
 
 export interface PipeResult { status: number; streaming: boolean; outcome: StreamOutcome; authIndex: string | null }
 
-/** Stream an opened CPA response to the client, redacting diagnostics and observing usage/outcome. */
-export function pipeCpaResponse(event: H3Event, upstream: CpaUpstream, options: { usageObserver?: BillingUsageObserver; capture?: { push(chunk: Uint8Array): void }; timeoutMs: number }): Promise<PipeResult> {
+/** Stream an opened CPA response to a model API caller. Errors are cleaned for callers (public-errors); `rewrite` replaces exact strings such as a bridge alias. */
+export function pipeCpaResponse(event: H3Event, upstream: CpaUpstream, options: { usageObserver?: BillingUsageObserver; capture?: { push(chunk: Uint8Array): void }; timeoutMs: number; rewrite?: [string, string][] }): Promise<PipeResult> {
   const { response, request } = upstream
   const status = response.statusCode || 502
   const contentType = String(response.headers['content-type'] || '')
@@ -150,7 +150,7 @@ export function pipeCpaResponse(event: H3Event, upstream: CpaUpstream, options: 
       response.pipe(res)
       return
     }
-    const filter = new DiagnosticResponseFilter(status, contentType)
+    const filter = new DiagnosticResponseFilter(status, contentType, true, { publicErrors: true, rewrite: options.rewrite })
     const encoding = String(response.headers['content-encoding'] || '').toLowerCase()
     const source = encoding === 'br' ? response.pipe(createBrotliDecompress())
       : ['gzip', 'deflate'].includes(encoding) ? response.pipe(createUnzip()) : response

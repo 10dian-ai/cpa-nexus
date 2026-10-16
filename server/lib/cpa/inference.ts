@@ -18,6 +18,7 @@ import { forwardCpa, openCpaUpstream, pipeCpaResponse, readUpstreamText, type Cp
 import { BILLING_USAGE_POLICY, BILLING_USAGE_POLICY_HEADER, BillingUsageObserver, normalizeBillingRequest } from '../billing'
 import { insertRequestLog } from '../logs'
 import { redactModelResponseBody } from '../diagnostic-response'
+import { publicErrorBody } from '../public-errors'
 import { redactSensitiveText } from '../../../shared/log-privacy'
 import { modelErrorBody } from '../model-errors'
 import { upstreamIdleTimeoutMs } from '../timeouts'
@@ -108,7 +109,7 @@ export async function handleNexusInference(event: H3Event) {
     if (!key) { fail(event, label, 401, 'A valid model API key is required'); return }
     settings = await getSettings()
     const routing = await resolveKeyRouting(key.id)
-    if (!routing.groupIds.length) { fail(event, label, 403, '这个模型 API Key 没有已启用的分组'); return }
+    if (!routing.groupIds.length) { fail(event, label, 403, 'This API key has no enabled groups'); return }
 
     if (event.method === 'GET' && (path === 'models' || path.startsWith('models/'))) {
       const models = await listKeyModels(key, routing.groupIds)
@@ -138,7 +139,7 @@ export async function handleNexusInference(event: H3Event) {
     if (event.node.res.headersSent) { event.node.res.destroy(); return }
     const explicit = Number((error as { statusCode?: number }).statusCode)
     const status = explicit || (/timeout/i.test(String(error)) ? 504 : 502)
-    fail(event, label, status, explicit && error instanceof Error && error.message ? redactSensitiveText(error.message) : 'CPA request failed; check the core connection',
+    fail(event, label, status, explicit && error instanceof Error && error.message ? redactSensitiveText(error.message) : 'Service temporarily unavailable, please retry later',
       status === 422 ? 'preset_route_error' : undefined)
   }
 }
@@ -160,12 +161,12 @@ async function runModelRequest(request: ModelRequest) {
   const label = request.logProtocol
   request.requestId = randomUUID()
   await requireModule('cpa')
-  if (!process.env.CPA_CLIENT_KEY?.trim()) { fail(event, label, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
+  if (!process.env.CPA_CLIENT_KEY?.trim()) { fail(event, label, 503, 'Service temporarily unavailable, please retry later'); return }
   const plan = await planCpaRoute({ model, groupIds })
   // Pool modules apply only to generation requests from unrestricted keys.
   const poolGroups = protocol && key.moduleId === 'auto' ? await resolvePoolGroups(model, groupIds) : new Map<PoolModuleId, Map<string, string>>()
   const attempts = sequenceAttempts({ groupIds, strategy: request.strategy, rotationKey: key.id + '\0' + model, perGroup: plan.perGroup, poolGroups })
-  if (!attempts.length) { fail(event, label, 404, '当前 Key 的分组中没有可调用的这个模型', 'model_not_found'); return }
+  if (!attempts.length) { fail(event, label, 404, 'The requested model is not available for this API key', 'model_not_found'); return }
   if (request.settings.imageMaxEdge > 0) {
     const compressed = await compressRequestImages(request.body, { maxEdge: request.settings.imageMaxEdge, quality: request.settings.imageQuality })
     if (compressed.stats.images) {
@@ -261,7 +262,8 @@ async function runPoolAttempt(request: ModelRequest, attempt: PoolRouteAttempt, 
     if (!last && isFailoverResponse(status, text)) { record(status, errorMessageFrom(text)); return 'next' }
     event.node.res.statusCode = status
     event.node.res.setHeader('content-type', String(upstream.response.headers['content-type'] || 'application/json; charset=utf-8'))
-    event.node.res.end(Buffer.from(redactModelResponseBody(Buffer.from(text), status)))
+    const shown = new TextDecoder().decode(redactModelResponseBody(Buffer.from(text.split(aliasModel).join(attempt.nativeModel)), status))
+    event.node.res.end(publicErrorBody(shown, status))
     await logRequest(request, { status, startedAt, failures, body, poolAttempt: attempt, presetIds, error: errorMessageFrom(text), responseBody: parseLogBody(text) })
     return 'done'
   }
@@ -271,7 +273,8 @@ async function runPoolAttempt(request: ModelRequest, attempt: PoolRouteAttempt, 
   const capture = new ResponseCapture()
   let piped: PipeResult | undefined
   try {
-    piped = await pipeCpaResponse(event, upstream, { usageObserver, capture, timeoutMs })
+    // Callers see the model name they know, never the bridge alias.
+    piped = await pipeCpaResponse(event, upstream, { usageObserver, capture, timeoutMs, rewrite: [[aliasModel, attempt.nativeModel]] })
   } finally {
     await logRequest(request, {
       status: piped?.status ?? status, startedAt, failures, body, poolAttempt: attempt, presetIds, piped, usage: usageObserver.value(),
@@ -335,7 +338,7 @@ async function runCpaAttempt(request: ModelRequest, attempt: CpaRouteAttempt, la
     const res = event.node.res
     res.statusCode = status
     res.setHeader('content-type', String(upstream.response.headers['content-type'] || 'application/json; charset=utf-8'))
-    res.end(Buffer.from(redactModelResponseBody(Buffer.from(text), status)))
+    res.end(publicErrorBody(new TextDecoder().decode(redactModelResponseBody(Buffer.from(text), status)), status))
     await logRequest(request, { status, startedAt, failures, error: errorMessageFrom(text), body, cpaAttempt: attempt, presetIds, devin, responseBody: parseLogBody(text) })
     return 'done'
   }
@@ -362,10 +365,10 @@ function tooLargeMessage(body: JsonObject, images?: ModelRequest['images']): str
   const size = mb(Buffer.byteLength(JSON.stringify(body)))
   const detail = images?.images
     ? images.compressed
-      ? `其中 ${images.images} 张图片已从 ${mb(images.beforeBytes)} MB 压缩到 ${mb(images.afterBytes)} MB（最长边 ${images.maxEdge}px）。`
-      : `其中 ${images.images} 张图片无法压缩（可能是 HEIC 等格式），已按原样发送。`
+      ? ` ${images.images} image(s) were compressed from ${mb(images.beforeBytes)} MB to ${mb(images.afterBytes)} MB (longest edge ${images.maxEdge}px).`
+      : ` ${images.images} image(s) could not be compressed (for example HEIC) and were sent as they are.`
     : ''
-  return `上游拒绝了过大的请求（约 ${size} MB）。${detail}模型服务前面的代理限制了请求体大小，请让该上游调高请求体上限（nginx 的 client_max_body_size），或减少图片数量。`
+  return `The request is too large (about ${size} MB).${detail} Reduce the number or size of images and retry.`
 }
 
 function parseLogBody(text: string): unknown {
@@ -431,9 +434,9 @@ async function logRequest(request: ModelRequest, input: {
 async function forwardUnscoped(event: H3Event, endpoint: ParsedEndpoint, key: AuthenticatedModelKey, groupIds: string[], settings: SystemSettings, body?: JsonObject) {
   await requireModule('cpa')
   const clientKey = process.env.CPA_CLIENT_KEY?.trim()
-  if (!clientKey) { fail(event, endpoint.path, 503, 'Configure CPA_CLIENT_KEY before using a unified CPA model key'); return }
+  if (!clientKey) { fail(event, endpoint.path, 503, 'Service temporarily unavailable, please retry later'); return }
   const offers = await listCpaGroupOffers(groupIds)
-  if (!offers.length) { fail(event, endpoint.path, 404, '当前 Key 的分组中没有可调用的 CPA 来源', 'model_not_found'); return }
+  if (!offers.length) { fail(event, endpoint.path, 404, 'No source is available for this API key', 'model_not_found'); return }
   const policy = await registerCpaGroupPolicy({ keyId: key.id, allowedAuthIDs: [...new Set(offers.flatMap(offer => offer.authIds))],
     allowedPluginIDs: [...new Set(offers.flatMap(offer => offer.pluginId ? [offer.pluginId] : []))] })
   await forwardCpa({ event, path: cpaPath(endpoint), body, clientKey, policy, timeoutMs: upstreamIdleTimeoutMs(settings) })

@@ -1,4 +1,5 @@
 import { redactLogValue } from '../../shared/log-privacy'
+import { publicErrorCode, publicErrorMessage } from './public-errors'
 
 /**
  * Protocol-shaped error bodies for the public model endpoints.
@@ -41,7 +42,10 @@ export function isAnthropicProtocol(protocol: string): boolean {
   return protocol === 'messages' || protocol.startsWith('messages/')
 }
 
-export function modelErrorBody(protocol: string, status: number, message: string, code?: string): Record<string, unknown> {
+/** Every platform-side rejection on the model API; the message is cleaned for callers (see public-errors). */
+export function modelErrorBody(protocol: string, status: number, rawMessage: string, rawCode?: string): Record<string, unknown> {
+  const message = publicErrorMessage(rawMessage, status)
+  const code = rawCode === undefined ? undefined : String(publicErrorCode(rawCode, status) ?? '') || undefined
   if (isAnthropicProtocol(protocol)) {
     const type = ANTHROPIC_BY_STATUS[status] || (status === 503 || status === 529 ? 'overloaded_error' : 'api_error')
     return redactLogValue({ type: 'error', error: { type, message } }) as Record<string, unknown>

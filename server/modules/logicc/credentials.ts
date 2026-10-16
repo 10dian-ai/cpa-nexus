@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { getRedis } from '../../lib/redis'
 import { decryptSecret, encryptSecret } from '../../lib/crypto'
-import { LOGICC_ORIGIN, TOKEN_EXPIRY_MARGIN_MS, logiccClerkBase } from './config'
-import { LogiccError, classifyLogiccStatus, networkFailure } from './errors'
-import { loadCredential, markAccountStatus, storeRotatedCookie, type LogiccCredentialRecord } from './store'
+import { cooldownAccount } from '../../lib/pool/scheduler'
+import { CREDENTIAL_STRIKE_LIMIT, LOGICC_POOL_ID, TOKEN_EXPIRY_MARGIN_MS, browserHeaders, logiccClerkBase } from './config'
+import { LogiccError, classifyLogiccStatus, describeErrorBody, looksBlocked, networkFailure } from './errors'
+import { loadCredential, markAccountStatus, noteAccountWarning, storeRotatedCookie, type LogiccCredentialRecord } from './store'
 
 /**
  * Logicc signs in with Clerk. A Clerk *client* (`__client` cookie on the
@@ -40,7 +41,7 @@ export function looksLikeJwt(value: string): boolean {
 /** A Clerk `__client` value: the raw cookie value, without the name or other cookies. */
 export function cleanClientCookie(value: string): string {
   const text = value.trim().replace(/^(['"])(.*)\1$/, '$2').replace(/^__client=/, '').trim()
-  if (!text || text.length > 20_000 || !/^[\w.~+/=-]+$/.test(text)) throw new LogiccError('client', 400, '__client Cookie 格式不正确：请只填写 Cookie 的值')
+  if (!text || text.length > 20_000 || !/^[\w.~+/=-]+$/.test(text)) throw new LogiccError('client', 400, '__client Cookie 格式不正确：请只填写 Cookie 的值', { definitive: true })
   return text
 }
 
@@ -66,15 +67,16 @@ async function clerkFetch(path: string, init: RequestInit & { timeoutMs?: number
 /** Mint a session JWT from a Clerk client cookie. */
 export async function mintSessionJwt(sessionId: string, clientCookie: string): Promise<{ jwt: string; cookie: string | null }> {
   const response = await clerkFetch(`/v1/client/sessions/${encodeURIComponent(sessionId)}/tokens`, {
-    method: 'POST', headers: { cookie: `__client=${clientCookie}`, origin: LOGICC_ORIGIN, accept: 'application/json' },
+    method: 'POST', headers: { ...browserHeaders(), cookie: `__client=${clientCookie}`, accept: 'application/json' },
   })
   const cookie = rotatedCookie(response)
   const text = await response.text().catch(() => '')
   if (!response.ok) {
-    // Clerk answers 401/403/404 for revoked, ended or foreign sessions.
-    const failure = response.status === 404 || response.status === 422
-      ? new LogiccError('credential', response.status, `Clerk 会话不存在或已结束（HTTP ${response.status}）`)
-      : classifyLogiccStatus(response.status, text, '会话刷新')
+    // Clerk answers 401/403/404 for revoked, ended or foreign sessions; a firewall in front of it answers with a web page.
+    const headers = { contentType: response.headers.get('content-type') || '', server: response.headers.get('server') || '' }
+    const failure = (response.status === 404 || response.status === 422) && !looksBlocked(text, headers.contentType, headers.server)
+      ? new LogiccError('credential', response.status, `Clerk 会话不存在或已结束（HTTP ${response.status}）：${describeErrorBody(text, headers.contentType)}`)
+      : classifyLogiccStatus(response.status, text, '会话刷新', headers)
     throw Object.assign(failure, { rotatedCookie: cookie })
   }
   let jwt = ''
@@ -84,13 +86,40 @@ export async function mintSessionJwt(sessionId: string, clientCookie: string): P
 }
 
 /**
+ * Mark the session active, as Logicc's web app does when the tab is used
+ * (`POST …/sessions/{id}/touch`). Sessions with an inactivity timeout end
+ * when nothing touches them; minting tokens alone may not count. Clerk may
+ * rotate `__client` in any response, so a rotated value is kept here too.
+ * Never fatal: the token mint that follows decides the account's health.
+ */
+export async function keepSessionAlive(id: string): Promise<void> {
+  const redis = getRedis()
+  const token = randomUUID()
+  // Skip when another process is talking to Clerk for this account right now.
+  if (!await redis.set(lockKey(id), token, 'PX', 30_000, 'NX')) return
+  try {
+    const record = await loadCredential(id)
+    if (!record?.clientCookie) return
+    const response = await clerkFetch(`/v1/client/sessions/${encodeURIComponent(record.sessionId)}/touch`, {
+      method: 'POST', headers: { ...browserHeaders(), cookie: `__client=${record.clientCookie}`, accept: 'application/json' }, timeoutMs: 15_000,
+    }).catch(() => null)
+    if (!response) return
+    const cookie = rotatedCookie(response)
+    await response.body?.cancel().catch(() => {})
+    if (cookie && cookie !== record.clientCookie) await storeRotatedCookie(record.id, cookie, record.credentialVersion).catch(() => false)
+  } finally {
+    await redis.eval(`if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) else return 0 end`, 1, lockKey(id), token).catch(() => {})
+  }
+}
+
+/**
  * Find the active session of a Clerk client, for imports that only provide
  * `__client`. Clerk's Frontend API returns the client with its sessions.
  */
 export async function discoverSessionId(clientCookie: string): Promise<string> {
-  const response = await clerkFetch('/v1/client', { method: 'GET', headers: { cookie: `__client=${clientCookie}`, origin: LOGICC_ORIGIN, accept: 'application/json' } })
+  const response = await clerkFetch('/v1/client', { method: 'GET', headers: { ...browserHeaders(), cookie: `__client=${clientCookie}`, accept: 'application/json' } })
   const text = await response.text().catch(() => '')
-  if (!response.ok) throw classifyLogiccStatus(response.status, text, '会话查询')
+  if (!response.ok) throw classifyLogiccStatus(response.status, text, '会话查询', { contentType: response.headers.get('content-type') || '', server: response.headers.get('server') || '' })
   let payload: Record<string, any> = {}
   try { payload = JSON.parse(text) } catch { /* handled below */ }
   const client = payload?.response && typeof payload.response === 'object' ? payload.response : payload?.client && typeof payload.client === 'object' ? payload.client : payload
@@ -105,6 +134,44 @@ export async function discoverSessionId(clientCookie: string): Promise<string> {
 }
 
 const tokenKey = (id: string) => `ccm:logicc:jwt:${id}`
+const strikeKey = (id: string) => `ccm:logicc:credential-strikes:${id}`
+const strikeGuardKey = (id: string) => `ccm:logicc:credential-strike-guard:${id}`
+/** Strikes expire when no further rejection follows within this window. */
+const STRIKE_WINDOW_SECONDS = 6 * 3600
+/** Rejections within this long count once: concurrent requests on one account fail together. */
+const STRIKE_GUARD_SECONDS = 60
+
+/**
+ * One rejection is not a verdict. Clerk and Logicc sit behind bot protection
+ * that may briefly refuse a server, and Clerk answers 403 for more than
+ * revoked sessions. A rejected account rests (5 minutes) and stays in the
+ * pool; only CREDENTIAL_STRIKE_LIMIT rejections without a success in between
+ * take it out, and the worker's periodic check brings it back when the
+ * session works again. Failures that cannot heal (no cookie to renew with)
+ * remove the account at once.
+ */
+export async function recordCredentialFailure(id: string, error: LogiccError): Promise<void> {
+  if (error.handled || error.kind !== 'credential') return
+  error.handled = true
+  const redis = getRedis()
+  await cooldownAccount(redis, LOGICC_POOL_ID, id, error.cooldownSeconds).catch(() => {})
+  if (error.definitive) { await markAccountStatus(id, 'credential_expired', error.message); return }
+  if (!await redis.set(strikeGuardKey(id), '1', 'EX', STRIKE_GUARD_SECONDS, 'NX')) return
+  const strikes = await redis.incr(strikeKey(id))
+  await redis.expire(strikeKey(id), STRIKE_WINDOW_SECONDS)
+  if (strikes >= CREDENTIAL_STRIKE_LIMIT) {
+    await markAccountStatus(id, 'credential_expired', `${error.message}（连续 ${strikes} 次被拒，已移出号池；后台检测成功后自动恢复）`)
+  } else {
+    await noteAccountWarning(id, `${error.message}（第 ${strikes}/${CREDENTIAL_STRIKE_LIMIT} 次，账号冷却 ${Math.round(error.cooldownSeconds / 60)} 分钟后重试，仍在号池中）`)
+  }
+}
+/** The account worked end to end: forget earlier rejections. */
+export async function clearCredentialStrikes(id: string): Promise<void> {
+  await getRedis().del(strikeKey(id), strikeGuardKey(id))
+}
+export async function credentialStrikes(id: string): Promise<number> {
+  return Number(await getRedis().get(strikeKey(id))) || 0
+}
 const lockKey = (id: string) => `ccm:logicc:refresh-lock:${id}`
 async function cachedToken(id: string): Promise<string | null> {
   const value = await getRedis().get(tokenKey(id))
@@ -134,7 +201,7 @@ async function refreshWithLock(record: LogiccCredentialRecord): Promise<string> 
     if (shared) return shared
     // Re-read: another process may have stored a rotated cookie meanwhile.
     const latest = (await loadCredential(record.id)) ?? record
-    if (!latest.clientCookie) throw new LogiccError('credential', 401, '账号没有 __client Cookie，无法自动续期')
+    if (!latest.clientCookie) throw new LogiccError('credential', 401, '账号没有 __client Cookie，无法自动续期', { definitive: true })
     try {
       const minted = await mintSessionJwt(latest.sessionId, latest.clientCookie)
       if (minted.cookie && minted.cookie !== latest.clientCookie) await storeRotatedCookie(latest.id, minted.cookie, latest.credentialVersion)
@@ -152,8 +219,8 @@ async function refreshWithLock(record: LogiccCredentialRecord): Promise<string> 
 
 /**
  * A usable session JWT for the account. `force` skips caches after Logicc
- * rejected the previous token. Credential failures mark the account so it
- * leaves the pool until an administrator provides new credentials.
+ * rejected the previous token. Credential failures count as strikes; see
+ * recordCredentialFailure.
  */
 export async function accountToken(id: string, options: { force?: boolean } = {}): Promise<string> {
   if (!options.force) {
@@ -161,16 +228,16 @@ export async function accountToken(id: string, options: { force?: boolean } = {}
     if (cached) return cached
   }
   const record = await loadCredential(id)
-  if (!record) throw new LogiccError('credential', 404, '账号不存在')
+  if (!record) throw new LogiccError('credential', 404, '账号不存在', { definitive: true })
   try {
     if (!record.clientCookie) {
       if (!options.force && isFreshJwt(record.token)) return record.token
-      throw new LogiccError('credential', 401, 'Session JWT 已过期，请补充 __client Cookie 以自动续期，或更新 JWT')
+      throw new LogiccError('credential', 401, 'Session JWT 已过期，请补充 __client Cookie 以自动续期，或更新 JWT', { definitive: true })
     }
     if (options.force) await forgetToken(id)
     return await refreshWithLock(record)
   } catch (error) {
-    if (error instanceof LogiccError && error.kind === 'credential') await markAccountStatus(id, 'credential_expired', error.message).catch(() => {})
+    if (error instanceof LogiccError && error.kind === 'credential') await recordCredentialFailure(id, error).catch(() => {})
     throw error
   }
 }

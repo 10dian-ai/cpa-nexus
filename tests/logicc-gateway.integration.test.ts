@@ -23,7 +23,11 @@ vi.mock('../server/lib/db', () => ({ getDb: () => async (strings: TemplateString
 } }))
 vi.mock('../server/lib/settings', () => ({ getSettings: async () => ({ upstreamTimeoutSeconds: 30 }) }))
 vi.mock('../server/modules/logicc/settings', () => ({ getLogiccSettings: async () => structuredClone(fixture.settings), getLogiccSecrets: async () => ({ anthropicCountKey: null, geminiCountKey: null }) }))
-vi.mock('../server/modules/logicc/credentials', () => ({ accountToken: async (id: string) => 'jwt-for-' + id }))
+vi.mock('../server/modules/logicc/credentials', () => ({
+  accountToken: async (id: string) => 'jwt-for-' + id,
+  recordCredentialFailure: async (id: string, error: { kind: string }) => { fixture.marked.push({ id, status: 'strike:' + error.kind }) },
+  clearCredentialStrikes: async () => {},
+}))
 vi.mock('../server/modules/logicc/store', async importOriginal => ({
   ...await importOriginal<object>(),
   listCandidates: async () => fixture.candidates,
@@ -35,7 +39,7 @@ import { handleLogiccChat } from '../server/modules/logicc/gateway'
 import { localTokens } from '../server/modules/logicc/tokens'
 import { readCooldowns } from '../server/lib/pool/scheduler'
 
-type Script = { status?: number; events?: unknown[] }
+type Script = { status?: number; events?: unknown[]; html?: boolean }
 describe.skipIf(!redisUrl)('Logicc gateway against a fake Logicc web API', () => {
   let logicc: Server, app: Server, appUrl: string
   const received: { path: string; auth: string; body: any }[] = []
@@ -52,6 +56,7 @@ describe.skipIf(!redisUrl)('Logicc gateway against a fake Logicc web API', () =>
       const first = scripts.get('first-generation')
       if (first) scripts.delete('first-generation')
       const script = first ?? scripts.get(account) ?? { events: [{ type: 'text-delta', delta: 'Hello' }, { type: 'text-delta', delta: ' world' }, { type: 'finish', finishReason: 'stop' }] }
+      if (script.status && script.html) { res.writeHead(script.status, { 'content-type': 'text/html' }); res.end('<!DOCTYPE html><title>Just a moment...</title>'); return }
       if (script.status) { res.writeHead(script.status, { 'content-type': 'application/json' }); res.end('{"error":"upstream"}'); return }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       for (const event of script.events!) res.write(`data: ${JSON.stringify(event)}\n\n`)
@@ -126,12 +131,26 @@ describe.skipIf(!redisUrl)('Logicc gateway against a fake Logicc web API', () =>
     expect(fixture.touched).toEqual([trace.accountId])
   })
 
-  it('marks an account whose credentials Logicc rejects and answers 503 so the router can fail over', async () => {
+  it('counts a credential strike when Logicc rejects an account and answers a neutral English 503 so the router can fail over', async () => {
     scripts.set('acct-a', { status: 403 })
     fixture.candidates = [{ id: 'acct-a', limit: 0 }]
-    const { response } = await call({ model: 'claude-sonnet', messages: [{ role: 'user', content: 'hi' }] })
+    const { response, requestId } = await call({ model: 'claude-sonnet', messages: [{ role: 'user', content: 'hi' }] })
     expect(response.status).toBe(503)
-    expect(fixture.marked).toContainEqual({ id: 'acct-a', status: 'credential_expired' })
+    const text = await response.text()
+    expect(text).not.toMatch(/logicc|clerk|https?:|[\u4e00-\u9fff]/i)
+    expect(JSON.parse(text).error.code).toBe('service_unavailable')
+    expect(fixture.marked).toContainEqual({ id: 'acct-a', status: 'strike:credential' })
+    // Administrators still get the detailed reason.
+    expect(JSON.stringify(fixture.traces.get(requestId))).toContain('拒绝了账号凭据')
+  })
+
+  it('treats a firewall page as a blocked request, not a rejected session', async () => {
+    fixture.candidates = [{ id: 'acct-a', limit: 0 }]
+    scripts.set('acct-a', { status: 403, html: true })
+    const { response } = await call({ model: 'claude-sonnet', messages: [{ role: 'user', content: 'hi' }] })
+    expect(response.status).toBe(503); await response.arrayBuffer()
+    expect(fixture.marked).toEqual([])
+    expect((await readCooldowns(fixture.redis, 'logicc', ['acct-a'])).has('acct-a')).toBe(true)
   })
 
   it('turns an emulated tool envelope into standard tool calls', async () => {

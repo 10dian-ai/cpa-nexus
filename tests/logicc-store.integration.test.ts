@@ -50,6 +50,9 @@ describe.skipIf(!databaseUrl)('Logicc account pool on PostgreSQL', () => {
     await patchGroup(teamGroup, { enabled: true })
     await sql`UPDATE logicc_accounts SET status='credential_expired' WHERE id=${a}`
     expect(await listCandidates(logiccGroup, 'claude-x')).toEqual([])
+    // Its models stay published, so callers get a retryable 503 rather than "model not found".
+    expect(await servingModels()).toEqual(['claude-x', 'gpt-y'])
+    await sql`UPDATE logicc_accounts SET status='pending' WHERE id=${a}`
     expect(await servingModels()).toEqual(['claude-x'])
     await sql`UPDATE logicc_accounts SET status='ready',enabled=false WHERE id=${a}`
     expect(await listCandidates(logiccGroup, 'claude-x')).toEqual([])

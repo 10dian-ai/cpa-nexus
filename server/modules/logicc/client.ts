@@ -1,4 +1,4 @@
-import { logiccApiBase } from './config'
+import { browserHeaders, logiccApiBase } from './config'
 import { accountToken } from './credentials'
 import { LogiccError, classifyLogiccStatus, networkFailure } from './errors'
 import { normalizeModels } from './store'
@@ -22,6 +22,7 @@ async function call(accountId: string, path: string, init: { method?: string; bo
       response = await fetch(`${base}/${path}`, {
         method: init.method || 'GET', redirect: 'manual', signal: init.signal,
         headers: {
+          ...browserHeaders(),
           authorization: `Bearer ${token}`,
           accept: init.stream ? 'text/event-stream' : 'application/json',
           ...(init.stream ? { 'stream-response-protocol': 'ai-sdk-v6' } : {}),
@@ -36,7 +37,7 @@ async function call(accountId: string, path: string, init: { method?: string; bo
     if (response.status === 401 && attempt === 0) { await response.body?.cancel().catch(() => {}); continue }
     if (!response.ok) {
       const text = await response.text().catch(() => '')
-      throw classifyLogiccStatus(response.status, text, operation)
+      throw classifyLogiccStatus(response.status, text, operation, { contentType: response.headers.get('content-type') || '', server: response.headers.get('server') || '' })
     }
     return response
   }

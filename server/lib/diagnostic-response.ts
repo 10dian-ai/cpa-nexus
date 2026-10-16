@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { isModelErrorPayload, redactDiagnosticFields, redactLogValue, redactSensitiveText } from '../../shared/log-privacy'
+import { publicErrorBody, publicErrorMessage, publicErrorPayload } from './public-errors'
 
 const encoder = new TextEncoder()
 
@@ -57,6 +58,39 @@ function redactSseFrame(frame: string, errorResponse: boolean): string {
   }).join(frame.includes('\r\n') ? '\r\n' : '\n')
 }
 
+const ERROR_EVENT = /^(?:error|response\.failed|.*[._-]error)$/i
+
+/** A redacted error SSE frame, further cleaned for model API callers. */
+function publicSseFrame(frame: string, status: number, errorResponse: boolean): string {
+  const lines = frame.split(/\r?\n/)
+  const data = lines.filter(line => /^data:/.test(line)).map(line => line.slice(5).trimStart()).join('\n')
+  const event = lines.find(line => /^event:/.test(line))?.slice(6).trim() || ''
+  if (!data || data === '[DONE]') return frame
+  const errorStatus = status >= 400 ? status : 502
+  let value: unknown
+  try { value = JSON.parse(data) } catch {
+    if (!errorResponse && !ERROR_EVENT.test(event)) return frame
+    return lines.map(line => line.startsWith('data:') ? 'data: ' + publicErrorMessage(line.slice(5).trimStart(), errorStatus) : line).join(frame.includes('\r\n') ? '\r\n' : '\n')
+  }
+  if (!errorResponse && !isModelErrorPayload(value) && !ERROR_EVENT.test(event)) return frame
+  const safe = JSON.stringify(publicErrorPayload(value, errorStatus))
+  if (safe === JSON.stringify(value)) return frame
+  let inserted = false
+  return lines.flatMap(line => {
+    if (!line.startsWith('data:')) return [line]
+    if (inserted) return []
+    inserted = true
+    return ['data: ' + safe]
+  }).join(frame.includes('\r\n') ? '\r\n' : '\n')
+}
+
+export interface ResponseFilterOptions {
+  /** The response goes to a model API caller: errors are cleaned with public-errors. */
+  publicErrors?: boolean
+  /** Exact strings replaced everywhere in the body, e.g. a bridge alias with the model name the caller knows. */
+  rewrite?: [from: string, to: string][]
+}
+
 /** Buffer one SSE event across network/UTF-8 boundaries, then keep normal events
  * exactly as received. JSON errors must be inspected before any bytes are sent. */
 export class DiagnosticResponseFilter {
@@ -65,9 +99,29 @@ export class DiagnosticResponseFilter {
   private readonly decoder = new TextDecoder()
   private frame = ''
   private parts: Uint8Array[] = []
-  constructor(private readonly status: number, contentType: string, inspectJson = true) {
+  private readonly rewrite: [string, string][]
+  constructor(private readonly status: number, contentType: string, inspectJson = true, private readonly options: ResponseFilterOptions = {}) {
     this.streaming = /(?:^|;)\s*text\/event-stream(?:;|$)/i.test(contentType)
     this.buffered = !this.streaming && (status >= 400 || inspectJson && /(?:application\/(?:[\w.+-]*\+)?json)(?:;|$)/i.test(contentType))
+    this.rewrite = (options.rewrite ?? []).filter(([from, to]) => from && from !== to)
+  }
+  private replace(text: string): string {
+    for (const [from, to] of this.rewrite) text = text.split(from).join(to)
+    return text
+  }
+  private safeFrame(frame: string): string {
+    const errorResponse = this.status >= 400
+    const redacted = redactSseFrame(this.replace(frame), errorResponse)
+    return this.options.publicErrors ? publicSseFrame(redacted, this.status, errorResponse) : redacted
+  }
+  private safeBody(body: Uint8Array): Uint8Array {
+    const source = this.rewrite.length ? encoder.encode(this.replace(new TextDecoder().decode(body))) : body
+    const redacted = redactModelResponseBody(source, this.status)
+    if (!this.options.publicErrors) return redacted
+    const text = new TextDecoder().decode(redacted)
+    let error = this.status >= 400
+    if (!error) { try { error = isModelErrorPayload(JSON.parse(text)) } catch { /* Not JSON: a success body. */ } }
+    return error ? encoder.encode(publicErrorBody(text, this.status >= 400 ? this.status : 502)) : redacted
   }
   push(chunk: Uint8Array): Uint8Array[] {
     if (this.buffered) { this.parts.push(chunk); return [] }
@@ -76,7 +130,7 @@ export class DiagnosticResponseFilter {
     const output: Uint8Array[] = []
     let boundary: RegExpExecArray | null
     while ((boundary = /\r?\n\r?\n/.exec(this.frame))) {
-      output.push(encoder.encode(redactSseFrame(this.frame.slice(0, boundary.index), this.status >= 400) + boundary[0]))
+      output.push(encoder.encode(this.safeFrame(this.frame.slice(0, boundary.index)) + boundary[0]))
       this.frame = this.frame.slice(boundary.index + boundary[0].length)
     }
     return output
@@ -85,13 +139,13 @@ export class DiagnosticResponseFilter {
     if (this.buffered) {
       const body = Buffer.concat(this.parts)
       this.parts = []
-      return [redactModelResponseBody(body, this.status)]
+      return [this.safeBody(body)]
     }
     if (!this.streaming) return []
     this.frame += this.decoder.decode()
     const tail = this.frame
     this.frame = ''
-    return tail ? [encoder.encode(redactSseFrame(tail, this.status >= 400))] : []
+    return tail ? [encoder.encode(this.safeFrame(tail))] : []
   }
 }
 

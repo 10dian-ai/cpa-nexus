@@ -62,6 +62,10 @@ export async function storeRotatedCookie(id: string, cookie: string, expectedVer
 export async function markAccountStatus(id: string, status: LogiccAccountStatus, error: string | null) {
   await getDb()`UPDATE logicc_accounts SET status=${status},sync_error=${error ? redactLogiccText(error) : null},last_sync_at=now(),updated_at=now() WHERE id=${id}`
 }
+/** A rejection that did not take the account out of the pool: shown to administrators, status unchanged. */
+export async function noteAccountWarning(id: string, message: string) {
+  await getDb()`UPDATE logicc_accounts SET sync_error=${redactLogiccText(message)},updated_at=now() WHERE id=${id}`
+}
 /** A failed background check: transient failures keep a ready account in the pool. */
 export async function markSyncFailure(id: string, error: string) {
   await getDb()`UPDATE logicc_accounts SET status=CASE WHEN status='ready' THEN 'ready' ELSE 'sync_error' END,
@@ -70,11 +74,18 @@ export async function markSyncFailure(id: string, error: string) {
 export async function markAccountReady(id: string, models: LogiccModel[]) {
   await getDb()`UPDATE logicc_accounts SET status='ready',sync_error=NULL,models=${getDb().json(models as any)},last_sync_at=now(),updated_at=now() WHERE id=${id}`
 }
-/** A request succeeded: the account is usable regardless of an older failed check. */
+/** A request succeeded: the account is usable regardless of an older failed check or warning. */
 export async function touchAccount(id: string) {
-  await getDb()`UPDATE logicc_accounts SET last_used_at=now(),status=CASE WHEN status='sync_error' THEN 'ready' ELSE status END,
-    sync_error=CASE WHEN status='sync_error' THEN NULL ELSE sync_error END WHERE id=${id}`
+  await getDb()`UPDATE logicc_accounts SET last_used_at=now(),status=CASE WHEN status IN ('sync_error','credential_expired') THEN 'ready' ELSE status END,
+    sync_error=NULL WHERE id=${id}`
 }
+
+/**
+ * Accounts whose models stay published while they are temporarily out of the
+ * pool. Clients then get a retryable 503 (and the router tries other sources)
+ * instead of a 404 that says the model does not exist.
+ */
+const LISTED_STATUSES = ['ready', 'sync_error', 'credential_expired']
 
 /** Accounts of one call group that may serve the model, oldest-used first. */
 export async function listCandidates(groupId: string, model: string): Promise<LogiccCandidate[]> {
@@ -87,7 +98,7 @@ export async function listCandidates(groupId: string, model: string): Promise<Lo
   return rows.map(row => ({ id: String(row.id), limit: Number(row.max_concurrency) }))
 }
 
-/** Models each requested group can serve through its enabled, ready accounts. */
+/** Models each requested group can serve through its enabled accounts (see LISTED_STATUSES). */
 export async function groupModels(groupIds: string[]): Promise<Map<string, string[]>> {
   const result = new Map<string, string[]>()
   if (!groupIds.length) return result
@@ -96,7 +107,7 @@ export async function groupModels(groupIds: string[]): Promise<Map<string, strin
     JOIN nexus_account_groups ag ON ag.module_id='logicc' AND ag.account_id=a.id::text AND ag.group_id IN ${sql(groupIds)}
     JOIN nexus_groups g ON g.id=ag.group_id AND g.enabled=true
     CROSS JOIN LATERAL jsonb_array_elements(a.models) m
-    WHERE a.enabled=true AND a.status='ready' GROUP BY ag.group_id,m->>'id' ORDER BY m->>'id'`
+    WHERE a.enabled=true AND a.status IN ${sql(LISTED_STATUSES)} GROUP BY ag.group_id,m->>'id' ORDER BY m->>'id'`
   for (const row of rows) {
     const list = result.get(String(row.group_id)) ?? []
     list.push(String(row.model))
@@ -105,10 +116,11 @@ export async function groupModels(groupIds: string[]): Promise<Map<string, strin
   return result
 }
 
-/** Every model any enabled, ready account serves: the bridge channel's catalog in CPA. */
+/** Every model an enabled account serves (or served before a temporary failure): the bridge channel's catalog in CPA. */
 export async function servingModels(): Promise<string[]> {
-  const rows = await getDb()`SELECT DISTINCT m->>'id' AS model FROM logicc_accounts a CROSS JOIN LATERAL jsonb_array_elements(a.models) m
-    WHERE a.enabled=true AND a.status='ready' ORDER BY 1`
+  const sql = getDb()
+  const rows = await sql`SELECT DISTINCT m->>'id' AS model FROM logicc_accounts a CROSS JOIN LATERAL jsonb_array_elements(a.models) m
+    WHERE a.enabled=true AND a.status IN ${sql(LISTED_STATUSES)} ORDER BY 1`
   return rows.map(row => String(row.model)).filter(Boolean)
 }
 
