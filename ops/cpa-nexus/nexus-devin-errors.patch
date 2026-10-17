@@ -1,8 +1,8 @@
 diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
-index e734569748bdc33ed23ad9174b485672e33a441c..c876540affa491a838df7ecd46ecd864ed44062d 100644
+index fce551ff19d9f1d10bf0f723b3186521697c4fc3..398de7a671a2c1a5df2fdf015ec146d9b10a928c 100644
 --- a/internal/runtime/executor/helps/devin_wire.go
 +++ b/internal/runtime/executor/helps/devin_wire.go
-@@ -1035,7 +1035,7 @@ func ParseDevinTrailerError(payload []byte) (statusCode int, err error) {
+@@ -1036,7 +1036,7 @@ func ParseDevinTrailerError(payload []byte) (statusCode int, err error) {
  	case "permission_denied":
  		if strings.Contains(msgLower, "high demand") {
  			httpCode = http.StatusTooManyRequests
@@ -164,7 +164,7 @@ index 0000000000000000000000000000000000000000..4b7d87a61d88144c88e7e0985c059af8
 +}
 diff --git a/sdk/api/handlers/nexus_devin_scoped_errors_test.go b/sdk/api/handlers/nexus_devin_scoped_errors_test.go
 new file mode 100644
-index 0000000..d8182e6
+index 0000000000000000000000000000000000000000..d8182e60dc2d745d7bf7c511696213dcabb7489f
 --- /dev/null
 +++ b/sdk/api/handlers/nexus_devin_scoped_errors_test.go
 @@ -0,0 +1,74 @@

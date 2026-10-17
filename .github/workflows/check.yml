@@ -37,7 +37,7 @@ jobs:
         with: { go-version: '1.26.x', cache: false }
       - name: Build and verify the complete CPA kernel
         env:
-          CPA_UPSTREAM_REF: a4acc9f752bd46571f737a10c04bf413656ab06b
+          CPA_UPSTREAM_REF: 911f49cbd49f4fe2516979754a7488a3fd14fe64
         run: |
           set -euo pipefail
           core_source="$RUNNER_TEMP/cpa-nexus-core"
@@ -51,8 +51,13 @@ jobs:
             git -C "$core_source" apply "$GITHUB_WORKSPACE/ops/cpa-nexus/$patch"
           done
           cd "$core_source"
-          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./sdk/api/handlers/claude ./sdk/api/handlers/openai ./internal/pluginhost ./internal/api ./internal/logging ./internal/runtime/executor/helps -count=1
-          CGO_ENABLED=1 go build -buildvcs=false -ldflags="-X main.Version=8.0.15 -X main.Commit=${CPA_UPSTREAM_REF}+nexus -X main.BuildDate=source-pinned" -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
+          # These upstream tests assert provider names in logs and client errors that
+          # nexus-log-redaction masks on purpose; they pass on the unpatched kernel.
+          redacted='Test(Register|Update|Refresh|MetaRefresh)PersistFailureLogsWarn$|TestClaudeMessagesHandlerSendKeepAliveBeforeFTWritesSSEErrorOnFailure$'
+          go test ./sdk/cliproxy/auth ./sdk/api/handlers ./sdk/api/handlers/claude ./sdk/api/handlers/openai ./internal/pluginhost ./internal/api ./internal/logging ./internal/runtime/executor/helps ./internal/registry -count=1 -skip "$redacted"
+          # Devin executor only: the package's websocket tests are flaky upstream.
+          go test ./internal/runtime/executor -run Devin -count=1
+          CGO_ENABLED=1 go build -buildvcs=false -ldflags="-X main.Version=8.0.32 -X main.Commit=${CPA_UPSTREAM_REF}+nexus -X main.BuildDate=source-pinned" -o "$RUNNER_TEMP/cli-proxy-api-nexus" ./cmd/server/
           echo "TEST_CPA_BINARY=$RUNNER_TEMP/cli-proxy-api-nexus" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run db:migrate

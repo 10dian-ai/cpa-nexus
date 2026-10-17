@@ -55,7 +55,17 @@ Devin 的每个思考档位其实是一个独立的上游模型，CPA 通过 `de
 
 请求日志的 `usage.nexus.devin` 记录最终档位、档位来源和删除的字段。
 
-Devin 有时把后端临时故障报告为 `permission_denied: an internal error occurred`。CPAN 在 CPA 配置中写入 `oauth.request-scoped-errors.devin` 规则：这种错误直接换下一个 Devin 凭证，不再让该模型在凭证上冷却约一分钟；全部凭证都失败时，再由 CPAN 切换到下一个分组。已有的其他自定义规则会保留。
+CPAN 在 CPA 配置中维护 `oauth.request-scoped-errors.devin` 的三条规则（HTTP 502）。命中时直接换下一个 Devin 凭证，不让该模型在这个凭证上冷却约一分钟；全部凭证都失败时，再由 CPAN 切换到下一个分组：
+
+- `permission_denied: an internal error occurred`：后端临时故障的打码文案；
+- `unimplemented: … capacity issues with this serving model …`：按模型的容量拒绝，没有惩罚，过几分钟自愈；
+- `The third-party model provider is experiencing issues … try later`：Devin 自 2026-09-24 起给 `unknown` 类故障用的新文案。
+
+状态码和文案都相同的规则归 CPAN 管理并覆盖，其他自定义规则保留。
+
+CPAN 同时给每个 Devin 凭证文件写入 `request_retry: 0`，凭证只参加 CPA 的第一轮选择。默认的额外三轮重试会让 Devin 永远无法完成的请求（无权模型、被内容策略拦截但同样显示打码文案）把每个 Devin 账号各打四次，而每次发送都计入该账号的上游限流。第一轮仍会尝试全部可用账号。已手动设置 `request_retry` 的凭证保持原值。
+
+周、日额度用完（`Your weekly/daily usage quota has been exhausted`）由 CPA v8.0.32 内核处理：整个凭证冷却到 Devin 报告的重置时间，查询到额度恢复后提前解冻。
 
 ### 图片自动压缩与 413
 
@@ -73,7 +83,7 @@ Devin 有时把后端临时故障报告为 `permission_denied: an internal error
 
 ## CPA 来源与原生功能
 
-CPA 使用完整官方 v8.0.15，OAuth、刷新、配额、协议转换、模型别名和流式响应继续由内核执行。分组按实际来源隔离：OAuth 凭据文件、原生配置中的每个上游 Key 都有稳定来源身份。Google 一个文件中的多个虚拟项目账号共享该来源的分组；项目模型目录取实际运行时账号模型的并集。
+CPA 使用完整官方 v8.0.32，OAuth、刷新、配额、协议转换、模型别名和流式响应继续由内核执行。分组按实际来源隔离：OAuth 凭据文件、原生配置中的每个上游 Key 都有稳定来源身份。Google 一个文件中的多个虚拟项目账号共享该来源的分组；项目模型目录取实际运行时账号模型的并集。
 
 完整插件内核通过请求内授权集合限制真实账号与独立插件执行器。模型名保持原样交给原版路由/转换/调度插件；每次选号、重试和嵌套插件调用都继承同一集合，不再用单个预选来源前缀限制插件，也不按插件名称或版本白名单拒绝插件。OAuth 文件、配置 Key、运行时插件账号和无凭据独立插件执行器均可作为来源绑定分组。同文件的虚拟项目共享来源分组。
 
@@ -101,4 +111,4 @@ CPA 使用完整官方 v8.0.15，OAuth、刷新、配额、协议转换、模型
 
 模型 Key 创建接口支持 `groupIds`（顺序即调用顺序）和 `groupStrategy`（`failover` 自动切换，默认；`mixed` 混合轮换），不传 `groupIds` 时选择 CPA、Logicc 两个模块默认组；编辑时不传则保留原值。`groupIds` 至少一个，重复 ID 去重；停用组可保留绑定但不会赋予调用能力。原生配置及凭据内容不在分组库存响应中暴露。
 
-官方行为依据：[CPA v8.0.15 来源模型选择](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/sdk/cliproxy/auth/conductor_selection.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/sdk/pluginapi/types.go)。分组的多来源授权行为参考 [New API 分组文档](https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/group)、[渠道选择源码](https://github.com/QuantumNous/new-api/blob/main/service/channel_select.go)，实现使用本项目的 Postgres 数据和内核请求上下文中的来源授权集合。
+官方行为依据：[CPA v8.0.32 来源模型选择](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/sdk/cliproxy/auth/conductor_selection.go)、[插件能力协议](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/sdk/pluginapi/types.go)。分组的多来源授权行为参考 [New API 分组文档](https://docs.newapi.pro/zh/docs/guide/feature-guide/admin/group)、[渠道选择源码](https://github.com/QuantumNous/new-api/blob/main/service/channel_select.go)，实现使用本项目的 Postgres 数据和内核请求上下文中的来源授权集合。

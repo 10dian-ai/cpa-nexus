@@ -8,7 +8,7 @@ import { createConnection, createServer as createTcpServer, type Socket } from '
 import { createHash } from 'node:crypto'
 import { parse } from 'dotenv'
 // @ts-ignore Setup is a plain ESM utility and performs no work when imported.
-import { setupCpa, CPA_IMAGE, CPA_VERSION, CPA_UPSTREAM_IMAGE, CPA_UPSTREAM_REF } from '../scripts/setup-cpa.mjs'
+import { setupCpa, CPA_IMAGE, CPA_VERSION, CPA_UPSTREAM_IMAGE, CPA_UPSTREAM_REF, LEGACY_CPA_PINS } from '../scripts/setup-cpa.mjs'
 
 describe('CPA Nexus deployment initialization', () => {
   let directory: string
@@ -26,8 +26,8 @@ describe('CPA Nexus deployment initialization', () => {
     const config = await readFile(join(directory, '.runtime/cpa/config/config.yaml'), 'utf8')
     expect(environment.CPA_IMAGE).toBe(CPA_IMAGE)
     expect(environment.CPA_VERSION).toBe(CPA_VERSION)
-    expect(CPA_IMAGE).toBe('cpa-nexus-core:v8.0.15-nexus1')
-    expect(CPA_UPSTREAM_IMAGE).toMatch(/^eceasy\/cli-proxy-api:v8\.0\.15@sha256:[a-f0-9]{64}$/)
+    expect(CPA_IMAGE).toBe('cpa-nexus-core:v8.0.32-nexus1')
+    expect(CPA_UPSTREAM_IMAGE).toMatch(/^eceasy\/cli-proxy-api:v8\.0\.32@sha256:[a-f0-9]{64}$/)
     expect(environment.CPA_MANAGEMENT_KEY.length).toBeGreaterThanOrEqual(32)
     expect(environment.CPA_CLIENT_KEY).not.toBe(environment.CPA_MANAGEMENT_KEY)
     expect(config).toContain('secret-key: ' + JSON.stringify(environment.CPA_MANAGEMENT_KEY))
@@ -79,16 +79,13 @@ describe('CPA Nexus deployment initialization', () => {
     expect(parse(await readFile(path, 'utf8')).CPA_IMAGE).toBe('operator/custom-kernel:chosen')
   })
 
-  for (const legacyImage of [
-    'cpa-nexus-core:v8.0.11-nexus1',
-    'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9',
-  ]) {
-    it(`migrates an existing v8.0.11 pinned deployment (${legacyImage}) to the current kernel`, async () => {
+  for (const [pin, legacyImage] of LEGACY_CPA_PINS.flatMap(pin => [[pin, pin.image], [pin, pin.upstreamImage]] as const)) {
+    it(`migrates an existing ${pin.version} pinned deployment (${legacyImage}) to the current kernel`, async () => {
       const oldEnvironment = [
-        'CPA_VERSION=v8.0.11',
+        'CPA_VERSION=' + pin.version,
         'CPA_IMAGE=' + legacyImage,
-        'CPA_UPSTREAM_REF=e2bff0107bb307337aaa19018ccddd55f64253d5',
-        'CPA_UPSTREAM_IMAGE=eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9',
+        'CPA_UPSTREAM_REF=' + pin.ref,
+        'CPA_UPSTREAM_IMAGE=' + pin.upstreamImage,
         'CPA_MANAGEMENT_KEY=legacy-management-key-123456789',
         'CPA_CLIENT_KEY=legacy-client-key-123456789',
         '',

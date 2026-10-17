@@ -217,12 +217,14 @@ docker compose --env-file .env --env-file .env.cpa -f compose.yml -f compose.dev
 
 本机 Nuxt 加载两份 env 文件。CPA 访问宿主 Nuxt 时，把 `NEXUS_BRIDGE_BASE_URL` 设为 `http://host.docker.internal:3000`，监听容器可达的接口，然后在模块管理里点「同步桥接渠道」。Linux 开发需配置 `host-gateway`。不要同时启动生产 app/edge 占用开发端口；生产会覆盖为容器内部地址。
 
-Nexus 完整插件内核使用官方 v8.0.15 源码与运行镜像，保留原始 C ABI、全部路由和插件执行能力；`Dockerfile.cpa` 在固定提交上应用 `ops/cpa-nexus/nexus-plugins.patch`。适配增加真实插件能力发现和请求内分组校验，插件仍能改模型别名、调度或嵌套调用，最终账号选择始终限制在服务器授权集合内。成品镜像为 `cpa-nexus-core:v8.0.15-nexus1`。
+Nexus 完整插件内核使用官方 v8.0.32 源码与运行镜像，保留原始 C ABI、全部路由和插件执行能力；`Dockerfile.cpa` 在固定提交上依次应用 `ops/cpa-nexus/` 下的 `nexus-plugins.patch`、`nexus-log-redaction.patch`、`nexus-devin-errors.patch`。适配增加真实插件能力发现和请求内分组校验，插件仍能改模型别名、调度或嵌套调用，最终账号选择始终限制在服务器授权集合内。成品镜像为 `cpa-nexus-core:v8.0.32-nexus1`。
+
+从 v8.0.15（或更早的 v8.0.11）内核升级：先 `bash scripts/deploy.sh backup`，再 `bash scripts/deploy.sh update`（1Panel 加 `--1panel`）。update 会把 `.env.cpa` 里旧的项目固定版本自动换成 v8.0.32 并重建内核；运维自己改过的镜像或源码版本保持不动，需要自己改。这次升级的 Devin 相关变化：周、日额度用完后整个凭证冷却到重置时间，不再按模型逐个试；容量拒绝和新错误文案换号且不冷却；Devin 凭证只参加第一轮重试（见[分组文档](groups.md)）。
 
 官方运行镜像的固定多架构摘要：
 
 ```text
-eceasy/cli-proxy-api:v8.0.15@sha256:ebc2ffc189cf241ff589cd9237c63ca9feba3c9b87fe6213ab9a0b642df132ae
+eceasy/cli-proxy-api:v8.0.32@sha256:68f6e2d691f7b71aca21cfe87c77b7076cbea26c8ef490b15619b1623a7c0699
 ```
 
 CPA 升级先在独立候选环境使用数据库、配置和凭证副本验证，不能让候选 Worker 消费生产队列。核对管理 API、配置、插件 ABI、渠道/OAuth、工具多轮、流式、WebSocket、取消释放及账号池后，更新 `.env.cpa` 中 `CPA_UPSTREAM_REF`（完整提交 SHA）、`CPA_UPSTREAM_IMAGE`（官方运行镜像摘要）、`CPA_VERSION` 并核对适配补丁可应用；验证完成后设置对应 `CPA_IMAGE` 成品名称，重建 CPA：
@@ -235,7 +237,7 @@ edge 自动重新解析服务名。回退需要旧镜像以及匹配的配置、
 
 ## 官方依据
 
-- [CPA 固定版本配置](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/config.example.yaml)
-- [CPA 固定版本 HTTP 路由](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/internal/api/server_routes.go)
-- [CPA 镜像发布流程](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.15/.github/workflows/docker-image.yml)
+- [CPA 固定版本配置](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/config.example.yaml)
+- [CPA 固定版本 HTTP 路由](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/internal/api/server_routes.go)
+- [CPA 镜像发布流程](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/.github/workflows/docker-image.yml)
 - [logicc2api（Logicc 网页接口参考，MIT）](https://github.com/JamesZhaoY/logicc2api)

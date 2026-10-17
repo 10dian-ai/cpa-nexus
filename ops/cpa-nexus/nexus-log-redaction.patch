@@ -180,10 +180,10 @@ index 48fc4ef4f32ff16ae8c08dec75468f0ec5366433..de488e8508f83a01dc93a84000da2855
  
 diff --git a/internal/api/nexus_log_privacy.go b/internal/api/nexus_log_privacy.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..ee8d8417216057a47ed8462ceb2b3ce2983173ab
+index 0000000000000000000000000000000000000000..bd219342ab3d2fe1e47881f9b79e1f1b1a8c6595
 --- /dev/null
 +++ b/internal/api/nexus_log_privacy.go
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,112 @@
 +package api
 +
 +import (
@@ -288,7 +288,11 @@ index 0000000000000000000000000000000000000000..ee8d8417216057a47ed8462ceb2b3ce2
 +		}
 +		writer.Header().Del("Content-Encoding")
 +		writer.Header().Del("Content-Length")
-+		writer.Header().Del("ETag")
++		// A rewritten body has a new entity tag, except on 412: there the ETag names the
++		// current config version an If-Match writer needs to retry, not the error body.
++		if writer.Status() != http.StatusPreconditionFailed {
++			writer.Header().Del("ETag")
++		}
 +		_, _ = writer.ResponseWriter.Write(logging.RedactPublicErrorBody(body))
 +	}
 +}
@@ -359,19 +363,20 @@ index 0000000000000000000000000000000000000000..9890145f7a416d3468d1b3ec6151e365
 +	}
 +}
 diff --git a/internal/api/server.go b/internal/api/server.go
-index 024cec035411394d7a6143f7720e829085ae1e3e..cde13eeb52a1459dc986c8f30a3180a7e1dd3d2e 100644
+index bd399e66eb5df37f1823ee93cda8216832786b3a..91f6c227e213d2f19cdb94ee7dfb8b3e96d1676b 100644
 --- a/internal/api/server.go
 +++ b/internal/api/server.go
-@@ -147,6 +147,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
+@@ -174,6 +174,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
  	engine.Use(logging.GinLogrusLogger())
  	engine.Use(logging.GinLogrusRecovery())
  	engine.Use(logging.CPATraceIDMiddleware())
++	// Nexus rewrites every public error body, including the body-size rejection below.
 +	engine.Use(nexusPublicErrorMiddleware())
+ 	engine.Use(s.maxRequestBodyBytesMiddleware())
  	for _, mw := range optionState.extraMiddleware {
  		engine.Use(mw)
- 	}
 diff --git a/internal/api/server_reload.go b/internal/api/server_reload.go
-index 64b7ee9bd4dccfb61e2454df3a7f35ad6d6e8fc4..da3fbfc9aa43007dc6d93652cbbcf0583884e087 100644
+index 36c8e1cebe99b4605702bd91e1ee0bfb1776b9b2..816c93393bc933d371e180636aed4ff0e5a4c557 100644
 --- a/internal/api/server_reload.go
 +++ b/internal/api/server_reload.go
 @@ -2,7 +2,6 @@ package api
@@ -382,7 +387,7 @@ index 64b7ee9bd4dccfb61e2454df3a7f35ad6d6e8fc4..da3fbfc9aa43007dc6d93652cbbcf058
  	"reflect"
  	"time"
  
-@@ -229,7 +228,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
+@@ -240,7 +239,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
  	}
  
  	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + metaAPIKeyCount + vertexAICompatCount + openAICompatCount
@@ -392,10 +397,10 @@ index 64b7ee9bd4dccfb61e2454df3a7f35ad6d6e8fc4..da3fbfc9aa43007dc6d93652cbbcf058
  		authEntries,
  		geminiAPIKeyCount,
 diff --git a/internal/api/server_test.go b/internal/api/server_test.go
-index 4bc7e162b7b9d6e9a957fa09710083ededf7e7be..161b218d89c7eea038fa881a33c243ce2b8f79ce 100644
+index 44862bb9dbac8907ddaee4a23ef992a4b933cb3b..dd7bac00ed933ce4304e43d8f0178e250546e050 100644
 --- a/internal/api/server_test.go
 +++ b/internal/api/server_test.go
-@@ -3109,10 +3109,10 @@ func TestServerResponsesStreamingRequestLogCapturesUpstreamSections(t *testing.T
+@@ -3110,10 +3110,10 @@ func TestServerResponsesStreamingRequestLogCapturesUpstreamSections(t *testing.T
  	}
  	apiRequestSection := logText[apiRequestIdx:apiResponseIdx]
  	apiResponseSection := logText[apiResponseIdx:downstreamResponseIdx]
@@ -409,7 +414,7 @@ index 4bc7e162b7b9d6e9a957fa09710083ededf7e7be..161b218d89c7eea038fa881a33c243ce
  		t.Fatalf("API REQUEST section missing request body:\n%s", apiRequestSection)
  	}
  	if !strings.Contains(apiResponseSection, "response.output_item.added") {
-@@ -3227,10 +3227,10 @@ func TestServerCodexAPIKeyResponsesStreamingRequestLog(t *testing.T) {
+@@ -3228,10 +3228,10 @@ func TestServerCodexAPIKeyResponsesStreamingRequestLog(t *testing.T) {
  	}
  	apiRequestSection := logText[apiRequestIdx:apiResponseIdx]
  	apiResponseSection := logText[apiResponseIdx:downstreamResponseIdx]
@@ -853,7 +858,7 @@ index cb15d5d55c10093969b3ec050ace5f72dba58aa6..ce1c2dd97fb54fb8a80d8c3445e5f223
  		id := requestLogID.Add(1)
  		idPart = fmt.Sprintf("%d", id)
 diff --git a/sdk/api/handlers/claude/code_handlers.go b/sdk/api/handlers/claude/code_handlers.go
-index 08d37bfe8003fdb254ded33e57c1dcbfb5c37765..e8551a4cd81356591f873def4bdb79ceee1b8a88 100644
+index 554dc8a985a9a61400228e78301bc7411287f9b4..97ee64909c27ac7051621d073b563398c0405b0a 100644
 --- a/sdk/api/handlers/claude/code_handlers.go
 +++ b/sdk/api/handlers/claude/code_handlers.go
 @@ -23,6 +23,7 @@ import (
@@ -864,7 +869,7 @@ index 08d37bfe8003fdb254ded33e57c1dcbfb5c37765..e8551a4cd81356591f873def4bdb79ce
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
  	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
  	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-@@ -360,8 +361,8 @@ func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claud
+@@ -414,8 +415,8 @@ func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claud
  	response := claudeErrorResponse{
  		Type: "error",
  		Error: claudeErrorDetail{
@@ -875,7 +880,7 @@ index 08d37bfe8003fdb254ded33e57c1dcbfb5c37765..e8551a4cd81356591f873def4bdb79ce
  		},
  	}
  	if clienterror.IsClaudeThreadNotFound(status, errors.New(errText)) {
-@@ -394,6 +395,8 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
+@@ -448,6 +449,8 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
  				body = markedBody
  			}
  		}
@@ -923,10 +928,10 @@ index 0000000000000000000000000000000000000000..7e002944c150d924fc10b3503a7a64b1
 +	}
 +}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index 9397de0c09f3647d5743c8c4920a0bd220d40f27..a43c669bef59b10c9bb05ed5223e4521818d7603 100644
+index 268751483069fc92858bd7cb5d3ec6398e7e6884..395d6eccbc1d424fdd8444611c091e13d6132fe7 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
-@@ -71,7 +71,8 @@ func BuildErrorResponseBody(status int, errText string) []byte {
+@@ -73,7 +73,8 @@ func BuildErrorResponseBody(status int, errText string) []byte {
  // BuildErrorResponseBodyWithError builds an OpenAI-compatible JSON error response body,
  // preserving structured classifications (such as terminal upstream auth failures and retryable flags)
  // present in err.
@@ -937,7 +942,7 @@ index 9397de0c09f3647d5743c8c4920a0bd220d40f27..a43c669bef59b10c9bb05ed5223e4521
  		status = http.StatusInternalServerError
  	}
 diff --git a/sdk/api/handlers/handlers_errors.go b/sdk/api/handlers/handlers_errors.go
-index a35f2110d082c35242a2720d1ce08a9141a8ce1c..df1804a566e598187531b97061ab4350ff0de9f3 100644
+index 7893da08e4a41f602c994b6b5a097a48a5870977..e7ba1da502d8970d73aacb739d8bb1a0a048f57c 100644
 --- a/sdk/api/handlers/handlers_errors.go
 +++ b/sdk/api/handlers/handlers_errors.go
 @@ -10,6 +10,7 @@ import (
@@ -1071,7 +1076,7 @@ index d21a31dbf2faa6d80ec303eec848769631a17e88..de47b29b178d4076c78ec2c5fd9dfbe7
  		t.Fatalf("error message = %q, want %q", message, expectedMessage)
  	}
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
-index 280c3f55d064f88969215deb55e1c9748b60e397..e493503b7f7b2252970b532944f3c0aa3c295f0e 100644
+index 2b5ab5e034faf3c77efd0ce6630480a6344a23b9..f63cd9343e2171e1313699735113e32f43bfc61d 100644
 --- a/sdk/api/handlers/openai/openai_responses_websocket.go
 +++ b/sdk/api/handlers/openai/openai_responses_websocket.go
 @@ -16,6 +16,7 @@ import (
@@ -1092,7 +1097,7 @@ index 280c3f55d064f88969215deb55e1c9748b60e397..e493503b7f7b2252970b532944f3c0aa
  }
  
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket_forward.go b/sdk/api/handlers/openai/openai_responses_websocket_forward.go
-index 4bcdfd685aea0476e1f1750523ca5834ced8017a..7033cb0217ad5fe7c42332b9cddbf1a75ea66781 100644
+index 54b9dcaa0e16a35c926c38be38135b23bf885b7e..3016b9f4d279586ac11ccf351d90e5f21ded006e 100644
 --- a/sdk/api/handlers/openai/openai_responses_websocket_forward.go
 +++ b/sdk/api/handlers/openai/openai_responses_websocket_forward.go
 @@ -14,6 +14,7 @@ import (
@@ -1103,7 +1108,7 @@ index 4bcdfd685aea0476e1f1750523ca5834ced8017a..7033cb0217ad5fe7c42332b9cddbf1a7
  	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
  	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
  	log "github.com/sirupsen/logrus"
-@@ -290,6 +291,7 @@ func writeResponsesWebsocketTerminalError(
+@@ -332,6 +333,7 @@ func writeResponsesWebsocketTerminalError(
  		}
  	}
  
@@ -1111,7 +1116,7 @@ index 4bcdfd685aea0476e1f1750523ca5834ced8017a..7033cb0217ad5fe7c42332b9cddbf1a7
  	wrote, errClose := writer.closeWithPayload(payload)
  	if wrote && wsTimelineLog != nil {
  		wsTimelineLog.Append("response", payload, time.Now())
-@@ -651,7 +653,7 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
+@@ -693,7 +695,7 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
  		}
  	}
  
@@ -1121,10 +1126,10 @@ index 4bcdfd685aea0476e1f1750523ca5834ced8017a..7033cb0217ad5fe7c42332b9cddbf1a7
  
  func writeResponsesWebsocketError(writer *responsesWebsocketWriter, wsTimelineLog websocketTimelineAppender, errMsg *interfaces.ErrorMessage) ([]byte, error) {
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket_timeline.go b/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
-index 77187a793eb955642eeb956826c4cb210bb8dafd..7285e5d4fbe68c449176b49f2e2fb927cf174629 100644
+index 70ee202eec8e247cab3ae4a8a079fb8495da7278..5de2c3f4069c8669bf3be90246b72af335b32be3 100644
 --- a/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
 +++ b/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
-@@ -278,6 +278,7 @@ func setWebsocketBody(c *gin.Context, key string, body string) {
+@@ -292,6 +292,7 @@ func setWebsocketBody(c *gin.Context, key string, body string) {
  }
  
  func writeResponsesWebsocketPayload(writer *responsesWebsocketWriter, wsTimelineLog websocketTimelineAppender, payload []byte, timestamp time.Time) error {

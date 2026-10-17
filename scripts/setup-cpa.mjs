@@ -4,21 +4,29 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseEnv } from 'node:util'
 
-export const CPA_VERSION = 'v8.0.15'
-export const CPA_IMAGE = 'cpa-nexus-core:v8.0.15-nexus1'
-export const CPA_UPSTREAM_REF = 'a4acc9f752bd46571f737a10c04bf413656ab06b'
-export const CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.15@sha256:ebc2ffc189cf241ff589cd9237c63ca9feba3c9b87fe6213ab9a0b642df132ae'
+export const CPA_VERSION = 'v8.0.32'
+export const CPA_IMAGE = 'cpa-nexus-core:v8.0.32-nexus1'
+export const CPA_UPSTREAM_REF = '911f49cbd49f4fe2516979754a7488a3fd14fe64'
+export const CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.32@sha256:68f6e2d691f7b71aca21cfe87c77b7076cbea26c8ef490b15619b1623a7c0699'
 
-// Values used by the previous published CPA Nexus core. Existing deployments
-// keep their .env.cpa across updates, so the migration must recognize the old
-// pinned tuple before applying the new defaults. Without this, update rebuilds
-// the application while silently retaining the old CPA binary.
-const LEGACY_CPA_VERSION = 'v8.0.11'
-const LEGACY_CPA_UPSTREAM_REF = 'e2bff0107bb307337aaa19018ccddd55f64253d5'
-const LEGACY_CPA_UPSTREAM_IMAGE = 'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9'
-const LEGACY_CPA_IMAGES = new Set([
-  'cpa-nexus-core:v8.0.11-nexus1',
-  LEGACY_CPA_UPSTREAM_IMAGE,
+// Pins of previously published CPA Nexus cores. Existing deployments keep their
+// .env.cpa across updates, so the migration must recognize each old pinned tuple
+// before applying the new defaults. Without this, update keeps building the old
+// upstream commit, and the adapter patches (made for the current commit) no longer
+// apply. Add the outgoing pin here whenever the defaults above change.
+export const LEGACY_CPA_PINS = Object.freeze([
+  {
+    version: 'v8.0.11',
+    ref: 'e2bff0107bb307337aaa19018ccddd55f64253d5',
+    upstreamImage: 'eceasy/cli-proxy-api:v8.0.11@sha256:1d7f8c154a9804ba33c5332bf76cdb3a05791d6fd275ccad8f2a63859ab25df9',
+    image: 'cpa-nexus-core:v8.0.11-nexus1',
+  },
+  {
+    version: 'v8.0.15',
+    ref: 'a4acc9f752bd46571f737a10c04bf413656ab06b',
+    upstreamImage: 'eceasy/cli-proxy-api:v8.0.15@sha256:ebc2ffc189cf241ff589cd9237c63ca9feba3c9b87fe6213ab9a0b642df132ae',
+    image: 'cpa-nexus-core:v8.0.15-nexus1',
+  },
 ])
 
 async function readOptional(path) {
@@ -45,10 +53,11 @@ export async function setupCpa(directory = process.cwd(), log = console.log) {
   }
   // Upgrade only the project's former pinned defaults after validating its keys.
   // Leave an operator-selected image/source untouched.
-  const isLegacyPinnedDeployment = environment.CPA_VERSION === LEGACY_CPA_VERSION &&
-    LEGACY_CPA_IMAGES.has(environment.CPA_IMAGE) &&
-    environment.CPA_UPSTREAM_REF === LEGACY_CPA_UPSTREAM_REF &&
-    environment.CPA_UPSTREAM_IMAGE === LEGACY_CPA_UPSTREAM_IMAGE
+  // An old deployment may name either the built Nexus image or the bare official image.
+  const isLegacyPinnedDeployment = LEGACY_CPA_PINS.some(pin => environment.CPA_VERSION === pin.version &&
+    (environment.CPA_IMAGE === pin.image || environment.CPA_IMAGE === pin.upstreamImage) &&
+    environment.CPA_UPSTREAM_REF === pin.ref &&
+    environment.CPA_UPSTREAM_IMAGE === pin.upstreamImage)
   const isFormerUnbuiltPinnedImage = environment.CPA_VERSION === CPA_VERSION &&
     environment.CPA_IMAGE === CPA_UPSTREAM_IMAGE
   if (isLegacyPinnedDeployment || isFormerUnbuiltPinnedImage) {

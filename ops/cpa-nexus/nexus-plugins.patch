@@ -1,7 +1,8 @@
 diff --git a/internal/api/handlers/management/plugins.go b/internal/api/handlers/management/plugins.go
+index 2259abdca96cf49022d5362357bc979f91e481c4..9528f310f95f3217a592e32a6579bafa251a52fc 100644
 --- a/internal/api/handlers/management/plugins.go
 +++ b/internal/api/handlers/management/plugins.go
-@@ -25,20 +25,22 @@
+@@ -25,20 +25,22 @@ type pluginListResponse struct {
  }
  
  type pluginListEntry struct {
@@ -38,7 +39,7 @@ diff --git a/internal/api/handlers/management/plugins.go b/internal/api/handlers
  }
  
  type pluginMetadataInfo struct {
-@@ -122,6 +124,8 @@
+@@ -123,6 +125,8 @@ func (h *Handler) ListPlugins(c *gin.Context) {
  			entry := entries[info.ID]
  			entry.ID = htmlsanitize.String(info.ID)
  			entry.Registered = true
@@ -49,6 +50,7 @@ diff --git a/internal/api/handlers/management/plugins.go b/internal/api/handlers
  			entry.SupportsQuota = info.SupportsQuota
 diff --git a/internal/api/nexus_group_policy.go b/internal/api/nexus_group_policy.go
 new file mode 100644
+index 0000000000000000000000000000000000000000..0d08a277e5ee7bffefb147418ed3931852a28d15
 --- /dev/null
 +++ b/internal/api/nexus_group_policy.go
 @@ -0,0 +1,125 @@
@@ -179,6 +181,7 @@ new file mode 100644
 +}
 diff --git a/internal/api/nexus_group_policy_test.go b/internal/api/nexus_group_policy_test.go
 new file mode 100644
+index 0000000000000000000000000000000000000000..d837bca0862eaed8e86b6f94eb74810b64cc0057
 --- /dev/null
 +++ b/internal/api/nexus_group_policy_test.go
 @@ -0,0 +1,210 @@
@@ -393,9 +396,10 @@ new file mode 100644
 +	t.Fatal("config runtime account missing")
 +}
 diff --git a/internal/api/server.go b/internal/api/server.go
+index fc1646c9da74430dec872907ea3d333588c3c425..bd399e66eb5df37f1823ee93cda8216832786b3a 100644
 --- a/internal/api/server.go
 +++ b/internal/api/server.go
-@@ -37,6 +37,8 @@
+@@ -38,6 +38,8 @@ import (
  // Server represents the main API server.
  // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
  type Server struct {
@@ -404,7 +408,7 @@ diff --git a/internal/api/server.go b/internal/api/server.go
  	// engine is the Gin web framework engine instance.
  	engine *gin.Engine
  
-@@ -229,6 +231,7 @@
+@@ -236,6 +238,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
  	// subscribe-config heartbeat connection is healthy.
  	engine.Use(s.homeHeartbeatMiddleware())
  	engine.Use(s.exampleAPIKeySafeModeMiddleware())
@@ -413,9 +417,10 @@ diff --git a/internal/api/server.go b/internal/api/server.go
  	// Setup routes
  	s.setupRoutes()
 diff --git a/internal/api/server_management_v8.go b/internal/api/server_management_v8.go
+index 7f68dad013406a70ebee6f34c4ba1daae096568a..e37a4b26a6b13acf485cde98193a4f3592569fc8 100644
 --- a/internal/api/server_management_v8.go
 +++ b/internal/api/server_management_v8.go
-@@ -18,6 +18,8 @@
+@@ -18,6 +18,8 @@ func (s *Server) registerManagementV8Routes() {
  	v8.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), func(c *gin.Context) {
  		c.Set(management.ConfigV8ContextKey, true)
  	})
@@ -425,9 +430,10 @@ diff --git a/internal/api/server_management_v8.go b/internal/api/server_manageme
  	v8.PUT("/config", s.mgmt.ConfigV8)
  	v8.PATCH("/config", s.mgmt.ConfigV8)
 diff --git a/internal/api/server_middleware.go b/internal/api/server_middleware.go
+index f3f73d530caa6809e21c1e189e62c6ea48b92a00..df149467de52ccf0c86ebf0826b01eac0e53711a 100644
 --- a/internal/api/server_middleware.go
 +++ b/internal/api/server_middleware.go
-@@ -167,6 +167,11 @@
+@@ -205,6 +205,11 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
  		if err == nil {
  			if result != nil {
  				c.Set("userApiKey", result.Principal)
@@ -440,9 +446,10 @@ diff --git a/internal/api/server_middleware.go b/internal/api/server_middleware.
  				if len(result.Metadata) > 0 {
  					c.Set("accessMetadata", result.Metadata)
 diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/adapters_executors.go
+index f4d261dfa06c7dc9cea64418f586c96330ded02c..1d42ecde0784a09655ecc95ae1adbe99ad5b0a94 100644
 --- a/internal/pluginhost/adapters_executors.go
 +++ b/internal/pluginhost/adapters_executors.go
-@@ -656,6 +656,14 @@
+@@ -665,6 +665,14 @@ func sendExecutorPluginStreamChunk(ctx context.Context, out chan<- pluginapi.Exe
  }
  
  func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, err error) {
@@ -457,7 +464,7 @@ diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/ada
  	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
  		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
  	}
-@@ -714,6 +722,14 @@
+@@ -723,6 +731,14 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req
  }
  
  func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (result *coreexecutor.StreamResult, err error) {
@@ -472,7 +479,7 @@ diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/ada
  	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
  		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
  	}
-@@ -877,6 +893,7 @@
+@@ -886,6 +902,7 @@ func (a *executorAdapter) observeAndTranslateExecutorStream(ctx context.Context,
  }
  
  func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (refreshed *coreauth.Auth, err error) {
@@ -480,7 +487,7 @@ diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/ada
  	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
  		return nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
  	}
-@@ -965,6 +982,14 @@
+@@ -974,6 +991,14 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
  }
  
  func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, err error) {
@@ -496,9 +503,10 @@ diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/ada
  		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
  	}
 diff --git a/internal/pluginhost/auth_callbacks.go b/internal/pluginhost/auth_callbacks.go
+index a17bb9f9332f93e6e3a8260ae9679a59a62850d5..ff2040a83d59ea8369285bbade37e390ee9bcb70 100644
 --- a/internal/pluginhost/auth_callbacks.go
 +++ b/internal/pluginhost/auth_callbacks.go
-@@ -17,7 +17,8 @@
+@@ -19,7 +19,8 @@ import (
  )
  
  type rpcHostAuthGetRequest struct {
@@ -508,7 +516,7 @@ diff --git a/internal/pluginhost/auth_callbacks.go b/internal/pluginhost/auth_ca
  }
  
  type rpcHostAuthListResponse struct {
-@@ -51,7 +52,17 @@
+@@ -53,7 +54,17 @@ func (h *Host) currentAuthManager() *coreauth.Manager {
  }
  
  func (h *Host) callHostAuthList(ctx context.Context, request []byte) ([]byte, error) {
@@ -527,7 +535,7 @@ diff --git a/internal/pluginhost/auth_callbacks.go b/internal/pluginhost/auth_ca
  	if len(bytesTrimSpace(request)) > 0 {
  		var req map[string]any
  		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-@@ -62,18 +73,47 @@
+@@ -64,19 +75,48 @@ func (h *Host) callHostAuthList(ctx context.Context, request []byte) ([]byte, er
  	if errList != nil {
  		return nil, errList
  	}
@@ -566,17 +574,18 @@ diff --git a/internal/pluginhost/auth_callbacks.go b/internal/pluginhost/auth_ca
  	authIndex := strings.TrimSpace(req.AuthIndex)
  	if authIndex == "" {
  		return nil, fmt.Errorf("auth_index is required")
-+	}
+ 	}
 +	auth, errGet := h.authByIndex(authIndex)
 +	if errGet == nil && !coreauth.NexusGroupPolicyFromContext(ctx).AllowsAuthID(auth.ID) {
 +		return nil, fmt.Errorf("credential is outside the request group")
 +	}
 +	if errGet != nil {
 +		return nil, errGet
- 	}
++	}
  	auth, rawJSON, errGet := h.authPhysicalJSONByIndex(authIndex)
  	if errGet != nil {
-@@ -93,11 +133,15 @@
+ 		return nil, errGet
+@@ -95,11 +135,15 @@ func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, err
  }
  
  func (h *Host) callHostAuthGetRuntime(ctx context.Context, request []byte) ([]byte, error) {
@@ -593,20 +602,21 @@ diff --git a/internal/pluginhost/auth_callbacks.go b/internal/pluginhost/auth_ca
  	authIndex := strings.TrimSpace(req.AuthIndex)
  	if authIndex == "" {
  		return nil, fmt.Errorf("auth_index is required")
-@@ -105,6 +149,9 @@
- 	auth, errGet := h.authByIndex(authIndex)
+@@ -108,6 +152,9 @@ func (h *Host) callHostAuthGetRuntime(ctx context.Context, request []byte) ([]by
  	if errGet != nil {
  		return nil, errGet
-+	}
+ 	}
 +	if !coreauth.NexusGroupPolicyFromContext(ctx).AllowsAuthID(auth.ID) {
 +		return nil, fmt.Errorf("credential is outside the request group")
- 	}
++	}
  	entry := h.buildHostAuthFileEntry(auth)
  	if entry == nil {
+ 		return nil, fmt.Errorf("auth runtime info not found for auth_index %s", authIndex)
 diff --git a/internal/pluginhost/auth_provider.go b/internal/pluginhost/auth_provider.go
+index 34f96aaad82eaad612b9993016903f8f99489081..e2cfb929fc3464ef0558191ccf3bb873c70236a3 100644
 --- a/internal/pluginhost/auth_provider.go
 +++ b/internal/pluginhost/auth_provider.go
-@@ -334,6 +334,7 @@
+@@ -334,6 +334,7 @@ func (h *Host) callPollLogin(ctx context.Context, record capabilityRecord, provi
  }
  
  func (h *Host) RefreshAuth(ctx context.Context, auth *coreauth.Auth) (refreshed *coreauth.Auth, handled bool, err error) {
@@ -615,9 +625,10 @@ diff --git a/internal/pluginhost/auth_provider.go b/internal/pluginhost/auth_pro
  		return nil, false, nil
  	}
 diff --git a/internal/pluginhost/host_callbacks.go b/internal/pluginhost/host_callbacks.go
+index 4af872a9f83feb6df7de6ccef14a70022b0e8db7..0d19f53e955171056bc20973f5d5922fe50c103d 100644
 --- a/internal/pluginhost/host_callbacks.go
 +++ b/internal/pluginhost/host_callbacks.go
-@@ -418,7 +418,11 @@
+@@ -420,7 +420,11 @@ func (h *Host) callHostModelExecute(ctx context.Context, request []byte) ([]byte
  		return nil, fmt.Errorf("host model executor is unavailable")
  	}
  	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
@@ -631,9 +642,10 @@ diff --git a/internal/pluginhost/host_callbacks.go b/internal/pluginhost/host_ca
  	if errMsg != nil {
  		return nil, modelExecutionError(errMsg)
 diff --git a/internal/pluginhost/host_model_stream_callbacks.go b/internal/pluginhost/host_model_stream_callbacks.go
+index ad3184c4013059a6e59883cfd980a87b85bec5f7..9f6ffab44ba6982a21fa1a5262974277efaaeef6 100644
 --- a/internal/pluginhost/host_model_stream_callbacks.go
 +++ b/internal/pluginhost/host_model_stream_callbacks.go
-@@ -24,7 +24,10 @@
+@@ -24,7 +24,10 @@ func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) (
  		return nil, fmt.Errorf("host model executor is unavailable")
  	}
  	skipPluginID := h.callbackCallerPluginID(ctx, req.HostCallbackID)
@@ -646,9 +658,10 @@ diff --git a/internal/pluginhost/host_model_stream_callbacks.go b/internal/plugi
  		callbackCtx = context.Background()
  	}
 diff --git a/internal/pluginhost/http_bridge.go b/internal/pluginhost/http_bridge.go
+index 40b15ef488560dbbc48effdf87c61bdd6a99cd83..92b285f3615c73e43d3bc602d31f264d9cb63a59 100644
 --- a/internal/pluginhost/http_bridge.go
 +++ b/internal/pluginhost/http_bridge.go
-@@ -158,6 +158,7 @@
+@@ -158,6 +158,7 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest)
  		return nil, cfg, nil, fmt.Errorf("create host http request: %w", errNewRequest)
  	}
  	httpReq.Header = cloneHeader(req.Headers)
@@ -658,6 +671,7 @@ diff --git a/internal/pluginhost/http_bridge.go b/internal/pluginhost/http_bridg
  	if errClient != nil {
 diff --git a/internal/pluginhost/nexus_capabilities.go b/internal/pluginhost/nexus_capabilities.go
 new file mode 100644
+index 0000000000000000000000000000000000000000..f98f3b41128204f34de5ce8c35468072e8c8d334
 --- /dev/null
 +++ b/internal/pluginhost/nexus_capabilities.go
 @@ -0,0 +1,84 @@
@@ -747,6 +761,7 @@ new file mode 100644
 +}
 diff --git a/internal/pluginhost/nexus_group_policy_test.go b/internal/pluginhost/nexus_group_policy_test.go
 new file mode 100644
+index 0000000000000000000000000000000000000000..61440ac82b6abc73a9c60af6fcdf0b9eabcdf78f
 --- /dev/null
 +++ b/internal/pluginhost/nexus_group_policy_test.go
 @@ -0,0 +1,197 @@
@@ -948,9 +963,10 @@ new file mode 100644
 +	}
 +}
 diff --git a/internal/pluginhost/snapshot.go b/internal/pluginhost/snapshot.go
+index f5c7e9ad39949c934d2aaf506f2a49d44626195e..f2640b94b9c6301f57759ded534cff74e77ed7ce 100644
 --- a/internal/pluginhost/snapshot.go
 +++ b/internal/pluginhost/snapshot.go
-@@ -26,14 +26,17 @@
+@@ -27,14 +27,17 @@ type Snapshot struct {
  
  // RegisteredPluginInfo describes a plugin that is active in the current runtime snapshot.
  type RegisteredPluginInfo struct {
@@ -976,7 +992,7 @@ diff --git a/internal/pluginhost/snapshot.go b/internal/pluginhost/snapshot.go
  }
  
  // RegisteredPluginMenu describes a plugin-owned resource menu entry.
-@@ -89,15 +92,24 @@
+@@ -90,15 +93,24 @@ func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
  				quotaIdentifier = identifier
  			}
  		}
@@ -1009,10 +1025,173 @@ diff --git a/internal/pluginhost/snapshot.go b/internal/pluginhost/snapshot.go
  		})
  	}
  	return out
+diff --git a/internal/runtime/executor/devin_executor.go b/internal/runtime/executor/devin_executor.go
+index 305c705932de48d5ab219fa3f3917983b63d90d1..33ea819ecc0f3832ec0673cdd048414cba10ddba 100644
+--- a/internal/runtime/executor/devin_executor.go
++++ b/internal/runtime/executor/devin_executor.go
+@@ -2574,6 +2574,14 @@ func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
+ // credential-scoped and, when auth is known, retries at the observed reset.
+ func newDevinStatusErrorForAuth(code int, headers http.Header, body []byte, auth *cliproxyauth.Auth) statusErr {
+ 	err := statusErr{code: code, msg: string(body)}
++	// Some Devin gateways return the same permission_denied/internal-error
++	// payload as an HTTP 403 instead of an EOS trailer. Treat that shape as a
++	// transient upstream failure so it does not poison the credential.
++	if code == http.StatusForbidden {
++		if mappedCode, mappedErr := helps.ParseDevinTrailerError(body); mappedErr != nil && mappedCode == http.StatusBadGateway {
++			err.code, err.msg = mappedCode, mappedErr.Error()
++		}
++	}
+ 	if code == http.StatusTooManyRequests && headers != nil {
+ 		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
+ 			if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
+diff --git a/internal/runtime/executor/devin_executor_test.go b/internal/runtime/executor/devin_executor_test.go
+index 8a3d99f6287dc59f25dffe621aebe7c91b730b11..a16f984da686e1974317d7cea3215a4585476126 100644
+--- a/internal/runtime/executor/devin_executor_test.go
++++ b/internal/runtime/executor/devin_executor_test.go
+@@ -351,6 +351,15 @@ func TestDevinStatusError_RetryAfter(t *testing.T) {
+ 	if err3.retryAfter != nil {
+ 		t.Fatalf("expected nil retryAfter for 500, got %v", err3.retryAfter)
+ 	}
++
++	transientPermission := []byte(`{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: f9fa46daf1094c59e02eeb47e08742eb)"}}`)
++	err4 := newDevinStatusError(http.StatusForbidden, nil, transientPermission)
++	if err4.code != http.StatusBadGateway {
++		t.Fatalf("status code = %d, want 502 for HTTP 403 transient permission_denied", err4.code)
++	}
++	if !strings.Contains(err4.msg, "devin upstream error (permission_denied)") {
++		t.Fatalf("message = %q, want normalized Devin upstream error", err4.msg)
++	}
+ }
+ 
+ func TestResolveDevinSessionAndCascadeIDs(t *testing.T) {
+diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
+index f8274ceede7b8f670739a01f294abde3ee6b33cf..fce551ff19d9f1d10bf0f723b3186521697c4fc3 100644
+--- a/internal/runtime/executor/helps/devin_wire.go
++++ b/internal/runtime/executor/helps/devin_wire.go
+@@ -50,8 +50,41 @@ const (
+ 
+ 	maxConnectFrameSize      = 16 * 1024 * 1024
+ 	maxDecompressedFrameSize = 64 * 1024 * 1024
++
++	// Devin rejects long Claude Code tool descriptions with a misleading
++	// permission_denied/MCP error. Keep the wire field below the observed limit.
++	devinToolDescriptionMaxBytes = 480
+ )
+ 
++// truncateDevinToolDescription caps the UTF-8 byte length without splitting a rune.
++func truncateDevinToolDescription(description string) string {
++	if len(description) <= devinToolDescriptionMaxBytes {
++		return description
++	}
++	cut := devinToolDescriptionMaxBytes
++	for cut > 0 && !utf8.ValidString(description[:cut]) {
++		cut--
++	}
++	return description[:cut]
++}
++
++const devinApplyPatchDescription = "Use the Codex apply_patch format. Start with *** Begin Patch and end with *** End Patch. Operations: *** Add File: path, *** Delete File: path, *** Update File: path, and *** Move to: path. Every added-file content line starts with +. For updates, use @@; context lines start with one space, removed lines with -, and added lines with +. Use *** End of File when required. Original patch grammar: start: patch."
++
++func isDevinApplyPatchTool(name string) bool {
++	name = strings.ToLower(strings.TrimSpace(name))
++	return name == "apply_patch" || strings.HasSuffix(name, "__apply_patch")
++}
++
++func prepareDevinToolDescription(name, description string) string {
++	if isDevinApplyPatchTool(name) {
++		// The apply_patch grammar is executable protocol, so truncating it can
++		// silently remove required markers and make the tool unusable. Keep a
++		// compact, complete form below Devin's wire limit instead.
++		return devinApplyPatchDescription
++	}
++	return truncateDevinToolDescription(description)
++}
++
+ // DevinTool represents a tool definition in GetChatMessageRequest.
+ type DevinTool struct {
+ 	Name        string
+@@ -462,6 +495,7 @@ func BuildDevinGetChatMessageRequest(
+ 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
+ 		}
+ 		desc = translatorcommon.SanitizeDevinToolDescription(tool.Name, desc)
++		desc = prepareDevinToolDescription(tool.Name, desc)
+ 		if desc != "" {
+ 			tBytes = protowire.AppendTag(tBytes, 2, protowire.BytesType)
+ 			tBytes = protowire.AppendString(tBytes, desc)
+@@ -1002,6 +1036,11 @@ func ParseDevinTrailerError(payload []byte) (statusCode int, err error) {
+ 	case "permission_denied":
+ 		if strings.Contains(msgLower, "high demand") {
+ 			httpCode = http.StatusTooManyRequests
++		} else if strings.Contains(msgLower, "internal error") {
++			// Devin occasionally reports a transient backend failure with the
++			// permission_denied Connect code. Keep it on the retryable upstream
++			// error path instead of treating it as a credential entitlement failure.
++			httpCode = http.StatusBadGateway
+ 		} else {
+ 			httpCode = http.StatusForbidden
+ 		}
+@@ -1177,6 +1216,7 @@ func BuildDevinUpstreamLogBody(
+ 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
+ 		}
+ 		desc = translatorcommon.SanitizeDevinToolDescription(t.Name, desc)
++		desc = prepareDevinToolDescription(t.Name, desc)
+ 		var params json.RawMessage
+ 		if len(t.Parameters) > 0 && json.Valid(t.Parameters) {
+ 			params = json.RawMessage(t.Parameters)
+diff --git a/internal/runtime/executor/helps/devin_wire_test.go b/internal/runtime/executor/helps/devin_wire_test.go
+index 5d06ad8bbc92ef636e7e0bf2ba57e44c43c85628..8c625c6b961bd6e778a94f2f6c372a18c6731e80 100644
+--- a/internal/runtime/executor/helps/devin_wire_test.go
++++ b/internal/runtime/executor/helps/devin_wire_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"math"
+ 	"strings"
+ 	"testing"
++	"unicode/utf8"
+ 
+ 	"github.com/google/uuid"
+ 	"google.golang.org/protobuf/encoding/protowire"
+@@ -274,6 +275,18 @@ func TestParseDevinTrailerError(t *testing.T) {
+ 		t.Errorf("status code = %d, want 502 for upstream internal error", code)
+ 	}
+ 
++	// Devin can encode a transient backend failure as permission_denied. It
++	// must remain retryable instead of poisoning the credential with a 30-minute
++	// permission cooldown.
++	transientPermissionJSON := []byte(`{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: 2aa189bbb4289b6561488609a39ecdc7)"}}`)
++	code, err = ParseDevinTrailerError(transientPermissionJSON)
++	if err == nil {
++		t.Fatal("expected error, got nil")
++	}
++	if code != 502 {
++		t.Errorf("status code = %d, want 502 for transient permission_denied internal error", code)
++	}
++
+ 	unknownErrJSON := []byte(`{"error":{"code":"unknown_future_error","message":"something unusual"}}`)
+ 	code, err = ParseDevinTrailerError(unknownErrJSON)
+ 	if code != 502 {
+@@ -990,3 +1003,17 @@ func TestRegressionIssue5910_ToolCallDeltaFields(t *testing.T) {
+ 		t.Errorf("tc.IsCustomToolCall = %v, want true", tc.IsCustomToolCall)
+ 	}
+ }
++
++func TestTruncateDevinToolDescription(t *testing.T) {
++	description := strings.Repeat("a", 479) + "界" + strings.Repeat("b", 200)
++	trimmed := truncateDevinToolDescription(description)
++	if len(trimmed) > devinToolDescriptionMaxBytes {
++		t.Fatalf("description length = %d, want <= %d", len(trimmed), devinToolDescriptionMaxBytes)
++	}
++	if !utf8.ValidString(trimmed) {
++		t.Fatal("description was truncated at an invalid UTF-8 boundary")
++	}
++	if !strings.HasPrefix(trimmed, strings.Repeat("a", 479)) {
++		t.Fatal("description prefix was not preserved")
++	}
++}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+index 5e8df3a7cbc49d5da88d0997c68e1d9efe8b77a2..268751483069fc92858bd7cb5d3ec6398e7e6884 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
-@@ -488,6 +488,16 @@
+@@ -571,6 +571,16 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
  	if c != nil && c.Request != nil {
  		requestCtx = c.Request.Context()
  	}
@@ -1027,12 +1206,13 @@ diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
 +		}
 +	}
  
- 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
- 		if requestID := logging.GetRequestID(requestCtx); requestID != "" {
+ 	if requestCtx != nil {
+ 		parentCtx = httptransport.InheritDecorator(parentCtx, requestCtx)
 diff --git a/sdk/api/handlers/handlers_routing.go b/sdk/api/handlers/handlers_routing.go
+index 0ddd28a911aa3fb3dbc842eb91257df194df1970..800b7645f894ab5d6ec88acb5d735b23af0f6f50 100644
 --- a/sdk/api/handlers/handlers_routing.go
 +++ b/sdk/api/handlers/handlers_routing.go
-@@ -325,6 +325,11 @@
+@@ -362,6 +362,11 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
  func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
  	var decision modelRouteDecision
  	host := h.modelRouterHost()
@@ -1044,7 +1224,7 @@ diff --git a/sdk/api/handlers/handlers_routing.go b/sdk/api/handlers/handlers_ro
  	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
  		return decision
  	}
-@@ -347,6 +352,7 @@
+@@ -384,6 +389,7 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
  	case pluginapi.ModelRouteTargetSelf, pluginapi.ModelRouteTargetExecutor:
  		decision.ExecutorPluginID = strings.TrimSpace(resp.Target)
  	case pluginapi.ModelRouteTargetProvider:
@@ -1053,23 +1233,25 @@ diff --git a/sdk/api/handlers/handlers_routing.go b/sdk/api/handlers/handlers_ro
  		decision.Model = strings.TrimSpace(resp.TargetModel)
  	}
 diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+index d1b1ebce3a778bcc1e01503687ba6f7bc4138931..ebe78dd61f02d3d360131cd985f1eff5d90d06db 100644
 --- a/sdk/cliproxy/auth/conductor_home.go
 +++ b/sdk/cliproxy/auth/conductor_home.go
-@@ -1162,6 +1162,10 @@
- 	if pinnedAuthID != "" && strings.TrimSpace(auth.ID) != pinnedAuthID {
+@@ -1163,6 +1163,10 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
  		endScope()
  		return nil, &Error{Code: "auth_not_found", Message: "home returned an auth that does not match the pinned credential", HTTPStatus: http.StatusServiceUnavailable}
-+	}
+ 	}
 +	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(auth.ID) {
 +		endScope()
 +		return nil, &Error{Code: "nexus_group_forbidden", Message: "home returned a credential outside the request group", HTTPStatus: http.StatusForbidden}
- 	}
++	}
  	if errIdentity := verifyAccountedHomeConcurrencyIdentity(envelope.Tuple, &auth, dispatch.AuthIndex); errIdentity != nil {
  		endScope()
+ 		return nil, errIdentity
 diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
+index e2eac43a75c6c3c2797f4c21a36a507c54d1d8b8..3bd656dfde111e8e491b27ce3552dd3fe7e2bf70 100644
 --- a/sdk/cliproxy/auth/conductor_selection.go
 +++ b/sdk/cliproxy/auth/conductor_selection.go
-@@ -76,6 +76,7 @@
+@@ -77,6 +77,7 @@ type requiredAuthKindContextKey struct{}
  type credentialPolicyContextKey struct{}
  
  type authSelectionEligibility struct {
@@ -1077,7 +1259,7 @@ diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conduc
  	requiredKind     string
  	credentialPolicy string
  	disallowFreeAuth bool
-@@ -98,7 +99,7 @@
+@@ -99,7 +100,7 @@ func credentialPolicyFromContext(ctx context.Context) string {
  }
  
  func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
@@ -1086,17 +1268,17 @@ diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conduc
  	if ctx != nil {
  		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
  		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
-@@ -108,6 +109,9 @@
- 
- func (e authSelectionEligibility) allows(auth *Auth) bool {
+@@ -111,6 +112,9 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
  	if auth == nil {
-+		return false
-+	}
-+	if !e.nexusPolicy.AllowsAuthID(auth.ID) {
  		return false
  	}
++	if !e.nexusPolicy.AllowsAuthID(auth.ID) {
++		return false
++	}
  	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
-@@ -923,6 +927,20 @@
+ 		return false
+ 	}
+@@ -951,6 +955,20 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
  	if m == nil || m.scheduler == nil {
  		return nil, false, nil
  	}
@@ -1117,7 +1299,7 @@ diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conduc
  	providerKey := strings.ToLower(strings.TrimSpace(provider))
  	var selected *Auth
  	var errPick error
-@@ -1800,6 +1818,9 @@
+@@ -1903,6 +1921,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
  	if selected == nil {
  		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
  	}
@@ -1127,7 +1309,7 @@ diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conduc
  	authCopy := selected.Clone()
  	if !selected.indexAssigned {
  		m.mu.Lock()
-@@ -1986,7 +2007,7 @@
+@@ -2089,7 +2110,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
  	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
  	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
  
@@ -1136,17 +1318,17 @@ diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conduc
  		return m.pickNextLegacy(ctx, provider, model, opts, tried)
  	}
  	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-@@ -2025,6 +2046,9 @@
- 	}
+@@ -2129,6 +2150,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
  	if selected == nil {
  		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
-+	}
+ 	}
 +	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(selected.ID) {
 +		return nil, nil, &Error{Code: "nexus_group_forbidden", Message: "selected credential is outside the request group", HTTPStatus: http.StatusForbidden}
- 	}
++	}
  	authCopy := selected.Clone()
  	if !selected.indexAssigned {
-@@ -2139,6 +2163,9 @@
+ 		m.mu.Lock()
+@@ -2254,6 +2278,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
  	if !okExecutor {
  		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
  	}
@@ -1156,7 +1338,7 @@ diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conduc
  	authCopy := selected.Clone()
  	if !selected.indexAssigned {
  		m.mu.Lock()
-@@ -2159,7 +2186,7 @@
+@@ -2274,7 +2301,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
  	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
  	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
  
@@ -1165,18 +1347,19 @@ diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conduc
  		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
  	}
  
-@@ -2225,6 +2252,9 @@
- 	executor, okExecutor := m.Executor(providerKey)
+@@ -2341,6 +2368,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
  	if !okExecutor {
  		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
-+	}
+ 	}
 +	if !NexusGroupPolicyFromContext(ctx).AllowsAuthID(selected.ID) {
 +		return nil, nil, "", &Error{Code: "nexus_group_forbidden", Message: "selected credential is outside the request group", HTTPStatus: http.StatusForbidden}
- 	}
++	}
  	authCopy := selected.Clone()
  	if !selected.indexAssigned {
+ 		m.mu.Lock()
 diff --git a/sdk/cliproxy/auth/nexus_group_policy.go b/sdk/cliproxy/auth/nexus_group_policy.go
 new file mode 100644
+index 0000000000000000000000000000000000000000..80a7ae8aa00d0aceb6041e9cb83159c509a2230f
 --- /dev/null
 +++ b/sdk/cliproxy/auth/nexus_group_policy.go
 @@ -0,0 +1,187 @@
@@ -1369,6 +1552,7 @@ new file mode 100644
 +}
 diff --git a/sdk/cliproxy/auth/nexus_group_policy_test.go b/sdk/cliproxy/auth/nexus_group_policy_test.go
 new file mode 100644
+index 0000000000000000000000000000000000000000..8dd1045bdac9530f89f9b8313600e8f66b3b1475
 --- /dev/null
 +++ b/sdk/cliproxy/auth/nexus_group_policy_test.go
 @@ -0,0 +1,116 @@
@@ -1488,183 +1672,3 @@ new file mode 100644
 +		}
 +	}
 +}
-diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
---- a/internal/runtime/executor/helps/devin_wire.go
-+++ b/internal/runtime/executor/helps/devin_wire.go
-@@ -1001,6 +1001,11 @@
- 	case "permission_denied":
- 		if strings.Contains(msgLower, "high demand") {
- 			httpCode = http.StatusTooManyRequests
-+		} else if strings.Contains(msgLower, "internal error") {
-+			// Devin occasionally reports a transient backend failure with the
-+			// permission_denied Connect code. Keep it on the retryable upstream
-+			// error path instead of treating it as a credential entitlement failure.
-+			httpCode = http.StatusBadGateway
- 		} else {
- 			httpCode = http.StatusForbidden
- 		}
---- a/internal/runtime/executor/helps/devin_wire_test.go
-+++ b/internal/runtime/executor/helps/devin_wire_test.go
-@@ -274,6 +274,18 @@
- 		t.Errorf("status code = %d, want 502 for upstream internal error", code)
- 	}
- 
-+	// Devin can encode a transient backend failure as permission_denied. It
-+	// must remain retryable instead of poisoning the credential with a 30-minute
-+	// permission cooldown.
-+	transientPermissionJSON := []byte(`{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: 2aa189bbb4289b6561488609a39ecdc7)"}}`)
-+	code, err = ParseDevinTrailerError(transientPermissionJSON)
-+	if err == nil {
-+		t.Fatal("expected error, got nil")
-+	}
-+	if code != 502 {
-+		t.Errorf("status code = %d, want 502 for transient permission_denied internal error", code)
-+	}
-+
- 	unknownErrJSON := []byte(`{"error":{"code":"unknown_future_error","message":"something unusual"}}`)
- 	code, err = ParseDevinTrailerError(unknownErrJSON)
- 	if code != 502 {
-diff --git a/internal/runtime/executor/helps/devin_wire.go b/internal/runtime/executor/helps/devin_wire.go
---- a/internal/runtime/executor/helps/devin_wire.go
-+++ b/internal/runtime/executor/helps/devin_wire.go
-@@ -50,7 +50,40 @@
- 
- 	maxConnectFrameSize      = 16 * 1024 * 1024
- 	maxDecompressedFrameSize = 64 * 1024 * 1024
-+
-+	// Devin rejects long Claude Code tool descriptions with a misleading
-+	// permission_denied/MCP error. Keep the wire field below the observed limit.
-+	devinToolDescriptionMaxBytes = 480
- )
-+
-+// truncateDevinToolDescription caps the UTF-8 byte length without splitting a rune.
-+func truncateDevinToolDescription(description string) string {
-+	if len(description) <= devinToolDescriptionMaxBytes {
-+		return description
-+	}
-+	cut := devinToolDescriptionMaxBytes
-+	for cut > 0 && !utf8.ValidString(description[:cut]) {
-+		cut--
-+	}
-+	return description[:cut]
-+}
-+
-+const devinApplyPatchDescription = "Use the Codex apply_patch format. Start with *** Begin Patch and end with *** End Patch. Operations: *** Add File: path, *** Delete File: path, *** Update File: path, and *** Move to: path. Every added-file content line starts with +. For updates, use @@; context lines start with one space, removed lines with -, and added lines with +. Use *** End of File when required. Original patch grammar: start: patch."
-+
-+func isDevinApplyPatchTool(name string) bool {
-+	name = strings.ToLower(strings.TrimSpace(name))
-+	return name == "apply_patch" || strings.HasSuffix(name, "__apply_patch")
-+}
-+
-+func prepareDevinToolDescription(name, description string) string {
-+	if isDevinApplyPatchTool(name) {
-+		// The apply_patch grammar is executable protocol, so truncating it can
-+		// silently remove required markers and make the tool unusable. Keep a
-+		// compact, complete form below Devin's wire limit instead.
-+		return devinApplyPatchDescription
-+	}
-+	return truncateDevinToolDescription(description)
-+}
- 
- // DevinTool represents a tool definition in GetChatMessageRequest.
- type DevinTool struct {
-@@ -461,6 +477,7 @@
- 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
- 		}
- 		desc = translatorcommon.SanitizeDevinToolDescription(tool.Name, desc)
-+		desc = prepareDevinToolDescription(tool.Name, desc)
- 		if desc != "" {
- 			tBytes = protowire.AppendTag(tBytes, 2, protowire.BytesType)
- 			tBytes = protowire.AppendString(tBytes, desc)
-@@ -1176,6 +1193,7 @@
- 			desc = strings.ReplaceAll(desc, "Takes a task_id parameter identifying the task", "Takes a taskId parameter identifying the task")
- 		}
- 		desc = translatorcommon.SanitizeDevinToolDescription(t.Name, desc)
-+		desc = prepareDevinToolDescription(t.Name, desc)
- 		var params json.RawMessage
- 		if len(t.Parameters) > 0 && json.Valid(t.Parameters) {
- 			params = json.RawMessage(t.Parameters)
-diff --git a/internal/runtime/executor/helps/devin_wire_test.go b/internal/runtime/executor/helps/devin_wire_test.go
---- a/internal/runtime/executor/helps/devin_wire_test.go
-+++ b/internal/runtime/executor/helps/devin_wire_test.go
-@@ -5,6 +5,7 @@
- 	"math"
- 	"strings"
- 	"testing"
-+	"unicode/utf8"
- 
- 	"github.com/google/uuid"
- 	"google.golang.org/protobuf/encoding/protowire"
-@@ -990,3 +991,17 @@
- 		t.Errorf("tc.IsCustomToolCall = %v, want true", tc.IsCustomToolCall)
- 	}
- }
-+
-+func TestTruncateDevinToolDescription(t *testing.T) {
-+	description := strings.Repeat("a", 479) + "界" + strings.Repeat("b", 200)
-+	trimmed := truncateDevinToolDescription(description)
-+	if len(trimmed) > devinToolDescriptionMaxBytes {
-+		t.Fatalf("description length = %d, want <= %d", len(trimmed), devinToolDescriptionMaxBytes)
-+	}
-+	if !utf8.ValidString(trimmed) {
-+		t.Fatal("description was truncated at an invalid UTF-8 boundary")
-+	}
-+	if !strings.HasPrefix(trimmed, strings.Repeat("a", 479)) {
-+		t.Fatal("description prefix was not preserved")
-+	}
-+}
-+
-+func TestPrepareDevinToolDescriptionPreservesApplyPatchGrammar(t *testing.T) {
-+	description := prepareDevinToolDescription("functions__apply_patch", strings.Repeat("x", 2000))
-+	for _, marker := range []string{"*** Begin Patch", "*** End Patch", "*** Add File", "*** Delete File", "*** Update File", "*** Move to", "*** End of File", "@@", "start: patch"} {
-+		if !strings.Contains(description, marker) {
-+			t.Fatalf("apply_patch description missing %q: %s", marker, description)
-+		}
-+	}
-+	if len(description) > devinToolDescriptionMaxBytes {
-+		t.Fatalf("apply_patch description length = %d, want <= %d", len(description), devinToolDescriptionMaxBytes)
-+	}
-+	ordinary := prepareDevinToolDescription("functions__ordinary", strings.Repeat("x", 2000))
-+	if len(ordinary) > devinToolDescriptionMaxBytes {
-+		t.Fatalf("ordinary description length = %d, want <= %d", len(ordinary), devinToolDescriptionMaxBytes)
-+	}
-+}
-diff --git a/internal/runtime/executor/devin_executor.go b/internal/runtime/executor/devin_executor.go
-index 17092f3..6b6cbeb 100644
---- a/internal/runtime/executor/devin_executor.go
-+++ b/internal/runtime/executor/devin_executor.go
-@@ -2473,6 +2473,14 @@ func (e *DevinExecutor) getSensitiveWordMatcher() *helps.SensitiveWordMatcher {
- 
- func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
- 	err := statusErr{code: code, msg: string(body)}
-+	// Some Devin gateways return the same permission_denied/internal-error
-+	// payload as an HTTP 403 instead of an EOS trailer. Treat that shape as a
-+	// transient upstream failure so it does not poison the credential.
-+	if code == http.StatusForbidden {
-+		if mappedCode, mappedErr := helps.ParseDevinTrailerError(body); mappedErr != nil && mappedCode == http.StatusBadGateway {
-+			err.code, err.msg = mappedCode, mappedErr.Error()
-+		}
-+	}
- 	if code == http.StatusTooManyRequests && headers != nil {
- 		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
- 			if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
-diff --git a/internal/runtime/executor/devin_executor_test.go b/internal/runtime/executor/devin_executor_test.go
-index f3b7815..ac34345 100644
---- a/internal/runtime/executor/devin_executor_test.go
-+++ b/internal/runtime/executor/devin_executor_test.go
-@@ -351,6 +351,15 @@ func TestDevinStatusError_RetryAfter(t *testing.T) {
- 	if err3.retryAfter != nil {
- 		t.Fatalf("expected nil retryAfter for 500, got %v", err3.retryAfter)
- 	}
-+
-+	transientPermission := []byte(`{"error":{"code":"permission_denied","message":"an internal error occurred (trace ID: f9fa46daf1094c59e02eeb47e08742eb)"}}`)
-+	err4 := newDevinStatusError(http.StatusForbidden, nil, transientPermission)
-+	if err4.code != http.StatusBadGateway {
-+		t.Fatalf("status code = %d, want 502 for HTTP 403 transient permission_denied", err4.code)
-+	}
-+	if !strings.Contains(err4.msg, "devin upstream error (permission_denied)") {
-+		t.Fatalf("message = %q, want normalized Devin upstream error", err4.msg)
-+	}
- }
- 
- func TestResolveDevinSessionAndCascadeIDs(t *testing.T) {
