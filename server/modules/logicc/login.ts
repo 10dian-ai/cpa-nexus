@@ -3,22 +3,24 @@ import { getRedis } from '../../lib/redis'
 import { browserHeaders, logiccClerkBase } from './config'
 import { LogiccError, classifyLogiccStatus, describeErrorBody, looksBlocked, networkFailure } from './errors'
 import { isFreshJwt, jwtExpiry, jwtSessionId } from './credentials'
+import { gauthConfigured, hasGoogleCredentials, kernelLogin } from './gauth'
 import { loadCredential, markAccountStatus, storeSignInResult, type LogiccCredentialRecord } from './store'
 
 /**
- * Renew a Logicc session with a normal Clerk sign-in, using the account's own
- * stored email and password — the same request flow the Logicc web app runs
- * when a person logs in. It is used only to re-establish a session for an
- * account the operator owns; it never creates accounts.
+ * Renew a Logicc session with the account's own stored credentials — the same
+ * flows a person would run. Two kinds:
  *
- * Clerk's sign-in is two steps on the Frontend API:
- *   POST /v1/client/sign_ins                       identifier=<email>   → a sign-in attempt
- *   POST /v1/client/sign_ins/{id}/attempt_first_factor  strategy=password&password=…
- * A completed attempt returns `created_session_id` and sets a fresh `__client`.
+ *  - `password`: a normal Clerk sign-in over HTTP (email + password).
+ *  - `google`: the full Google OAuth flow (email + password + TOTP) replayed
+ *    in the gauth mini-kernel's stealth browser, for accounts registered
+ *    through Google that have no Logicc password.
  *
- * If Clerk asks for any human verification — a captcha/Turnstile challenge, a
- * second factor, an e-mailed code — this stops and marks the account
- * `needs_login`. It never attempts to satisfy or bypass such a challenge.
+ * Both are used only to re-establish a session for an account the operator
+ * owns; they never create accounts.
+ *
+ * If a login needs a human — a captcha/Turnstile challenge, a second factor,
+ * a Google safety check — this stops and marks the account `needs_login`. It
+ * never attempts to satisfy or bypass such a challenge.
  */
 export type LoginSuccess = { ok: true; sessionId: string; clientCookie: string; token: string | null }
 export type LoginOutcome =
@@ -31,6 +33,10 @@ const loginLockKey = (id: string) => `ccm:logicc:login-lock:${id}`
 const loginBackoffKey = (id: string) => `ccm:logicc:login-backoff:${id}`
 /** How long before the next automatic sign-in for an account, by outcome. */
 const BACKOFF_SECONDS = { needs_human: 30 * 60, bad_credentials: 6 * 3600, transient: 5 * 60 } as const
+/** A kernel login drives a whole browser flow: rest longer between attempts, and retry busy quickly. */
+const GOOGLE_BACKOFF_SECONDS = { needs_human: 30 * 60, bad_credentials: 6 * 3600, transient: 10 * 60, busy: 2 * 60 } as const
+/** The lock covers a whole browser run (see GAUTH_LOGIN_TIMEOUT_MS); a Clerk sign-in needs far less. */
+const GOOGLE_LOCK_MS = 10 * 60_000
 
 function clerkForm(fields: Record<string, string>): string {
   return new URLSearchParams(fields).toString()
@@ -85,7 +91,14 @@ function parseClerk(text: string): { status?: string; sessionId?: string; sessio
 const NEEDS_HUMAN = /captcha|second_factor|needs_second_factor|verification|needs_new_password|email_code|phone_code|needs_identifier/i
 const BAD_CREDENTIALS = /form_password_incorrect|form_identifier_not_found|invalid|incorrect|not_found|no_account/i
 
-/** Sign in with email and password; returns the new session or why a human is needed. */
+/**
+ * Sign in with email and password; returns the new session or why a human is needed.
+ *
+ * Clerk's sign-in is two steps on the Frontend API:
+ *   POST /v1/client/sign_ins                              identifier=<email>  → a sign-in attempt
+ *   POST /v1/client/sign_ins/{id}/attempt_first_factor    strategy=password&password=…
+ * A completed attempt returns `created_session_id` and sets a fresh `__client`.
+ */
 export async function signInWithPassword(email: string, password: string): Promise<LoginOutcome> {
   // Step 1: create the sign-in attempt from the e-mail identifier.
   const created = await clerkPost('/v1/client/sign_ins', clerkForm({ identifier: email }), null)
@@ -131,21 +144,44 @@ export async function signInWithPassword(email: string, password: string): Promi
   }
 }
 
+/** Which stored credentials an account renews with, when any. */
+function renewalMethod(record: LogiccCredentialRecord): 'password' | 'google' | null {
+  if (record.loginEmail && record.loginPassword) return 'password'
+  if (gauthConfigured() && hasGoogleCredentials(record)) return 'google'
+  return null
+}
+
 /**
  * Attempt an automatic sign-in for one account, respecting a single-flight
  * lock and a per-account backoff. Persists the new session on success and sets
  * the account's status on failure. Returns the outcome (or null when it was
  * skipped: not eligible, backing off, or another worker is signing in).
  */
-export async function signInAccount(id: string, options: { ignoreBackoff?: boolean } = {}): Promise<LoginOutcome | null> {
+export async function renewAccountSession(id: string, options: { ignoreBackoff?: boolean } = {}): Promise<LoginOutcome | null> {
   const redis = getRedis()
   const record = await loadCredential(id)
-  if (!record || !record.loginEmail || !record.loginPassword) return null
+  if (!record) return null
+  const method = renewalMethod(record)
+  if (!method) return null
+  const backoff = method === 'google' ? GOOGLE_BACKOFF_SECONDS : BACKOFF_SECONDS
   if (!options.ignoreBackoff && await redis.get(loginBackoffKey(id))) return null
   const lockToken = randomUUID()
-  if (!await redis.set(loginLockKey(id), lockToken, 'PX', 40_000, 'NX')) return null
+  if (!await redis.set(loginLockKey(id), lockToken, 'PX', method === 'google' ? GOOGLE_LOCK_MS : 40_000, 'NX')) return null
   try {
-    const outcome = await signInWithPassword(record.loginEmail, record.loginPassword)
+    // `busy` (the kernel's single browser is taken) is not a verdict on the
+    // account: rest briefly and leave the status untouched.
+    let outcome: LoginOutcome | null
+    if (method === 'google') {
+      const run = await kernelLogin(record)
+      outcome = run.ok ? { ok: true, sessionId: run.sessionId, clientCookie: run.clientCookie, token: null }
+        : run.reason === 'busy' ? null : { ok: false, reason: run.reason, message: run.message }
+      if (outcome === null) {
+        await redis.set(loginBackoffKey(id), 'busy', 'EX', GOOGLE_BACKOFF_SECONDS.busy)
+        return { ok: false, reason: 'transient', message: 'gauth 内核正忙（浏览器流程单飞），稍后自动重试' }
+      }
+    } else {
+      outcome = await signInWithPassword(record.loginEmail!, record.loginPassword!)
+    }
     if (outcome.ok) {
       const stored = await storeSignInResult(id, {
         sessionId: outcome.sessionId, clientCookie: outcome.clientCookie,
@@ -155,13 +191,13 @@ export async function signInAccount(id: string, options: { ignoreBackoff?: boole
       // A concurrent credential change won the race; leave it and let the next check sort it out.
       return stored ? outcome : { ok: false, reason: 'transient', message: '凭据刚刚被其他操作更新，跳过本次写入' }
     }
-    await redis.set(loginBackoffKey(id), outcome.reason, 'EX', BACKOFF_SECONDS[outcome.reason])
+    await redis.set(loginBackoffKey(id), outcome.reason, 'EX', backoff[outcome.reason])
     const status = outcome.reason === 'bad_credentials' ? 'credential_expired' : 'needs_login'
-    await markAccountStatus(id, status, loginStatusNote(outcome))
+    await markAccountStatus(id, status, loginStatusNote(method, outcome))
     return outcome
   } catch (error) {
     // A network or upstream failure (not a verdict on the credentials): short backoff, keep the account as is.
-    await redis.set(loginBackoffKey(id), 'transient', 'EX', BACKOFF_SECONDS.transient).catch(() => {})
+    await redis.set(loginBackoffKey(id), 'transient', 'EX', backoff.transient).catch(() => {})
     const message = error instanceof LogiccError ? error.message : '登录失败'
     await markAccountStatus(id, 'needs_login', `自动登录暂时失败：${message}`).catch(() => {})
     return { ok: false, reason: 'transient', message }
@@ -170,13 +206,14 @@ export async function signInAccount(id: string, options: { ignoreBackoff?: boole
   }
 }
 
-function loginStatusNote(outcome: LoginOutcome & { ok: false }): string {
-  if (outcome.reason === 'needs_human') return `自动登录需要人工完成验证：${outcome.message}（请在账号页「完成登录」，或重新导入一份 __client）`
-  if (outcome.reason === 'bad_credentials') return `自动登录失败：${outcome.message}（请更新邮箱或密码）`
-  return `自动登录暂时失败：${outcome.message}`
+function loginStatusNote(method: 'password' | 'google', outcome: LoginOutcome & { ok: false }): string {
+  const flow = method === 'google' ? 'Google 自动登录' : '自动登录'
+  if (outcome.reason === 'needs_human') return `${flow}需要人工完成验证：${outcome.message}（请在账号页「重新登录」，或重新导入一份 __client）`
+  if (outcome.reason === 'bad_credentials') return `${flow}失败：${outcome.message}（请更新 Google 邮箱、密码或 TOTP 密钥）`
+  return `${flow}暂时失败：${outcome.message}`
 }
 
 /** Whether the account can have its session renewed by signing in right now. */
 export function canAutoLogin(record: LogiccCredentialRecord, autoLoginEnabled: boolean): boolean {
-  return autoLoginEnabled && record.autoLogin && !!record.loginEmail && !!record.loginPassword
+  return autoLoginEnabled && record.autoLogin && renewalMethod(record) !== null
 }

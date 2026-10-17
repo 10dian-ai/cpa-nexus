@@ -8,7 +8,7 @@ vi.mock('../server/lib/db', () => ({ getDb: () => fixture.sql }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: async () => {} }))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: Buffer.alloc(32, 9).toString('base64') }) }))
 import { createGroup, getModuleDefaultGroupIds, patchGroup } from '../server/lib/groups'
-import { groupModels, listCandidates, loadCredential, loginEmailHash, maskEmail, servingModels, storeRotatedCookie, storeSignInResult, summary, upsertAccount, upsertPasswordAccount } from '../server/modules/logicc/store'
+import { groupModels, listCandidates, loadCredential, loginEmailHash, googleEmailHash, maskEmail, servingModels, storeRotatedCookie, storeSignInResult, summary, upsertAccount, upsertGoogleAccount, upsertPasswordAccount } from '../server/modules/logicc/store'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const schema = 'nexus_logicc_store_' + randomUUID().replaceAll('-', '')
@@ -97,5 +97,28 @@ describe.skipIf(!databaseUrl)('Logicc account pool on PostgreSQL', () => {
     const signed = (await loadCredential(id))!
     expect(signed).toMatchObject({ sessionId: 'sess_pwlogin001', clientCookie: 'fresh-client', status: 'pending' })
     expect(maskEmail('boss@work.co')).toBe('bo***@work.co')
+  })
+
+  it('adds a Google account without a session, then a kernel harvest fills it in', async () => {
+    const { id, created } = await upsertGoogleAccount({ googleEmail: 'Sam@Gmail.COM', googlePassword: 'g-pass', googleTotp: 'JBSWY3DPEHPK3PXP', googleProfile: JSON.stringify({ firstName: 'Sam' }), label: 'Google acct', maxConcurrency: 2 })
+    expect(created).toBe(true)
+    // No session yet; Google credentials are stored encrypted and never echoed.
+    const raw = (await sql`SELECT session_id,status,google_email_ciphertext,google_password_ciphertext,google_totp_ciphertext,google_email_hash FROM logicc_accounts WHERE id=${id}`)[0]!
+    expect(raw.session_id).toBeNull()
+    expect(raw.status).toBe('needs_login')
+    expect(raw.google_password_ciphertext).not.toContain('g-pass')
+    expect(raw.google_totp_ciphertext).not.toContain('JBSWY3DPEHPK3PXP')
+    expect(raw.google_email_hash).toBe(googleEmailHash('sam@gmail.com'))
+    expect((await loadCredential(id))).toMatchObject({ googleEmail: 'Sam@Gmail.COM', googlePassword: 'g-pass', googleTotp: 'JBSWY3DPEHPK3PXP', googleProfile: JSON.stringify({ firstName: 'Sam' }), sessionId: null })
+
+    // Re-importing the same Google email updates the credentials and keeps one row.
+    const again = await upsertGoogleAccount({ googleEmail: 'sam@gmail.com', googlePassword: 'new-pass', googleTotp: 'JBSWY3DPEHPK3PXQ', maxConcurrency: 2 })
+    expect(again).toEqual({ id, created: false })
+    expect((await loadCredential(id))!.googlePassword).toBe('new-pass')
+
+    // A kernel harvest attaches the session and cookie, like a password sign-in.
+    const stored = await storeSignInResult(id, { sessionId: 'sess_google001', clientCookie: 'harvested-client', token: null }, (await loadCredential(id))!.credentialVersion)
+    expect(stored).toBe(true)
+    expect((await loadCredential(id))).toMatchObject({ sessionId: 'sess_google001', clientCookie: 'harvested-client', status: 'pending' })
   })
 })

@@ -1,8 +1,8 @@
 import type { GroupBinding } from './groups'
 
 export type LogiccAccountStatus = 'pending' | 'ready' | 'credential_expired' | 'sync_error' | 'needs_login'
-/** How the account authenticates: a refreshable Clerk client, a fixed session JWT, or email+password sign-in. */
-export type LogiccCredentialKind = 'client' | 'jwt' | 'password'
+/** How the account authenticates: a refreshable Clerk client, a fixed session JWT, email+password sign-in, or Google OAuth through the gauth mini-kernel. */
+export type LogiccCredentialKind = 'client' | 'jwt' | 'password' | 'google'
 
 export interface LogiccModel { id: string; name: string; provider: string; isDefault: boolean }
 
@@ -13,7 +13,7 @@ export interface LogiccAccountView extends GroupBinding {
   /** Session identifier with the middle masked, e.g. `sess_2ab…9xz`. */
   sessionHint: string | null
   credentialKind: LogiccCredentialKind
-  /** Whether a stored email+password lets the session be renewed by signing in. */
+  /** Whether stored login credentials (email+password, or Google OAuth) let the session be renewed automatically. */
   canSignIn: boolean
   /** Masked login email (e.g. `a***@gmail.com`) when one is stored. */
   loginHint: string | null
@@ -69,7 +69,7 @@ export interface LogiccSettings {
    * to the next source so Logicc only serves plain conversations.
    */
   toolPolicy: 'emulate' | 'reject'
-  /** Renew an expired session automatically with the account's stored password (when present). */
+  /** Renew an expired session automatically with the account's stored credentials: password sign-in or Google OAuth via the gauth mini-kernel. */
   autoLogin: boolean
   usage: LogiccUsageSettings
 }
@@ -99,6 +99,8 @@ export const DEFAULT_LOGICC_SETTINGS: LogiccSettings = {
 export interface LogiccSettingsView extends LogiccSettings {
   anthropicCountKeySet: boolean
   geminiCountKeySet: boolean
+  /** Whether the gauth mini-kernel (Google OAuth renewal) is reachable via LOGICC_GAUTH_URL. */
+  gauthConfigured: boolean
   /** Factors raised by calibration, per family; effective = max(configured, calibrated). */
   calibrated: Record<LogiccTokenFamily, LogiccFactorPair & { samples: number }>
 }

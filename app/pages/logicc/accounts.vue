@@ -47,9 +47,11 @@ async function save() {
 function credentialLabel(account: LogiccAccountView) {
   const base = account.credentialKind === 'client' ? '__client 自动续期'
     : account.credentialKind === 'password' ? '邮箱密码登录'
+    : account.credentialKind === 'google' ? 'Google OAuth 登录'
     : `仅 JWT · ${account.tokenExpiresAt ? '到期 ' + formatDate(account.tokenExpiresAt) : '已过期'}`
   const signIn = account.canSignIn ? `${account.loginHint || '邮箱'}${account.autoLogin ? ' · 自动登录' : ' · 已关闭自动登录'}` : ''
-  return signIn && account.credentialKind !== 'password' ? `${base} · ${signIn}` : account.credentialKind === 'password' ? `${base}${account.autoLogin ? '' : '（已关闭自动登录）'} · ${account.loginHint || ''}` : base
+  return signIn && !['password', 'google'].includes(account.credentialKind) ? `${base} · ${signIn}`
+    : account.credentialKind === 'password' || account.credentialKind === 'google' ? `${base}${account.autoLogin ? '' : '（已关闭自动登录）'} · ${account.loginHint || ''}` : base
 }
 </script>
 
@@ -89,7 +91,7 @@ function credentialLabel(account: LogiccAccountView) {
           <td class="align-right">{{ account.inFlight }} / {{ account.maxConcurrency || '∞' }}</td>
           <td class="align-right">{{ account.models.length }}</td>
           <td><span class="date-text">{{ formatDate(account.lastUsedAt) }}</span></td>
-          <td><div class="inline-actions justify-end"><button v-if="account.canSignIn" class="button small" :disabled="busy" title="用邮箱密码立即重新登录" @click="bulk('login', [account.id])">重新登录</button><button class="button small" :disabled="busy" @click="bulk('check', [account.id])">检测</button><button class="button small" :disabled="busy" @click="startEdit(account)">编辑</button></div></td>
+          <td><div class="inline-actions justify-end"><button v-if="account.canSignIn" class="button small" :disabled="busy" title="用存储的凭据立即重新登录（密码或 Google OAuth）" @click="bulk('login', [account.id])">重新登录</button><button class="button small" :disabled="busy" @click="bulk('check', [account.id])">检测</button><button class="button small" :disabled="busy" @click="startEdit(account)">编辑</button></div></td>
         </tr>
       </tbody>
     </table></div>
@@ -105,7 +107,7 @@ function credentialLabel(account: LogiccAccountView) {
       <label class="field"><span>备注</span><textarea v-model="form.note" rows="2" maxlength="2000" :disabled="busy" /></label>
       <label class="field"><span>并发上限</span><input v-model.number="form.maxConcurrency" type="number" min="0" max="1000" step="1" required :disabled="busy"><small>同时处理的请求数，0 表示不限制。</small></label>
       <label class="checkbox-line"><input v-model="form.enabled" type="checkbox" :disabled="busy">参与调度</label>
-      <label v-if="editing?.canSignIn" class="checkbox-line"><input v-model="form.autoLogin" type="checkbox" :disabled="busy">会话失效时用邮箱密码自动登录</label>
+      <label v-if="editing?.canSignIn" class="checkbox-line"><input v-model="form.autoLogin" type="checkbox" :disabled="busy">会话失效时自动登录续期（密码 / Google OAuth）</label>
       <GroupSelector v-model="form.groupIds" :groups="groups?.items || []" :disabled="busy" />
       <p class="small-text muted">要更换凭据，直接重新导入同一会话即可。</p>
     </form>

@@ -50,6 +50,7 @@ POST https://clerk.logicc.com/v1/client/sessions/{sessionId}/tokens   (Cookie: _
 | 格式 | 示例 |
 |---|---|
 | **邮箱 + 密码**（仅支持密码登录的账号） | `user@example.com----密码`，或 JSON `{"email":"…","password":"…"}` |
+| **Google 账号**（OAuth 注册的账号） | `user@gmail.com----Google密码----TOTP密钥`，或 JSON `{"googleEmail":"…","googlePassword":"…","totpSecret":"…"}`；gauth 的五段式 `邮箱----密码----辅助邮箱----TOTP----收件箱链接` 也能识别（后两段忽略） |
 | logicc2api 导出的 JSON（数组、`{accounts:[…]}`、单个对象或 JSON Lines） | `[{"name":"账号1","clientCookie":"…","sessionId":"sess_…","enabled":true}]` |
 | Cookie 请求头 | `__client=…; __session=eyJ…` |
 | 分隔写法 | `__client值----sess_…`、`名称|__client值|sess_…`，也支持 Tab、空格、逗号分隔 |
@@ -68,8 +69,25 @@ POST https://clerk.logicc.com/v1/client/sessions/{sessionId}/tokens   (Cookie: _
 - 触发时机：某账号的 `__client` 失效、又没有别的方式续期时，按需登录一次；后台周期检测也会给「待登录」的账号重试。都有单飞锁和按账号的退避（人机验证 30 分钟、密码错误 6 小时、网络波动 5 分钟），不会反复打 Clerk。
 - **遇到验证就停，绝不绕过。** 登录时若 Clerk 要求人机验证（captcha / Turnstile）、两步验证或邮箱验证码，账号标为「待登录」退出调度，等人工处理；系统不会尝试满足或绕过这些验证。
 - 处理「待登录」：在账号页点「重新登录」立即再试一次（适合你刚在别处过完人机验证），或直接重新导入一份 `__client`。
-- 仅适用于**开启了密码登录**的账号。用 Google 等 OAuth 注册、且没有设过密码的账号无法用这条路；可先在 Logicc 账号设置里给它设一个密码再导入。密码错误的账号标为「凭证失效」，更新密码后恢复。
+- 仅适用于**开启了密码登录**的账号。用 Google 注册、且没有设过密码的账号走下面的 gauth 内核续期。
 - 可在「Logicc 设置」里全局关闭自动登录，或在单个账号上关闭。
+
+## Google 账号续期（logicc-gauth 小内核）
+
+Google OAuth 注册的账号没有 Logicc 密码，密码登录这条路走不通。对这类账号，CPAN 用 **logicc-gauth 小内核**（`gauth/` 目录，独立容器 `gauth`，只在 Compose 内网可达）自动重走整套 OAuth：
+
+```
+Logicc 登录页 → Continue with Google → 邮箱 → 密码 → TOTP（pyotp 现算）
+→ consent（同行 x 最大 = 确认）→ 回调建立会话 → 收割 __client + sessionId → 让出会话
+```
+
+- 内核是 `gauth/gauth.py`（patchright 反检测浏览器）加一层 stdlib HTTP 封装（`gauth/server.py`），对外只暴露 `GET /health` 和 `POST /v1/login`；浏览器流程**单飞**，正忙时返回 `busy`，模块按 2 分钟退避重试。
+- 模块侧入口在 `server/modules/logicc/gauth.ts`：`LOGICC_GAUTH_URL` 指向内核（compose 里默认 `http://gauth:8320`），`LOGICC_GAUTH_TOKEN` 是可选的共享令牌。不配 URL 时 Google 续期整体停用，其余功能不受影响。
+- Google 凭据（邮箱、密码、TOTP 密钥、可选的 onboarding 资料）同样用 `APP_ENCRYPTION_KEY` 加密存储，按 Google 邮箱去重；账号导入时给三件套即建号（初始「待登录」），首次内核登录后进入号池。
+- 续期失败原因与密码登录一致：`needs_human`（Google 出现安全验证/手机验证等内核不认识的挑战，停下绝不绕过）→「待登录」；`bad_credentials`（密码或 TOTP 错误）→「凭证失效」；`transient` → 短退避后重试。退避时长比密码登录更长（网络波动 10 分钟），浏览器流程也用更长的单飞锁（10 分钟）。
+- CLI 原功能全部保留：`python gauth.py 账号.json [--dry]` 直连本机调试 Chrome（`GAUTH_CDP`，默认 9222）跑同样的流程，产出 `accounts-out/<label>.json`，可直接粘进后台导入。
+- **纪律不变：一个 `__client` 只给号池用。** 内核收割完立即让出会话（跳转 about:blank），浏览器不再触碰该登录，防止与号池竞争轮换 `__client`。
+
 
 ## 调度
 

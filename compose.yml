@@ -11,6 +11,9 @@ x-app-env: &app-env
   CPA_URL: http://cpa:8317
   # The CPA kernel calls module bridges here, inside the Compose network.
   NEXUS_BRIDGE_BASE_URL: http://app:3000
+  # gauth mini-kernel: renews Google-registered Logicc sessions by replaying OAuth.
+  LOGICC_GAUTH_URL: ${LOGICC_GAUTH_URL:-http://gauth:8320}
+  LOGICC_GAUTH_TOKEN: ${LOGICC_GAUTH_TOKEN:-}
 services:
   postgres:
     image: postgres:17-alpine
@@ -64,6 +67,24 @@ services:
       timeout: 3s
       start_period: 15s
       retries: 5
+  gauth:
+    # logicc-gauth mini-kernel: replays the Google OAuth flow for
+    # Google-registered Logicc accounts and harvests fresh credentials.
+    # Internal only (no published ports); one browser flow at a time.
+    build:
+      context: ./gauth
+      dockerfile: Dockerfile
+    image: cpa-nexus-gauth:1.0.0
+    restart: unless-stopped
+    environment:
+      GAUTH_PORT: 8320
+      GAUTH_TOKEN: ${LOGICC_GAUTH_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8320/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
   app:
     build: { context: ., dockerfile: Dockerfile }
     image: cpa-nexus:0.7.1

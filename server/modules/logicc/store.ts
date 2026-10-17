@@ -16,12 +16,17 @@ export interface LogiccCredentialRecord {
   id: string; sessionId: string | null; enabled: boolean; status: LogiccAccountStatus
   clientCookie: string | null; token: string | null; tokenExpiresAt: number | null; credentialVersion: number
   loginEmail: string | null; loginPassword: string | null; autoLogin: boolean
+  googleEmail: string | null; googlePassword: string | null; googleTotp: string | null; googleProfile: string | null
 }
 export interface LogiccCandidate { id: string; limit: number }
 
 /** Deterministic key for deduplicating password accounts by their login email. */
 export function loginEmailHash(email: string): string {
   return createHash('sha256').update('logicc-login:').update(email.trim().toLowerCase()).digest('hex')
+}
+/** Deterministic key for deduplicating Google accounts by their Google email. */
+export function googleEmailHash(email: string): string {
+  return createHash('sha256').update('logicc-google:').update(email.trim().toLowerCase()).digest('hex')
 }
 /** Mask a login email for display: `al***@gmail.com`. Never returns the full address. */
 export function maskEmail(email: string | null): string | null {
@@ -55,7 +60,8 @@ export function normalizeModels(value: unknown): LogiccModel[] {
 
 export async function loadCredential(id: string, sql: Database = getDb()): Promise<LogiccCredentialRecord | null> {
   const rows = await sql`SELECT id,session_id,enabled,status,client_cookie_ciphertext,token_ciphertext,token_expires_at,credential_version,
-    login_email_ciphertext,login_password_ciphertext,auto_login FROM logicc_accounts WHERE id=${id}`
+    login_email_ciphertext,login_password_ciphertext,auto_login,
+    google_email_ciphertext,google_password_ciphertext,google_totp_ciphertext,google_profile_ciphertext FROM logicc_accounts WHERE id=${id}`
   const row = rows[0]
   if (!row) return null
   const reveal = (value: unknown) => value ? decryptSecret(value as string) : null
@@ -68,6 +74,10 @@ export async function loadCredential(id: string, sql: Database = getDb()): Promi
     loginEmail: reveal(row.login_email_ciphertext),
     loginPassword: reveal(row.login_password_ciphertext),
     autoLogin: row.auto_login !== false,
+    googleEmail: reveal(row.google_email_ciphertext),
+    googlePassword: reveal(row.google_password_ciphertext),
+    googleTotp: reveal(row.google_totp_ciphertext),
+    googleProfile: reveal(row.google_profile_ciphertext),
   }
 }
 
@@ -161,6 +171,7 @@ export async function servingModels(): Promise<string[]> {
 export interface NewAccountInput {
   sessionId: string; clientCookie: string | null; token: string | null; tokenExpiresAt: number | null
   loginEmail?: string | null; loginPassword?: string | null
+  googleEmail?: string | null; googlePassword?: string | null; googleTotp?: string | null; googleProfile?: string | null
   label?: string; note?: string; maxConcurrency: number; enabled?: boolean
 }
 /**
@@ -177,6 +188,11 @@ export async function upsertAccount(input: NewAccountInput, groupIds?: string[])
     const email = input.loginEmail ? encryptSecret(input.loginEmail) : null
     const emailHash = input.loginEmail ? loginEmailHash(input.loginEmail) : null
     const password = input.loginPassword ? encryptSecret(input.loginPassword) : null
+    const googleEmail = input.googleEmail ? encryptSecret(input.googleEmail) : null
+    const googleHash = input.googleEmail ? googleEmailHash(input.googleEmail) : null
+    const googlePassword = input.googlePassword ? encryptSecret(input.googlePassword) : null
+    const googleTotp = input.googleTotp ? encryptSecret(input.googleTotp) : null
+    const googleProfile = input.googleProfile ? encryptSecret(input.googleProfile) : null
     if (existing) {
       // New credentials replace the old ones; a cookie is kept when only a JWT is re-imported.
       await tx`UPDATE logicc_accounts SET
@@ -186,6 +202,11 @@ export async function upsertAccount(input: NewAccountInput, groupIds?: string[])
         login_email_ciphertext=coalesce(${email},login_email_ciphertext),
         login_email_hash=coalesce(${emailHash},login_email_hash),
         login_password_ciphertext=coalesce(${password},login_password_ciphertext),
+        google_email_ciphertext=coalesce(${googleEmail},google_email_ciphertext),
+        google_email_hash=coalesce(${googleHash},google_email_hash),
+        google_password_ciphertext=coalesce(${googlePassword},google_password_ciphertext),
+        google_totp_ciphertext=coalesce(${googleTotp},google_totp_ciphertext),
+        google_profile_ciphertext=coalesce(${googleProfile},google_profile_ciphertext),
         label=CASE WHEN ${input.label ?? ''}<>'' THEN ${input.label ?? ''} ELSE label END,
         credential_version=credential_version+1,status='pending',sync_error=NULL,updated_at=now()
         WHERE id=${existing.id}`
@@ -193,8 +214,12 @@ export async function upsertAccount(input: NewAccountInput, groupIds?: string[])
       return { id: String(existing.id), created: false }
     }
     const id = randomUUID()
-    await tx`INSERT INTO logicc_accounts(id,label,note,session_id,client_cookie_ciphertext,token_ciphertext,token_expires_at,login_email_ciphertext,login_email_hash,login_password_ciphertext,enabled,max_concurrency)
-      VALUES(${id},${input.label ?? ''},${input.note ?? ''},${input.sessionId},${cookie},${token},${expires},${email},${emailHash},${password},${input.enabled ?? true},${input.maxConcurrency})`
+    await tx`INSERT INTO logicc_accounts(id,label,note,session_id,client_cookie_ciphertext,token_ciphertext,token_expires_at,
+      login_email_ciphertext,login_email_hash,login_password_ciphertext,
+      google_email_ciphertext,google_email_hash,google_password_ciphertext,google_totp_ciphertext,google_profile_ciphertext,
+      enabled,max_concurrency)
+      VALUES(${id},${input.label ?? ''},${input.note ?? ''},${input.sessionId},${cookie},${token},${expires},${email},${emailHash},${password},
+      ${googleEmail},${googleHash},${googlePassword},${googleTotp},${googleProfile},${input.enabled ?? true},${input.maxConcurrency})`
     if (groupIds !== undefined) await setAccountGroups(tx, 'logicc', id, groupIds)
     return { id, created: true }
   })
@@ -230,6 +255,41 @@ export async function upsertPasswordAccount(input: PasswordAccountInput, groupId
   })
 }
 
+export interface GoogleAccountInput {
+  googleEmail: string; googlePassword: string; googleTotp: string; googleProfile?: string | null
+  label?: string; note?: string; maxConcurrency: number; enabled?: boolean
+}
+/**
+ * Add or update a Google-registered account, identified by its Google email
+ * before any session exists. A later gauth-kernel login fills in the session
+ * and cookie. Re-importing the same email updates the credentials and keeps
+ * the account's groups.
+ */
+export async function upsertGoogleAccount(input: GoogleAccountInput, groupIds?: string[]): Promise<{ id: string; created: boolean }> {
+  const hash = googleEmailHash(input.googleEmail)
+  return getDb().begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'logicc-google:' + hash},0))`
+    const existing = (await tx`SELECT id FROM logicc_accounts WHERE google_email_hash=${hash} FOR UPDATE`)[0]
+    const email = encryptSecret(input.googleEmail)
+    const password = encryptSecret(input.googlePassword)
+    const totp = encryptSecret(input.googleTotp)
+    const profile = input.googleProfile ? encryptSecret(input.googleProfile) : null
+    if (existing) {
+      await tx`UPDATE logicc_accounts SET google_email_ciphertext=${email},google_password_ciphertext=${password},
+        google_totp_ciphertext=${totp},google_profile_ciphertext=coalesce(${profile},google_profile_ciphertext),auto_login=true,
+        label=CASE WHEN ${input.label ?? ''}<>'' THEN ${input.label ?? ''} ELSE label END,updated_at=now() WHERE id=${existing.id}`
+      if (groupIds !== undefined) await setAccountGroups(tx, 'logicc', existing.id, groupIds)
+      return { id: String(existing.id), created: false }
+    }
+    const id = randomUUID()
+    // No session yet: it is established on the first gauth-kernel login. Starts as needs_login.
+    await tx`INSERT INTO logicc_accounts(id,label,note,google_email_ciphertext,google_email_hash,google_password_ciphertext,google_totp_ciphertext,google_profile_ciphertext,status,enabled,max_concurrency)
+      VALUES(${id},${input.label ?? ''},${input.note ?? ''},${email},${hash},${password},${totp},${profile},'needs_login',${input.enabled ?? true},${input.maxConcurrency})`
+    if (groupIds !== undefined) await setAccountGroups(tx, 'logicc', id, groupIds)
+    return { id, created: true }
+  })
+}
+
 export async function accountViews(rows: Record<string, any>[]): Promise<LogiccAccountView[]> {
   const ids = rows.map(row => String(row.id))
   const redis = getRedis()
@@ -239,12 +299,19 @@ export async function accountViews(rows: Record<string, any>[]): Promise<LogiccA
   return rows.map(row => {
     const id = String(row.id)
     const cooldown = cooldowns.get(id)
-    const credentialKind: LogiccCredentialKind = row.client_cookie_ciphertext ? 'client' : row.has_token ? 'jwt' : 'password'
+    const credentialKind: LogiccCredentialKind = row.client_cookie_ciphertext ? 'client'
+      : row.has_token ? 'jwt'
+      : row.has_google ? 'google' : 'password'
     let loginEmail: string | null = null
-    try { loginEmail = row.login_email_ciphertext ? decryptSecret(row.login_email_ciphertext) : null } catch { /* unreadable */ }
+    let googleEmail: string | null = null
+    try {
+      loginEmail = row.login_email_ciphertext ? decryptSecret(row.login_email_ciphertext) : null
+      googleEmail = row.google_email_ciphertext ? decryptSecret(row.google_email_ciphertext) : null
+    } catch { /* unreadable */ }
     return {
       id, label: row.label, note: row.note, sessionHint: maskSession(row.session_id),
-      credentialKind, canSignIn: !!row.has_password, loginHint: maskEmail(loginEmail), autoLogin: row.auto_login !== false,
+      credentialKind, canSignIn: !!row.has_password || !!row.has_google,
+      loginHint: maskEmail(googleEmail ?? loginEmail), autoLogin: row.auto_login !== false,
       enabled: row.enabled, status: row.status,
       maxConcurrency: Number(row.max_concurrency), inFlight: inflight.accounts[id] ?? 0, cooldownUntil: cooldown ? new Date(cooldown).toISOString() : null,
       models: normalizeModels(row.models), syncError: row.sync_error,
@@ -257,7 +324,8 @@ export async function accountViews(rows: Record<string, any>[]): Promise<LogiccA
 
 const ACCOUNT_COLUMNS = (sql: Database) => sql`id,label,note,session_id,client_cookie_ciphertext IS NOT NULL AS has_cookie,
   CASE WHEN client_cookie_ciphertext IS NULL THEN NULL ELSE 'set' END AS client_cookie_ciphertext,
-  token_ciphertext IS NOT NULL AS has_token,login_password_ciphertext IS NOT NULL AS has_password,login_email_ciphertext,auto_login,
+  token_ciphertext IS NOT NULL AS has_token,login_password_ciphertext IS NOT NULL AS has_password,login_email_ciphertext,
+  google_password_ciphertext IS NOT NULL AS has_google,google_email_ciphertext,auto_login,
   enabled,status,max_concurrency,models,sync_error,token_expires_at,last_sync_at,last_used_at,created_at`
 
 export async function getAccount(id: string): Promise<LogiccAccountView | null> {

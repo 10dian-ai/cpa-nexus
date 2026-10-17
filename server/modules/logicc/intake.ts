@@ -5,12 +5,14 @@ import type { IntakeRequest } from '../../../shared/intake'
 import { cleanClientCookie, discoverSessionId, isFreshJwt, jwtClaims, jwtExpiry, jwtSessionId, looksLikeJwt } from './credentials'
 import { LogiccError, invalidRequest } from './errors'
 import { getLogiccSettings } from './settings'
-import { listAccounts, loginEmailHash, maskSession, modelCoverage, summary, upsertAccount, upsertPasswordAccount } from './store'
-import { signInAccount } from './login'
+import { googleEmailHash, listAccounts, loginEmailHash, maskSession, modelCoverage, summary, upsertAccount, upsertGoogleAccount, upsertPasswordAccount } from './store'
+import { renewAccountSession } from './login'
 import { checkAccount } from './sync'
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 const isEmail = (value: string) => EMAIL.test(value) && value.length <= 254
+/** RFC 4648 Base32, as TOTP secrets are written (16–64 chars, spaces already stripped). */
+const isTotpSecret = (value: string) => /^[A-Z2-7]{16,64}=*$/i.test(value)
 
 /**
  * Accepted Logicc credential inputs. Every form resolves to a Clerk session ID
@@ -18,14 +20,18 @@ const isEmail = (value: string) => EMAIL.test(value) && value.length <= 254
  *
  *  - logicc2api JSON: `{ name, clientCookie, sessionId, token, enabled }`, as an
  *    array, `{ accounts: [...] }`, a single object or JSON lines
+ *  - gauth account JSON: `{ googleEmail, googlePassword, totpSecret, … }`
  *  - browser cookie exports: `[{ name: "__client", value, domain }, …]`
  *  - Cookie headers: `__client=…; __session=eyJ…` (with or without `Cookie:`)
  *  - separated lines: `client----sess_…`, `name|client|sess_…`, tab/space/comma separated
  *  - a session JWT alone (`eyJ…`, carries its session ID in `sid`)
  *  - `__client` alone: the active session is looked up from Clerk on import
+ *  - a Google account line: `google@example.com----password----TOTPSECRET`
+ *    (gauth's full form `邮箱----密码----辅助邮箱----TOTP----收件箱链接` also parses;
+ *    the auxiliary email and inbox link are ignored)
  */
 type Json = Record<string, unknown>
-export interface LogiccCredentialInput { label: string; clientCookie: string | null; sessionId: string | null; token: string | null; loginEmail?: string | null; loginPassword?: string | null; enabled: boolean; maxConcurrency?: number }
+export interface LogiccCredentialInput { label: string; clientCookie: string | null; sessionId: string | null; token: string | null; loginEmail?: string | null; loginPassword?: string | null; googleEmail?: string | null; googlePassword?: string | null; googleTotp?: string | null; googleProfile?: string | null; enabled: boolean; maxConcurrency?: number }
 
 const SESSION = /\bsess_[A-Za-z0-9]{8,}\b/
 const pick = (value: Json, names: string[]) => {
@@ -53,11 +59,18 @@ function cookieHeaderValues(header: string): Map<string, string> {
 
 function fromObject(value: Json): LogiccCredentialInput {
   const email = pick(value, ['email', 'username', 'identifier', 'login', 'account'])
-  const label = pick(value, ['name', 'label', 'remark', 'note']) || (email && isEmail(email) ? email : '')
+  const googleEmail = pick(value, ['googleEmail', 'google_email', 'google'])
+  const label = pick(value, ['name', 'label', 'remark', 'note']) || (email && isEmail(email) ? email : googleEmail && isEmail(googleEmail) ? googleEmail : '')
   let clientCookie = pick(value, ['clientCookie', 'client_cookie', '__client', 'client', 'clientToken', 'client_token'])
   let sessionId = pick(value, ['sessionId', 'session_id', 'sid', 'session'])
   let token = pick(value, ['token', 'jwt', 'sessionToken', 'session_token', 'sessionJwt', 'session_jwt', '__session', 'accessToken', 'access_token'])
   const password = pick(value, ['password', 'pass', 'pwd', 'passwd'])
+  const googlePassword = pick(value, ['googlePassword', 'google_password'])
+  const googleTotp = pick(value, ['totpSecret', 'totp_secret', 'totp', 'otpSecret', 'otp_secret'])
+  const firstName = pick(value, ['firstName', 'first_name'])
+  const lastName = pick(value, ['lastName', 'last_name'])
+  const company = pick(value, ['company', 'companyLegalName', 'company_legal_name'])
+  const googleProfile = firstName || lastName || company ? JSON.stringify({ ...(firstName ? { firstName } : {}), ...(lastName ? { lastName } : {}), ...(company ? { company } : {}) }) : null
   const header = pick(value, ['cookie', 'cookies', 'Cookie'])
   if (header) {
     const cookies = cookieHeaderValues(header)
@@ -69,6 +82,10 @@ function fromObject(value: Json): LogiccCredentialInput {
   return {
     label: label.slice(0, 100), clientCookie, sessionId, token,
     loginEmail: email && isEmail(email) ? email : null, loginPassword: password || null,
+    googleEmail: googleEmail && isEmail(googleEmail) ? googleEmail : null,
+    googlePassword: googlePassword || (googleTotp && password) || null,
+    googleTotp: googleTotp?.replace(/\s+/g, '') || null,
+    googleProfile,
     enabled: value.enabled !== false,
     ...(Number.isInteger(concurrency) && concurrency >= 0 ? { maxConcurrency: Math.min(concurrency, 1000) } : {}),
   }
@@ -90,6 +107,15 @@ function fromLine(text: string): LogiccCredentialInput {
     const segments = text.split(/----|\t|\s*\|\s*/).map(part => part.trim().replace(/^(['"])(.*)\1$/, '$2'))
     const emailAt = segments.findIndex(part => isEmail(part))
     if (emailAt >= 0 && !segments.some(part => looksLikeJwt(part))) {
+      // Google account: a Base32 TOTP secret appears after the password
+      // (`email----password----TOTP`, or gauth's full form with an auxiliary
+      // email and inbox link in between, which are ignored).
+      const totpAt = segments.findIndex((part, index) => index > emailAt + 1 && isTotpSecret(part))
+      const googlePassword = segments[emailAt + 1] || ''
+      if (totpAt > 0 && googlePassword && !isEmail(googlePassword) && !/^https?:\/\//i.test(googlePassword)) {
+        return { label: segments.slice(0, emailAt).join(' ').slice(0, 100), clientCookie: null, sessionId: null, token: null,
+          googleEmail: segments[emailAt]!, googlePassword, googleTotp: segments[totpAt]!.replace(/\s+/g, ''), enabled: true }
+      }
       const password = segments.slice(emailAt + 1).join('----').trim()
       if (password) return { label: segments.slice(0, emailAt).join(' ').slice(0, 100), clientCookie: null, sessionId: null, token: null, loginEmail: segments[emailAt]!, loginPassword: password, enabled: true }
     }
@@ -122,12 +148,22 @@ export function normalizeCredential(input: LogiccCredentialInput): LogiccCredent
   }
   const loginEmail = input.loginEmail?.trim() || null
   const loginPassword = input.loginPassword || null
+  const googleEmail = input.googleEmail?.trim() || null
+  const googlePassword = input.googlePassword || null
+  const googleTotp = input.googleTotp?.replace(/\s+/g, '') || null
+  const googleProfile = input.googleProfile || null
   if (loginEmail && !isEmail(loginEmail)) throw invalidRequest('登录邮箱格式不正确')
   if (loginPassword && !loginEmail) throw invalidRequest('提供了密码但没有登录邮箱')
   if (loginEmail && !loginPassword && !clientCookie && !token) throw invalidRequest('提供了登录邮箱但没有密码')
   if (loginPassword && (loginPassword.length < 1 || loginPassword.length > 256)) throw invalidRequest('登录密码长度不合法')
-  if (!clientCookie && !token && !loginPassword) throw new LogiccError('client', 400, '没有找到 __client Cookie、Session JWT 或邮箱密码')
-  return { ...input, clientCookie, token, sessionId, loginEmail, loginPassword, tokenExpiresAt: token ? jwtExpiry(token) : null }
+  if (googleEmail && !isEmail(googleEmail)) throw invalidRequest('Google 邮箱格式不正确')
+  if (googlePassword && !googleEmail) throw invalidRequest('提供了 Google 密码但没有 Google 邮箱')
+  if (googleTotp && !(googleEmail && googlePassword)) throw invalidRequest('提供了 TOTP 密钥但没有完整的 Google 邮箱和密码')
+  if (googleEmail && !googlePassword && !clientCookie && !token) throw invalidRequest('提供了 Google 邮箱但没有密码')
+  if (googlePassword && (googlePassword.length < 1 || googlePassword.length > 256)) throw invalidRequest('Google 密码长度不合法')
+  if (googleTotp && !isTotpSecret(googleTotp)) throw invalidRequest('TOTP 密钥格式不正确（应为 16–64 位 Base32 字符）')
+  if (!clientCookie && !token && !loginPassword && !googlePassword) throw new LogiccError('client', 400, '没有找到 __client Cookie、Session JWT、邮箱密码或 Google 凭据')
+  return { ...input, clientCookie, token, sessionId, loginEmail, loginPassword, googleEmail, googlePassword, googleTotp, googleProfile, tokenExpiresAt: token ? jwtExpiry(token) : null }
 }
 
 /** Parse one submitted entry into a queued item, or throw a LogiccError describing why it was rejected. */
@@ -137,12 +173,14 @@ function toItem(line: number, value: unknown): IntakeItem {
     : value && typeof value === 'object' && !Array.isArray(value) ? fromObject(value as Json)
     : (() => { throw new LogiccError('client', 400, '无法识别的账号格式') })()
   const normalized = normalizeCredential(raw)
-  // Session may still be undiscovered (cookie- or password-only): fall back to the cookie, then the login email.
-  const identity = normalized.sessionId || normalized.clientCookie || normalized.token || (normalized.loginEmail ? 'login:' + loginEmailHash(normalized.loginEmail) : '')
+  // Session may still be undiscovered (cookie-, password- or Google-only): fall back to the cookie, then the login email.
+  const identity = normalized.sessionId || normalized.clientCookie || normalized.token
+    || (normalized.loginEmail ? 'login:' + loginEmailHash(normalized.loginEmail) : '')
+    || (normalized.googleEmail ? 'google:' + googleEmailHash(normalized.googleEmail) : '')
   return {
     line,
     fingerprint: createHash('sha256').update('logicc:').update(identity).digest('hex'),
-    payload: { label: normalized.label, clientCookie: normalized.clientCookie, sessionId: normalized.sessionId, token: normalized.token, loginEmail: normalized.loginEmail ?? null, loginPassword: normalized.loginPassword ?? null, tokenExpiresAt: normalized.tokenExpiresAt, enabled: normalized.enabled, maxConcurrency: normalized.maxConcurrency ?? null },
+    payload: { label: normalized.label, clientCookie: normalized.clientCookie, sessionId: normalized.sessionId, token: normalized.token, loginEmail: normalized.loginEmail ?? null, loginPassword: normalized.loginPassword ?? null, googleEmail: normalized.googleEmail ?? null, googlePassword: normalized.googlePassword ?? null, googleTotp: normalized.googleTotp ?? null, googleProfile: normalized.googleProfile ?? null, tokenExpiresAt: normalized.tokenExpiresAt, enabled: normalized.enabled, maxConcurrency: normalized.maxConcurrency ?? null },
   }
 }
 
@@ -151,10 +189,11 @@ export const logiccIntake: IntakeHandler = {
   describe() {
     return {
       id: 'logicc', name: 'Logicc', icon: 'i-ph-lightning-bold',
-      description: 'Logicc 网页账号池。支持邮箱密码、__client Cookie、Session JWT，或 logicc2api 导出的 JSON。',
+      description: 'Logicc 网页账号池。支持邮箱密码、Google 账号（OAuth 续期）、__client Cookie、Session JWT，或 logicc2api 导出的 JSON。',
       accept: '.json,.txt,.csv',
       formats: [
         { id: 'email-password', label: '邮箱 + 密码', description: '账号的登录邮箱和密码，用 ---- 分隔；会话失效时自动用它正常登录续期（遇到人机验证需你手动完成一次）。仅适用于支持密码登录的账号。', example: 'user@example.com----yourpassword' },
+        { id: 'google', label: 'Google 账号（OAuth）', description: 'Google 注册账号的邮箱、密码和 TOTP 密钥，用 ---- 分隔；会话失效时由 gauth 内核自动重走 Google OAuth 收割新凭证。遇到 Google 安全验证会停下标为「待登录」，不会绕过。', example: 'user@gmail.com----gpassword----JBSWY3DPEHPK3PXP' },
         { id: 'client-session', label: '__client + Session ID', description: '从 Logicc 页面的 clerk.logicc.com Cookie 复制 __client 值，并提供 sess_ 开头的会话 ID；可自动续期。', example: '__client----sess_xxxxxxxx' },
         { id: 'cookie-header', label: 'Cookie 请求头', description: '直接粘贴浏览器的 Cookie，可包含 __client 与 __session。', example: '__client=…; __session=eyJ…' },
         { id: 'jwt', label: 'Session JWT', description: '仅提供一个会话 JWT，过期前有效；建议配合 __client 以便续期。', example: 'eyJhbGciOi…' },
@@ -185,14 +224,28 @@ export const logiccIntake: IntakeHandler = {
     const token = typeof payload.token === 'string' ? payload.token : null
     const loginEmail = typeof payload.loginEmail === 'string' ? payload.loginEmail : null
     const loginPassword = typeof payload.loginPassword === 'string' ? payload.loginPassword : null
+    const googleEmail = typeof payload.googleEmail === 'string' ? payload.googleEmail : null
+    const googlePassword = typeof payload.googlePassword === 'string' ? payload.googlePassword : null
+    const googleTotp = typeof payload.googleTotp === 'string' ? payload.googleTotp : null
+    const googleProfile = typeof payload.googleProfile === 'string' ? payload.googleProfile : null
     const maxConcurrency = typeof payload.maxConcurrency === 'number' ? payload.maxConcurrency : settings.defaultMaxConcurrency
     const label = typeof payload.label === 'string' ? payload.label : ''
 
     // Password-only: no session yet. Add the account, then sign in to establish one.
     if (!sessionId && !clientCookie && !token && loginEmail && loginPassword) {
       const { id, created } = await upsertPasswordAccount({ loginEmail, loginPassword, label, enabled: payload.enabled !== false, maxConcurrency }, options.groupIds)
-      const outcome = await signInAccount(id, { ignoreBackoff: true })
+      const outcome = await renewAccountSession(id, { ignoreBackoff: true })
       if (!outcome) return { result: created ? 'imported' : 'updated', warning: '账号已保存，等待后台登录' }
+      if (!outcome.ok) return { result: created ? 'imported' : 'updated', warning: outcome.message }
+      const check = await checkAccount(id, { fresh: true })
+      return { result: created ? 'imported' : 'updated', ...(check.ok ? {} : { warning: check.error || '登录成功但账号检测失败' }) }
+    }
+
+    // Google-only: no session yet. Add the account, then let the gauth kernel replay OAuth.
+    if (!sessionId && !clientCookie && !token && googleEmail && googlePassword && googleTotp) {
+      const { id, created } = await upsertGoogleAccount({ googleEmail, googlePassword, googleTotp, googleProfile, label, enabled: payload.enabled !== false, maxConcurrency }, options.groupIds)
+      const outcome = await renewAccountSession(id, { ignoreBackoff: true })
+      if (!outcome) return { result: created ? 'imported' : 'updated', warning: '账号已保存，等待 gauth 内核登录' }
       if (!outcome.ok) return { result: created ? 'imported' : 'updated', warning: outcome.message }
       const check = await checkAccount(id, { fresh: true })
       return { result: created ? 'imported' : 'updated', ...(check.ok ? {} : { warning: check.error || '登录成功但账号检测失败' }) }
@@ -203,6 +256,7 @@ export const logiccIntake: IntakeHandler = {
     if (!sessionId) throw new LogiccError('credential', 400, '无法确定账号的会话 ID')
     const { id, created } = await upsertAccount({
       sessionId, clientCookie, token, loginEmail, loginPassword,
+      googleEmail, googlePassword, googleTotp, googleProfile,
       tokenExpiresAt: typeof payload.tokenExpiresAt === 'number' ? payload.tokenExpiresAt : null,
       label, enabled: payload.enabled !== false, maxConcurrency,
     }, options.groupIds)

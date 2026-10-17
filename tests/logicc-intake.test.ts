@@ -76,6 +76,29 @@ describe('Logicc intake formats', () => {
     expect(result.errors.map(error => error.line)).toEqual([1])
     expect(JSON.stringify(result.errors)).not.toContain('topsecretpw')
   })
+
+  it('accepts Google accounts as lines (with gauth extras) and as JSON, never mixing them up with password lines', () => {
+    const lines = logiccIntake.parse({ text: [
+      'sam275@gmail.com----g-pass----JBSWY3DPEHPK3PXP',
+      'sam276@gmail.com----g-pass----aux@company.com----JBSWY3DPEHPK3PXQ----https://inbox.link/x',
+      JSON.stringify({ googleEmail: 'json.g@gmail.com', googlePassword: 'jpass', totpSecret: 'JBSW Y3DPEHPK3PXR', firstName: 'Kim', company: 'Kim Systems' }),
+    ].join('\n') })
+    expect(lines.errors).toEqual([])
+    expect(lines.items[0]!.payload).toMatchObject({ googleEmail: 'sam275@gmail.com', googlePassword: 'g-pass', googleTotp: 'JBSWY3DPEHPK3PXP', loginEmail: null, clientCookie: null, sessionId: null })
+    // gauth's full 5-segment form: the auxiliary email and inbox link are ignored.
+    expect(lines.items[1]!.payload).toMatchObject({ googleEmail: 'sam276@gmail.com', googlePassword: 'g-pass', googleTotp: 'JBSWY3DPEHPK3PXQ', loginEmail: null })
+    // JSON form keeps the onboarding profile and strips spaces from the secret.
+    expect(lines.items[2]!.payload).toMatchObject({ googleEmail: 'json.g@gmail.com', googlePassword: 'jpass', googleTotp: 'JBSWY3DPEHPK3PXR', googleProfile: JSON.stringify({ firstName: 'Kim', company: 'Kim Systems' }) })
+    // Deduplicated by Google email.
+    expect(logiccIntake.parse({ text: 'dup.g@gmail.com----one----JBSWY3DPEHPK3PXP\ndup.g@gmail.com----two----JBSWY3DPEHPK3PXP' }).items).toHaveLength(1)
+  })
+
+  it('rejects a malformed TOTP secret and never echoes it', () => {
+    const result = logiccIntake.parse({ files: [{ name: 'g.json', content: JSON.stringify({ googleEmail: 'bad@gmail.com', googlePassword: 'pw', totpSecret: 'not!base32' }) }] })
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]!.message).toContain('TOTP')
+    expect(JSON.stringify(result.errors)).not.toContain('not!base32')
+  })
 })
 
 describe('CPA kernel intake formats', () => {

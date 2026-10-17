@@ -7,7 +7,7 @@ import { CREDENTIAL_STRIKE_LIMIT, LOGICC_POOL_ID, TOKEN_EXPIRY_MARGIN_MS, browse
 import { LogiccError, classifyLogiccStatus, describeErrorBody, looksBlocked, networkFailure } from './errors'
 import { loadCredential, markAccountStatus, noteAccountWarning, storeRotatedCookie, type LogiccCredentialRecord } from './store'
 import { getLogiccSettings } from './settings'
-import { canAutoLogin, signInAccount } from './login'
+import { canAutoLogin, renewAccountSession } from './login'
 
 /**
  * Logicc signs in with Clerk. A Clerk *client* (`__client` cookie on the
@@ -237,12 +237,12 @@ export async function accountToken(id: string, options: { force?: boolean } = {}
       // No cookie to renew with: sign in normally when the account has a stored password.
       const settings = await getLogiccSettings().catch(() => null)
       if (canAutoLogin(record, settings?.autoLogin !== false)) {
-        const outcome = await signInAccount(id)
+        const outcome = await renewAccountSession(id)
         if (outcome?.ok) {
           const renewed = await loadCredential(id)
           if (renewed?.clientCookie) { if (options.force) await forgetToken(id); return await refreshWithLock(renewed) }
         }
-        // signInAccount already set the account's status; do not double-count it as a strike.
+        // renewAccountSession already set the account's status; do not double-count it as a strike.
         const definitive = !!outcome && !outcome.ok && outcome.reason === 'bad_credentials'
         const failure = new LogiccError('credential', 401, outcome && !outcome.ok ? outcome.message : '账号需要重新登录', { definitive })
         failure.handled = true

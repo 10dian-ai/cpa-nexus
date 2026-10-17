@@ -157,7 +157,10 @@ describe('CPA Nexus persistent deployment contract', () => {
     expect(compose).not.toContain('KERNEL_URL')
     expect(development).not.toContain('kernel:')
     expect(compose).toContain('ccm:worker:heartbeat')
-    expect(compose.match(/^    healthcheck:/gm)?.length).toBe(6)
+    // One healthcheck per service: postgres, redis, cpa, gauth, app, worker, edge.
+    expect(compose.match(/^    healthcheck:/gm)?.length).toBe(7)
+    expect(compose).toContain('LOGICC_GAUTH_URL: ${LOGICC_GAUTH_URL:-http://gauth:8320}')
+    expect(compose).toContain('./gauth')
     expect(compose).toContain(CPA_IMAGE)
   })
 
