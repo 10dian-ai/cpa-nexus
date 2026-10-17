@@ -1,0 +1,9 @@
+{
+  "label": "demo-account",
+  "workEmail": "you@your-workspace-domain.com",
+  "googleEmail": "you@your-workspace-domain.com",
+  "googlePassword": "<Google 账号密码>",
+  "totpSecret": "<BASE32 TOTP 密钥，如 JBSWY3DPEHPK3PXP>",
+  "company": "示例公司",
+  "note": "真实凭据放本地，绝不提交；gauth.py 从命令行传入的 JSON 读取"
+}
