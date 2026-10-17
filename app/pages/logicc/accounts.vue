@@ -24,28 +24,32 @@ function toggleAll(checked: boolean) { selected.value = checked ? (data.value?.i
 const { busy, run } = useApiAction()
 const importOpen = ref(false)
 const deleteOpen = ref(false)
-async function bulk(action: 'enable' | 'disable' | 'delete' | 'check', ids = selected.value) {
+async function bulk(action: 'enable' | 'disable' | 'delete' | 'check' | 'login', ids = selected.value) {
   if (!ids.length) return
-  const labels = { enable: '账号已启用', disable: '账号已停用', delete: '账号已删除', check: '检测完成' }
+  const labels = { enable: '账号已启用', disable: '账号已停用', delete: '账号已删除', check: '检测完成', login: '登录完成' }
   const result = await run(() => api<{ affected: number; results: { ok: boolean }[] }>('/api/logicc/accounts/actions', { method: 'POST', body: { action, ids: [...ids] } }), labels[action])
   if (result.ok) { if (action === 'delete') { selected.value = []; deleteOpen.value = false } await refresh() }
 }
 
 const editing = ref<LogiccAccountView | null>(null)
 const editOpen = computed({ get: () => !!editing.value, set: value => { if (!value) editing.value = null } })
-const form = reactive({ label: '', note: '', maxConcurrency: 2, enabled: true, groupIds: [] as string[] })
+const form = reactive({ label: '', note: '', maxConcurrency: 2, enabled: true, autoLogin: true, groupIds: [] as string[] })
 function startEdit(account: LogiccAccountView) {
-  Object.assign(form, { label: account.label, note: account.note, maxConcurrency: account.maxConcurrency, enabled: account.enabled, groupIds: [...account.groupIds] })
+  Object.assign(form, { label: account.label, note: account.note, maxConcurrency: account.maxConcurrency, enabled: account.enabled, autoLogin: account.autoLogin, groupIds: [...account.groupIds] })
   editing.value = account
 }
 async function save() {
   const target = editing.value
   if (!target) return
-  const result = await run(() => api(`/api/logicc/accounts/${target.id}`, { method: 'PATCH', body: { label: form.label.trim(), note: form.note, maxConcurrency: form.maxConcurrency, enabled: form.enabled, ...(form.groupIds.length ? { groupIds: [...form.groupIds] } : {}) } }), '账号已保存')
+  const result = await run(() => api(`/api/logicc/accounts/${target.id}`, { method: 'PATCH', body: { label: form.label.trim(), note: form.note, maxConcurrency: form.maxConcurrency, enabled: form.enabled, autoLogin: form.autoLogin, ...(form.groupIds.length ? { groupIds: [...form.groupIds] } : {}) } }), '账号已保存')
   if (result.ok) { editing.value = null; await refresh() }
 }
 function credentialLabel(account: LogiccAccountView) {
-  return account.credentialKind === 'client' ? '__client 自动续期' : `仅 JWT · ${account.tokenExpiresAt ? '到期 ' + formatDate(account.tokenExpiresAt) : '已过期'}`
+  const base = account.credentialKind === 'client' ? '__client 自动续期'
+    : account.credentialKind === 'password' ? '邮箱密码登录'
+    : `仅 JWT · ${account.tokenExpiresAt ? '到期 ' + formatDate(account.tokenExpiresAt) : '已过期'}`
+  const signIn = account.canSignIn ? `${account.loginHint || '邮箱'}${account.autoLogin ? ' · 自动登录' : ' · 已关闭自动登录'}` : ''
+  return signIn && account.credentialKind !== 'password' ? `${base} · ${signIn}` : account.credentialKind === 'password' ? `${base}${account.autoLogin ? '' : '（已关闭自动登录）'} · ${account.loginHint || ''}` : base
 }
 </script>
 
@@ -58,7 +62,7 @@ function credentialLabel(account: LogiccAccountView) {
     <form class="table-toolbar" @submit.prevent="q = searchInput.trim()">
       <label class="search-field"><UIcon name="i-ph-magnifying-glass-bold" /><input v-model="searchInput" aria-label="搜索账号" placeholder="名称、备注或会话 ID"><button v-if="searchInput" class="icon-button" type="button" aria-label="清除搜索" @click="searchInput = ''; q = ''"><UIcon name="i-ph-x-bold" /></button></label>
       <button class="button">搜索</button>
-      <select v-model="status" aria-label="账号状态"><option value="">全部状态</option><option value="ready">正常</option><option value="pending">待检测</option><option value="credential_expired">凭证失效</option><option value="sync_error">同步失败</option></select>
+      <select v-model="status" aria-label="账号状态"><option value="">全部状态</option><option value="ready">正常</option><option value="pending">待检测</option><option value="needs_login">待登录</option><option value="credential_expired">凭证失效</option><option value="sync_error">同步失败</option></select>
       <select v-model="groupId" aria-label="调用分组"><option value="">全部分组</option><option v-for="group in groups?.items || []" :key="group.id" :value="group.id">{{ group.name }}</option></select>
       <span v-if="pending && data" class="toolbar-updating"><UIcon name="i-ph-circle-notch-bold" class="spinning" />更新中</span>
     </form>
@@ -85,7 +89,7 @@ function credentialLabel(account: LogiccAccountView) {
           <td class="align-right">{{ account.inFlight }} / {{ account.maxConcurrency || '∞' }}</td>
           <td class="align-right">{{ account.models.length }}</td>
           <td><span class="date-text">{{ formatDate(account.lastUsedAt) }}</span></td>
-          <td><div class="inline-actions justify-end"><button class="button small" :disabled="busy" @click="bulk('check', [account.id])">检测</button><button class="button small" :disabled="busy" @click="startEdit(account)">编辑</button></div></td>
+          <td><div class="inline-actions justify-end"><button v-if="account.canSignIn" class="button small" :disabled="busy" title="用邮箱密码立即重新登录" @click="bulk('login', [account.id])">重新登录</button><button class="button small" :disabled="busy" @click="bulk('check', [account.id])">检测</button><button class="button small" :disabled="busy" @click="startEdit(account)">编辑</button></div></td>
         </tr>
       </tbody>
     </table></div>
@@ -101,6 +105,7 @@ function credentialLabel(account: LogiccAccountView) {
       <label class="field"><span>备注</span><textarea v-model="form.note" rows="2" maxlength="2000" :disabled="busy" /></label>
       <label class="field"><span>并发上限</span><input v-model.number="form.maxConcurrency" type="number" min="0" max="1000" step="1" required :disabled="busy"><small>同时处理的请求数，0 表示不限制。</small></label>
       <label class="checkbox-line"><input v-model="form.enabled" type="checkbox" :disabled="busy">参与调度</label>
+      <label v-if="editing?.canSignIn" class="checkbox-line"><input v-model="form.autoLogin" type="checkbox" :disabled="busy">会话失效时用邮箱密码自动登录</label>
       <GroupSelector v-model="form.groupIds" :groups="groups?.items || []" :disabled="busy" />
       <p class="small-text muted">要更换凭据，直接重新导入同一会话即可。</p>
     </form>

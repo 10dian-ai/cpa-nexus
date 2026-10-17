@@ -8,7 +8,7 @@ vi.mock('../server/lib/db', () => ({ getDb: () => fixture.sql }))
 vi.mock('../server/lib/events', () => ({ publishUpdate: async () => {} }))
 vi.mock('../server/lib/config', () => ({ getConfig: () => ({ encryptionKey: Buffer.alloc(32, 9).toString('base64') }) }))
 import { createGroup, getModuleDefaultGroupIds, patchGroup } from '../server/lib/groups'
-import { groupModels, listCandidates, loadCredential, servingModels, storeRotatedCookie, summary, upsertAccount } from '../server/modules/logicc/store'
+import { groupModels, listCandidates, loadCredential, loginEmailHash, maskEmail, servingModels, storeRotatedCookie, storeSignInResult, summary, upsertAccount, upsertPasswordAccount } from '../server/modules/logicc/store'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const schema = 'nexus_logicc_store_' + randomUUID().replaceAll('-', '')
@@ -72,5 +72,30 @@ describe.skipIf(!databaseUrl)('Logicc account pool on PostgreSQL', () => {
     expect(await storeRotatedCookie(a, 'stale', credential.credentialVersion)).toBe(false)
     expect((await loadCredential(a))!.clientCookie).toBe('rotated')
     expect(await summary()).toMatchObject({ total: 2, enabled: 2 })
+  })
+
+  it('adds a password account without a session, then a sign-in fills it in', async () => {
+    const { id, created } = await upsertPasswordAccount({ loginEmail: 'Boss@Work.CO', loginPassword: 'secret-pw', label: 'Pw acct', maxConcurrency: 3 })
+    expect(created).toBe(true)
+    // No session yet, waiting to log in, but its credentials are stored encrypted and never echoed.
+    const raw = (await sql`SELECT session_id,status,login_email_ciphertext,login_password_ciphertext,login_email_hash FROM logicc_accounts WHERE id=${id}`)[0]!
+    expect(raw.session_id).toBeNull()
+    expect(raw.status).toBe('needs_login')
+    expect(raw.login_password_ciphertext).not.toContain('secret-pw')
+    expect(raw.login_email_hash).toBe(loginEmailHash('boss@work.co'))
+    const record = (await loadCredential(id))!
+    expect(record).toMatchObject({ loginEmail: 'Boss@Work.CO', loginPassword: 'secret-pw', sessionId: null, autoLogin: true })
+
+    // Re-importing the same email (any case) updates the password and keeps one row.
+    const again = await upsertPasswordAccount({ loginEmail: 'boss@work.co', loginPassword: 'new-pw', maxConcurrency: 3 })
+    expect(again).toEqual({ id, created: false })
+    expect((await loadCredential(id))!.loginPassword).toBe('new-pw')
+
+    // A completed sign-in attaches the session and cookie; the account becomes checkable.
+    const stored = await storeSignInResult(id, { sessionId: 'sess_pwlogin001', clientCookie: 'fresh-client', token: null }, (await loadCredential(id))!.credentialVersion)
+    expect(stored).toBe(true)
+    const signed = (await loadCredential(id))!
+    expect(signed).toMatchObject({ sessionId: 'sess_pwlogin001', clientCookie: 'fresh-client', status: 'pending' })
+    expect(maskEmail('boss@work.co')).toBe('bo***@work.co')
   })
 })

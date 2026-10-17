@@ -1,11 +1,11 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { Sql, TransactionSql } from 'postgres'
 import { getDb } from '../../lib/db'
 import { getRedis } from '../../lib/redis'
 import { decryptSecret, encryptSecret } from '../../lib/crypto'
 import { accountGroupBindings, setAccountGroups } from '../../lib/groups'
 import { readCooldowns, readInflightCounts } from '../../lib/pool/scheduler'
-import type { LogiccAccountStatus, LogiccAccountView, LogiccModel } from '../../../shared/logicc'
+import type { LogiccAccountStatus, LogiccAccountView, LogiccCredentialKind, LogiccModel } from '../../../shared/logicc'
 import { LOGICC_POOL_ID } from './config'
 import { redactLogiccText } from './errors'
 
@@ -13,10 +13,24 @@ type Database = Sql | TransactionSql
 const iso = (value: unknown): string | null => value == null ? null : new Date(value as string).toISOString()
 
 export interface LogiccCredentialRecord {
-  id: string; sessionId: string; enabled: boolean; status: LogiccAccountStatus
+  id: string; sessionId: string | null; enabled: boolean; status: LogiccAccountStatus
   clientCookie: string | null; token: string | null; tokenExpiresAt: number | null; credentialVersion: number
+  loginEmail: string | null; loginPassword: string | null; autoLogin: boolean
 }
 export interface LogiccCandidate { id: string; limit: number }
+
+/** Deterministic key for deduplicating password accounts by their login email. */
+export function loginEmailHash(email: string): string {
+  return createHash('sha256').update('logicc-login:').update(email.trim().toLowerCase()).digest('hex')
+}
+/** Mask a login email for display: `al***@gmail.com`. Never returns the full address. */
+export function maskEmail(email: string | null): string | null {
+  if (!email) return null
+  const at = email.indexOf('@')
+  if (at <= 0) return email.slice(0, 2) + '***'
+  const name = email.slice(0, at)
+  return (name.length <= 2 ? name[0] + '***' : name.slice(0, 2) + '***') + email.slice(at)
+}
 
 export function maskSession(sessionId: string | null): string | null {
   if (!sessionId) return null
@@ -40,21 +54,41 @@ export function normalizeModels(value: unknown): LogiccModel[] {
 }
 
 export async function loadCredential(id: string, sql: Database = getDb()): Promise<LogiccCredentialRecord | null> {
-  const rows = await sql`SELECT id,session_id,enabled,status,client_cookie_ciphertext,token_ciphertext,token_expires_at,credential_version FROM logicc_accounts WHERE id=${id}`
+  const rows = await sql`SELECT id,session_id,enabled,status,client_cookie_ciphertext,token_ciphertext,token_expires_at,credential_version,
+    login_email_ciphertext,login_password_ciphertext,auto_login FROM logicc_accounts WHERE id=${id}`
   const row = rows[0]
   if (!row) return null
+  const reveal = (value: unknown) => value ? decryptSecret(value as string) : null
   return {
     id: row.id, sessionId: row.session_id, enabled: row.enabled, status: row.status,
-    clientCookie: row.client_cookie_ciphertext ? decryptSecret(row.client_cookie_ciphertext) : null,
-    token: row.token_ciphertext ? decryptSecret(row.token_ciphertext) : null,
+    clientCookie: reveal(row.client_cookie_ciphertext),
+    token: reveal(row.token_ciphertext),
     tokenExpiresAt: row.token_expires_at ? new Date(row.token_expires_at).getTime() : null,
     credentialVersion: Number(row.credential_version),
+    loginEmail: reveal(row.login_email_ciphertext),
+    loginPassword: reveal(row.login_password_ciphertext),
+    autoLogin: row.auto_login !== false,
   }
 }
 
 /** Persist a `__client` value rotated by Clerk, unless another process already replaced the credentials. */
 export async function storeRotatedCookie(id: string, cookie: string, expectedVersion: number): Promise<boolean> {
   const rows = await getDb()`UPDATE logicc_accounts SET client_cookie_ciphertext=${encryptSecret(cookie)},credential_version=credential_version+1,updated_at=now()
+    WHERE id=${id} AND credential_version=${expectedVersion} RETURNING id`
+  return rows.length > 0
+}
+
+/**
+ * Store the session a sign-in established: its ID, the fresh `__client`, and a
+ * matching JWT when the caller has one. The account becomes `pending` for the
+ * next check to confirm. A concurrent credential change (version mismatch)
+ * wins and this is skipped.
+ */
+export async function storeSignInResult(id: string, result: { sessionId: string; clientCookie: string; token?: string | null; tokenExpiresAt?: number | null }, expectedVersion: number): Promise<boolean> {
+  const token = result.token ? encryptSecret(result.token) : null
+  const expires = result.tokenExpiresAt ? new Date(result.tokenExpiresAt) : null
+  const rows = await getDb()`UPDATE logicc_accounts SET session_id=${result.sessionId},client_cookie_ciphertext=${encryptSecret(result.clientCookie)},
+    token_ciphertext=${token},token_expires_at=${expires},credential_version=credential_version+1,status='pending',sync_error=NULL,updated_at=now()
     WHERE id=${id} AND credential_version=${expectedVersion} RETURNING id`
   return rows.length > 0
 }
@@ -85,7 +119,7 @@ export async function touchAccount(id: string) {
  * pool. Clients then get a retryable 503 (and the router tries other sources)
  * instead of a 404 that says the model does not exist.
  */
-const LISTED_STATUSES = ['ready', 'sync_error', 'credential_expired']
+const LISTED_STATUSES = ['ready', 'sync_error', 'credential_expired', 'needs_login']
 
 /** Accounts of one call group that may serve the model, oldest-used first. */
 export async function listCandidates(groupId: string, model: string): Promise<LogiccCandidate[]> {
@@ -126,6 +160,7 @@ export async function servingModels(): Promise<string[]> {
 
 export interface NewAccountInput {
   sessionId: string; clientCookie: string | null; token: string | null; tokenExpiresAt: number | null
+  loginEmail?: string | null; loginPassword?: string | null
   label?: string; note?: string; maxConcurrency: number; enabled?: boolean
 }
 /**
@@ -139,12 +174,18 @@ export async function upsertAccount(input: NewAccountInput, groupIds?: string[])
     const cookie = input.clientCookie ? encryptSecret(input.clientCookie) : null
     const token = input.token ? encryptSecret(input.token) : null
     const expires = input.tokenExpiresAt ? new Date(input.tokenExpiresAt) : null
+    const email = input.loginEmail ? encryptSecret(input.loginEmail) : null
+    const emailHash = input.loginEmail ? loginEmailHash(input.loginEmail) : null
+    const password = input.loginPassword ? encryptSecret(input.loginPassword) : null
     if (existing) {
       // New credentials replace the old ones; a cookie is kept when only a JWT is re-imported.
       await tx`UPDATE logicc_accounts SET
         client_cookie_ciphertext=coalesce(${cookie},client_cookie_ciphertext),
         token_ciphertext=CASE WHEN ${token}::text IS NULL THEN token_ciphertext ELSE ${token} END,
         token_expires_at=CASE WHEN ${token}::text IS NULL THEN token_expires_at ELSE ${expires} END,
+        login_email_ciphertext=coalesce(${email},login_email_ciphertext),
+        login_email_hash=coalesce(${emailHash},login_email_hash),
+        login_password_ciphertext=coalesce(${password},login_password_ciphertext),
         label=CASE WHEN ${input.label ?? ''}<>'' THEN ${input.label ?? ''} ELSE label END,
         credential_version=credential_version+1,status='pending',sync_error=NULL,updated_at=now()
         WHERE id=${existing.id}`
@@ -152,8 +193,38 @@ export async function upsertAccount(input: NewAccountInput, groupIds?: string[])
       return { id: String(existing.id), created: false }
     }
     const id = randomUUID()
-    await tx`INSERT INTO logicc_accounts(id,label,note,session_id,client_cookie_ciphertext,token_ciphertext,token_expires_at,enabled,max_concurrency)
-      VALUES(${id},${input.label ?? ''},${input.note ?? ''},${input.sessionId},${cookie},${token},${expires},${input.enabled ?? true},${input.maxConcurrency})`
+    await tx`INSERT INTO logicc_accounts(id,label,note,session_id,client_cookie_ciphertext,token_ciphertext,token_expires_at,login_email_ciphertext,login_email_hash,login_password_ciphertext,enabled,max_concurrency)
+      VALUES(${id},${input.label ?? ''},${input.note ?? ''},${input.sessionId},${cookie},${token},${expires},${email},${emailHash},${password},${input.enabled ?? true},${input.maxConcurrency})`
+    if (groupIds !== undefined) await setAccountGroups(tx, 'logicc', id, groupIds)
+    return { id, created: true }
+  })
+}
+
+export interface PasswordAccountInput {
+  loginEmail: string; loginPassword: string; label?: string; note?: string; maxConcurrency: number; enabled?: boolean
+}
+/**
+ * Add or update an account identified by its login email, before any session
+ * exists. A later sign-in fills in the session and cookie. Re-importing the
+ * same email updates the password and keeps the account's groups.
+ */
+export async function upsertPasswordAccount(input: PasswordAccountInput, groupIds?: string[]): Promise<{ id: string; created: boolean }> {
+  const hash = loginEmailHash(input.loginEmail)
+  return getDb().begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'logicc-login:' + hash},0))`
+    const existing = (await tx`SELECT id FROM logicc_accounts WHERE login_email_hash=${hash} FOR UPDATE`)[0]
+    const email = encryptSecret(input.loginEmail)
+    const password = encryptSecret(input.loginPassword)
+    if (existing) {
+      await tx`UPDATE logicc_accounts SET login_email_ciphertext=${email},login_password_ciphertext=${password},auto_login=true,
+        label=CASE WHEN ${input.label ?? ''}<>'' THEN ${input.label ?? ''} ELSE label END,updated_at=now() WHERE id=${existing.id}`
+      if (groupIds !== undefined) await setAccountGroups(tx, 'logicc', existing.id, groupIds)
+      return { id: String(existing.id), created: false }
+    }
+    const id = randomUUID()
+    // No session yet: it is established on first sign-in. Starts as needs_login.
+    await tx`INSERT INTO logicc_accounts(id,label,note,login_email_ciphertext,login_email_hash,login_password_ciphertext,status,enabled,max_concurrency)
+      VALUES(${id},${input.label ?? ''},${input.note ?? ''},${email},${hash},${password},'needs_login',${input.enabled ?? true},${input.maxConcurrency})`
     if (groupIds !== undefined) await setAccountGroups(tx, 'logicc', id, groupIds)
     return { id, created: true }
   })
@@ -168,9 +239,13 @@ export async function accountViews(rows: Record<string, any>[]): Promise<LogiccA
   return rows.map(row => {
     const id = String(row.id)
     const cooldown = cooldowns.get(id)
+    const credentialKind: LogiccCredentialKind = row.client_cookie_ciphertext ? 'client' : row.has_token ? 'jwt' : 'password'
+    let loginEmail: string | null = null
+    try { loginEmail = row.login_email_ciphertext ? decryptSecret(row.login_email_ciphertext) : null } catch { /* unreadable */ }
     return {
       id, label: row.label, note: row.note, sessionHint: maskSession(row.session_id),
-      credentialKind: row.client_cookie_ciphertext ? 'client' : 'jwt', enabled: row.enabled, status: row.status,
+      credentialKind, canSignIn: !!row.has_password, loginHint: maskEmail(loginEmail), autoLogin: row.auto_login !== false,
+      enabled: row.enabled, status: row.status,
       maxConcurrency: Number(row.max_concurrency), inFlight: inflight.accounts[id] ?? 0, cooldownUntil: cooldown ? new Date(cooldown).toISOString() : null,
       models: normalizeModels(row.models), syncError: row.sync_error,
       tokenExpiresAt: row.client_cookie_ciphertext ? null : iso(row.token_expires_at),
@@ -182,6 +257,7 @@ export async function accountViews(rows: Record<string, any>[]): Promise<LogiccA
 
 const ACCOUNT_COLUMNS = (sql: Database) => sql`id,label,note,session_id,client_cookie_ciphertext IS NOT NULL AS has_cookie,
   CASE WHEN client_cookie_ciphertext IS NULL THEN NULL ELSE 'set' END AS client_cookie_ciphertext,
+  token_ciphertext IS NOT NULL AS has_token,login_password_ciphertext IS NOT NULL AS has_password,login_email_ciphertext,auto_login,
   enabled,status,max_concurrency,models,sync_error,token_expires_at,last_sync_at,last_used_at,created_at`
 
 export async function getAccount(id: string): Promise<LogiccAccountView | null> {
@@ -204,11 +280,12 @@ export async function listAccounts(input: AccountListQuery) {
   return { items: await accountViews(rows), total: count[0]!.total as number, page: input.page, pageSize: input.pageSize }
 }
 
-export interface AccountPatch { label?: string; note?: string; enabled?: boolean; maxConcurrency?: number; groupIds?: string[] }
+export interface AccountPatch { label?: string; note?: string; enabled?: boolean; maxConcurrency?: number; groupIds?: string[]; autoLogin?: boolean }
 export async function patchAccount(id: string, values: AccountPatch): Promise<boolean> {
   return getDb().begin(async tx => {
     const rows = await tx`UPDATE logicc_accounts SET label=coalesce(${values.label ?? null},label),note=coalesce(${values.note ?? null},note),
-      enabled=coalesce(${values.enabled ?? null},enabled),max_concurrency=coalesce(${values.maxConcurrency ?? null},max_concurrency),updated_at=now()
+      enabled=coalesce(${values.enabled ?? null},enabled),max_concurrency=coalesce(${values.maxConcurrency ?? null},max_concurrency),
+      auto_login=coalesce(${values.autoLogin ?? null},auto_login),updated_at=now()
       WHERE id=${id} RETURNING id`
     if (!rows.length) return false
     if (values.groupIds !== undefined) await setAccountGroups(tx, 'logicc', id, values.groupIds)
@@ -249,7 +326,7 @@ export async function accountsDueForSync(intervalMinutes: number, limit: number)
 export async function summary() {
   const rows = await getDb()`SELECT count(*)::int AS total,count(*) FILTER(WHERE enabled)::int AS enabled,
     count(*) FILTER(WHERE enabled AND status='ready')::int AS ready,
-    count(*) FILTER(WHERE enabled AND status IN ('credential_expired','sync_error'))::int AS attention,
+    count(*) FILTER(WHERE enabled AND status IN ('credential_expired','sync_error','needs_login'))::int AS attention,
     count(*) FILTER(WHERE status='pending')::int AS pending FROM logicc_accounts`
   const row = rows[0]!
   return { total: row.total as number, enabled: row.enabled as number, ready: row.ready as number, needsAttention: row.attention as number, pending: row.pending as number }

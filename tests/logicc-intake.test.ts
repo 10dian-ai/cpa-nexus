@@ -55,6 +55,27 @@ describe('Logicc intake formats', () => {
     const result = logiccIntake.parse({ text: secret })
     expect(JSON.stringify(result.errors)).not.toContain(secret)
   })
+
+  it('accepts email + password, as a line and as JSON, keeping the password whole', () => {
+    const lines = logiccIntake.parse({ text: [
+      'user@example.com----p@ss----word----with----dashes',
+      'Labelled|boss@work.co|SecretPw!',
+      JSON.stringify({ email: 'json@example.com', password: 'jsonpass', name: 'JSON acct' }),
+    ].join('\n') })
+    expect(lines.errors).toEqual([])
+    expect(lines.items[0]!.payload).toMatchObject({ loginEmail: 'user@example.com', loginPassword: 'p@ss----word----with----dashes', sessionId: null, clientCookie: null })
+    expect(lines.items[1]!.payload).toMatchObject({ loginEmail: 'boss@work.co', loginPassword: 'SecretPw!', label: 'Labelled' })
+    expect(lines.items[2]!.payload).toMatchObject({ loginEmail: 'json@example.com', loginPassword: 'jsonpass', label: 'JSON acct' })
+    // Deduplicated by login email, not by the password value.
+    const dupe = logiccIntake.parse({ text: 'dup@example.com----one\ndup@example.com----two' })
+    expect(dupe.items).toHaveLength(1)
+  })
+
+  it('rejects an email without a password and never echoes the password', () => {
+    const result = logiccIntake.parse({ text: ['lonely@example.com', 'has@example.com----topsecretpw'].join('\n') })
+    expect(result.errors.map(error => error.line)).toEqual([1])
+    expect(JSON.stringify(result.errors)).not.toContain('topsecretpw')
+  })
 })
 
 describe('CPA kernel intake formats', () => {

@@ -1,8 +1,8 @@
 import type { GroupBinding } from './groups'
 
-export type LogiccAccountStatus = 'pending' | 'ready' | 'credential_expired' | 'sync_error'
-/** How the account authenticates: a refreshable Clerk client, or a fixed session JWT. */
-export type LogiccCredentialKind = 'client' | 'jwt'
+export type LogiccAccountStatus = 'pending' | 'ready' | 'credential_expired' | 'sync_error' | 'needs_login'
+/** How the account authenticates: a refreshable Clerk client, a fixed session JWT, or email+password sign-in. */
+export type LogiccCredentialKind = 'client' | 'jwt' | 'password'
 
 export interface LogiccModel { id: string; name: string; provider: string; isDefault: boolean }
 
@@ -13,6 +13,12 @@ export interface LogiccAccountView extends GroupBinding {
   /** Session identifier with the middle masked, e.g. `sess_2ab…9xz`. */
   sessionHint: string | null
   credentialKind: LogiccCredentialKind
+  /** Whether a stored email+password lets the session be renewed by signing in. */
+  canSignIn: boolean
+  /** Masked login email (e.g. `a***@gmail.com`) when one is stored. */
+  loginHint: string | null
+  /** Try to renew this account's session automatically with its stored password. */
+  autoLogin: boolean
   enabled: boolean
   status: LogiccAccountStatus
   /** Concurrent requests this account may serve; 0 means unlimited. */
@@ -63,6 +69,8 @@ export interface LogiccSettings {
    * to the next source so Logicc only serves plain conversations.
    */
   toolPolicy: 'emulate' | 'reject'
+  /** Renew an expired session automatically with the account's stored password (when present). */
+  autoLogin: boolean
   usage: LogiccUsageSettings
 }
 
@@ -71,6 +79,7 @@ export const DEFAULT_LOGICC_SETTINGS: LogiccSettings = {
   defaultMaxConcurrency: 2,
   maxAccountAttempts: 3,
   toolPolicy: 'emulate',
+  autoLogin: true,
   usage: {
     promptOverheadTokens: 256,
     completionOverheadTokens: 8,

@@ -49,6 +49,7 @@ POST https://clerk.logicc.com/v1/client/sessions/{sessionId}/tokens   (Cookie: _
 
 | 格式 | 示例 |
 |---|---|
+| **邮箱 + 密码**（仅支持密码登录的账号） | `user@example.com----密码`，或 JSON `{"email":"…","password":"…"}` |
 | logicc2api 导出的 JSON（数组、`{accounts:[…]}`、单个对象或 JSON Lines） | `[{"name":"账号1","clientCookie":"…","sessionId":"sess_…","enabled":true}]` |
 | Cookie 请求头 | `__client=…; __session=eyJ…` |
 | 分隔写法 | `__client值----sess_…`、`名称|__client值|sess_…`，也支持 Tab、空格、逗号分隔 |
@@ -57,6 +58,18 @@ POST https://clerk.logicc.com/v1/client/sessions/{sessionId}/tokens   (Cookie: _
 | 浏览器 Cookie 导出 | `[{"name":"__client","value":"…","domain":"clerk.logicc.com"}]` |
 
 同一会话重复导入时，会更新凭据并保留原有分组。
+
+## 邮箱密码自动登录
+
+`__client` 由 Clerk 定期轮换，并且有最长有效期；会话到期后，带邮箱密码的账号可以用一次**正常登录**重新拿到会话，不用手动贴 Cookie。
+
+- 登录就是 Logicc 网页登录时走的那套 Clerk 接口：`POST /v1/client/sign_ins`（邮箱）→ `POST …/attempt_first_factor`（`strategy=password`）。成功后响应里带回新的 `__client` 和会话 ID，写回数据库。
+- 邮箱和密码用 `APP_ENCRYPTION_KEY` 加密存储，页面和接口都不回显，只显示打码的邮箱（如 `al***@gmail.com`）。
+- 触发时机：某账号的 `__client` 失效、又没有别的方式续期时，按需登录一次；后台周期检测也会给「待登录」的账号重试。都有单飞锁和按账号的退避（人机验证 30 分钟、密码错误 6 小时、网络波动 5 分钟），不会反复打 Clerk。
+- **遇到验证就停，绝不绕过。** 登录时若 Clerk 要求人机验证（captcha / Turnstile）、两步验证或邮箱验证码，账号标为「待登录」退出调度，等人工处理；系统不会尝试满足或绕过这些验证。
+- 处理「待登录」：在账号页点「重新登录」立即再试一次（适合你刚在别处过完人机验证），或直接重新导入一份 `__client`。
+- 仅适用于**开启了密码登录**的账号。用 Google 等 OAuth 注册、且没有设过密码的账号无法用这条路；可先在 Logicc 账号设置里给它设一个密码再导入。密码错误的账号标为「凭证失效」，更新密码后恢复。
+- 可在「Logicc 设置」里全局关闭自动登录，或在单个账号上关闭。
 
 ## 调度
 

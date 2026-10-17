@@ -7,7 +7,7 @@
 - **CPA 内核**：配置、凭证与 OAuth、渠道与模型、配额、日志与用量、原生插件与插件商店、原版完整控制台。
 - **统一 API Key**：模型 Key 选择一个或多个调用分组，可以跨 CPA 原生来源和 Logicc 号池调用，支持按顺序自动切换或混合轮换，失败自动换来源。新建的 Key 默认带上 CPA 和 Logicc 两个分组。
 - **酒馆预设（可选）**：JSON 预设的导入、编辑和导出，按服务分组叠加，叠加后多出的 token 计入该次请求的 usage。
-- **Logicc 模块**：Logicc 网页账号池。Clerk 会话自动续期，按分组隔离、按并发调度、自动冷却；工具调用通过提示词模拟；usage 在本地计算，只多不少。详见 [Logicc 模块](docs/logicc-module.md)。
+- **Logicc 模块**：Logicc 网页账号池。支持 `__client`、Session JWT 或邮箱密码导入；会话失效时用邮箱密码正常登录自动续期（遇到人机验证会停下等人工，绝不绕过）。按分组隔离、按并发调度、自动冷却；工具调用通过提示词模拟；usage 在本地计算，只多不少。详见 [Logicc 模块](docs/logicc-module.md)。
 - **外调服务 API 与公网加号页**：外调 Key 按模块授权，可以远程给 CPA 内核（凭证文件、Vertex 服务账号、各家 API Key）和 Logicc 加号；服务器 3041 端口提供图形化加号页面。详见 [外调服务 API](docs/external-api.md)。
 - PostgreSQL 保存持久数据，Redis 负责队列、租约、会话缓存和限流；请求头隐私策略见 [请求头隐私](docs/request-header-privacy.md)。
 

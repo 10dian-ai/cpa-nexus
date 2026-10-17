@@ -63,6 +63,8 @@ function effective(family: LogiccTokenFamily, direction: 'input' | 'output') {
         <div class="settings-fields">
           <label class="field"><span>单次请求最多尝试账号数</span><input v-model.number="form.maxAccountAttempts" type="number" min="1" max="10" required></label>
           <label class="field"><span>客户端工具调用</span><select v-model="form.toolPolicy"><option value="emulate">模拟：把工具写进提示，解析回标准 tool_calls</option><option value="reject">不处理：带工具的请求交给其他来源</option></select><small>Logicc 没有原生 function calling。Claude Code、Codex 这类重度工具客户端建议选“不处理”。</small></label>
+          <label class="checkbox-line" style="grid-column: 1 / -1"><input v-model="form.autoLogin" type="checkbox">会话失效时，用账号存的邮箱密码自动正常登录续期</label>
+          <p class="small-text muted" style="grid-column: 1 / -1">仅对导入了邮箱密码的账号生效。登录遇到人机验证（captcha / Turnstile）或两步验证时会停下，把账号标为「待登录」，需要你在账号页手动完成一次——系统不会尝试绕过验证。</p>
         </div>
       </section>
       <section class="settings-section">

@@ -100,7 +100,7 @@ Worker 会逐条验证：Logicc 会刷新会话并读取模型目录，CPA 会�
 
 ### 各模块接受的格式
 
-**Logicc**：见 [Logicc 模块](logicc-module.md#账号与凭据)。
+**Logicc**：`__client` + Session ID、Cookie 请求头、Session JWT、邮箱 + 密码（`user@example.com----密码`），或 logicc2api 的 JSON。详见 [Logicc 模块](logicc-module.md#账号与凭据)。邮箱密码会在会话失效时用正常登录自动续期。
 
 **CPA 内核**：
 

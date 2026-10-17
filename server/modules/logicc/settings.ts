@@ -11,6 +11,7 @@ export const logiccSettingsSchema = z.object({
   defaultMaxConcurrency: z.number().int().min(0).max(1000),
   maxAccountAttempts: z.number().int().min(1).max(10),
   toolPolicy: z.enum(['emulate', 'reject']),
+  autoLogin: z.boolean(),
   usage: z.object({
     promptOverheadTokens: z.number().int().min(0).max(100_000),
     completionOverheadTokens: z.number().int().min(0).max(100_000),

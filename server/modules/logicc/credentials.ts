@@ -6,6 +6,8 @@ import { cooldownAccount } from '../../lib/pool/scheduler'
 import { CREDENTIAL_STRIKE_LIMIT, LOGICC_POOL_ID, TOKEN_EXPIRY_MARGIN_MS, browserHeaders, logiccClerkBase } from './config'
 import { LogiccError, classifyLogiccStatus, describeErrorBody, looksBlocked, networkFailure } from './errors'
 import { loadCredential, markAccountStatus, noteAccountWarning, storeRotatedCookie, type LogiccCredentialRecord } from './store'
+import { getLogiccSettings } from './settings'
+import { canAutoLogin, signInAccount } from './login'
 
 /**
  * Logicc signs in with Clerk. A Clerk *client* (`__client` cookie on the
@@ -99,7 +101,7 @@ export async function keepSessionAlive(id: string): Promise<void> {
   if (!await redis.set(lockKey(id), token, 'PX', 30_000, 'NX')) return
   try {
     const record = await loadCredential(id)
-    if (!record?.clientCookie) return
+    if (!record?.clientCookie || !record.sessionId) return
     const response = await clerkFetch(`/v1/client/sessions/${encodeURIComponent(record.sessionId)}/touch`, {
       method: 'POST', headers: { ...browserHeaders(), cookie: `__client=${record.clientCookie}`, accept: 'application/json' }, timeoutMs: 15_000,
     }).catch(() => null)
@@ -201,7 +203,7 @@ async function refreshWithLock(record: LogiccCredentialRecord): Promise<string> 
     if (shared) return shared
     // Re-read: another process may have stored a rotated cookie meanwhile.
     const latest = (await loadCredential(record.id)) ?? record
-    if (!latest.clientCookie) throw new LogiccError('credential', 401, '账号没有 __client Cookie，无法自动续期', { definitive: true })
+    if (!latest.clientCookie || !latest.sessionId) throw new LogiccError('credential', 401, '账号没有 __client Cookie，无法自动续期', { definitive: true })
     try {
       const minted = await mintSessionJwt(latest.sessionId, latest.clientCookie)
       if (minted.cookie && minted.cookie !== latest.clientCookie) await storeRotatedCookie(latest.id, minted.cookie, latest.credentialVersion)
@@ -232,6 +234,20 @@ export async function accountToken(id: string, options: { force?: boolean } = {}
   try {
     if (!record.clientCookie) {
       if (!options.force && isFreshJwt(record.token)) return record.token
+      // No cookie to renew with: sign in normally when the account has a stored password.
+      const settings = await getLogiccSettings().catch(() => null)
+      if (canAutoLogin(record, settings?.autoLogin !== false)) {
+        const outcome = await signInAccount(id)
+        if (outcome?.ok) {
+          const renewed = await loadCredential(id)
+          if (renewed?.clientCookie) { if (options.force) await forgetToken(id); return await refreshWithLock(renewed) }
+        }
+        // signInAccount already set the account's status; do not double-count it as a strike.
+        const definitive = !!outcome && !outcome.ok && outcome.reason === 'bad_credentials'
+        const failure = new LogiccError('credential', 401, outcome && !outcome.ok ? outcome.message : '账号需要重新登录', { definitive })
+        failure.handled = true
+        throw failure
+      }
       throw new LogiccError('credential', 401, 'Session JWT 已过期，请补充 __client Cookie 以自动续期，或更新 JWT', { definitive: true })
     }
     if (options.force) await forgetToken(id)

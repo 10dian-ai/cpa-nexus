@@ -24,7 +24,7 @@ export function displayValue(value: unknown): string {
 }
 export function statusLabel(status: string): string {
   return ({
-    pending: '待同步', ready: '正常', credential_expired: '凭证失效', sync_error: '同步失败',
+    pending: '待同步', ready: '正常', credential_expired: '凭证失效', sync_error: '同步失败', needs_login: '待登录',
     success: '成功', error: '失败', failed: '失败', cancelled: '已取消', incomplete: '不完整',
     allowed: '已确认可用', denied: '已确认不可用', cooldown: '冷却中',
     waiting: '等待处理', active: '处理中', completed: '已完成', delayed: '等待重试',
@@ -33,6 +33,6 @@ export function statusLabel(status: string): string {
 export function statusTone(status: string): string {
   if (['ready', 'success', 'allowed', 'completed', 'enabled'].includes(status)) return 'green'
   if (['credential_expired', 'sync_error', 'error', 'failed', 'denied'].includes(status)) return 'red'
-  if (['pending', 'cooldown', 'waiting', 'active', 'delayed', 'incomplete'].includes(status)) return 'amber'
+  if (['pending', 'cooldown', 'waiting', 'active', 'delayed', 'incomplete', 'needs_login'].includes(status)) return 'amber'
   return 'neutral'
 }
