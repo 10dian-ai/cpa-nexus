@@ -31,7 +31,7 @@ import { createCpaClient } from '../server/lib/cpa/client'
 import { readCpaConfigGroupSources } from '../server/lib/cpa/preset-config-routing'
 import { resetCpaGroupRouting } from '../server/lib/cpa/group-routing'
 import { handleNexusInference } from '../server/lib/cpa/inference'
-import { applyCpaPrivacyPolicy } from '../scripts/cpa-privacy-policy.mjs'
+import { applyCpaPrivacyPolicy, NEXUS_DEVIN_ERROR_RULES } from '../scripts/cpa-privacy-policy.mjs'
 
 // Uses the actual public handler and unmodified pinned CPA binary, with only identity storage
 // replaced by a local ledger. Every provider call goes to these isolated mock listeners.
@@ -137,10 +137,10 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
     const origins = new Set([(await a.json()).choices[0].message.content, (await b.json()).choices[0].message.content])
     expect(origins).toEqual(new Set(['A', 'B']))
   })
-  it('persists the Devin masked-internal-error rule in the real v8 configuration', async () => {
+  it('persists the Devin request-scoped error rules in the real v8 configuration', async () => {
     const saved = await client().request({ path: 'config/oauth/request-scoped-errors/devin' })
     expect(saved.status).toBe(200)
-    expect(JSON.parse(new TextDecoder().decode(saved.body))).toEqual([{ status: 502, match: ['an internal error occurred'], action: 'continue' }])
+    expect(JSON.parse(new TextDecoder().decode(saved.body))).toEqual(NEXUS_DEVIN_ERROR_RULES)
     expect(await applyCpaPrivacyPolicy(client(), { fileNames: [] })).toEqual({ changed: false, updatedFiles: 0 })
   })
   it('keeps native keys working and refuses cross-group retries when the selected real account fails', async () => {
@@ -196,5 +196,14 @@ describe.skipIf(!binary)('real CPA groups through the public model-key endpoint'
     expect(saved.headers['X-App']).toBeUndefined()
     const configuration = JSON.parse(new TextDecoder().decode((await client().request({ path: 'config' })).body))
     expect(configuration.upstream.claude['header-defaults']).toMatchObject({ os: '', arch: '', 'package-version': '', 'runtime-version': '', 'user-agent': 'opencode', timeout: '600' })
+  })
+  it('limits Devin credentials to the first retry round through native fields without losing the session', async () => {
+    const name = 'local-devin-retry.json'
+    const document = { type: 'devin', api_key: 'local-only-invalid-session', session_token: 'local-only-invalid-session', auth_kind: 'oauth', unknown: { preserved: 7 } }
+    expect((await client().request({ path: 'credentials', method: 'POST', query: { name }, headers: { 'content-type': 'application/json' }, body: JSON.stringify(document) })).status).toBe(200)
+    expect(await applyCpaPrivacyPolicy(client(), { fileNames: [name] })).toEqual({ changed: true, updatedFiles: 1 })
+    const saved = JSON.parse(new TextDecoder().decode((await client().request({ path: 'credentials/download', query: { name } })).body))
+    expect(saved).toMatchObject({ type: 'devin', session_token: document.session_token, unknown: { preserved: 7 }, request_retry: 0 })
+    expect(await applyCpaPrivacyPolicy(client(), { fileNames: [name] })).toEqual({ changed: false, updatedFiles: 0 })
   })
 })

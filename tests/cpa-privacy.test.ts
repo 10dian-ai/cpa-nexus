@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyCpaPrivacyPolicy, cpaNexusRoutingPatch, NEXUS_DEVIN_INTERNAL_ERROR_RULE, cpaPrivacyApiKeysPatch, cpaPrivacyCredentialPatch, cpaPrivacyDefaultsPatch, cpaPrivacyHeaders } from '../scripts/cpa-privacy-policy.mjs'
+import { applyCpaPrivacyPolicy, cpaNexusCredentialRoutingPatch, cpaNexusRoutingPatch, NEXUS_DEVIN_ERROR_RULES, NEXUS_DEVIN_INTERNAL_ERROR_RULE, cpaPrivacyApiKeysPatch, cpaPrivacyCredentialPatch, cpaPrivacyDefaultsPatch, cpaPrivacyHeaders } from '../scripts/cpa-privacy-policy.mjs'
 import { prepareNativePrivacy } from '../scripts/setup-native-cpa.mjs'
 
 const response = (body: unknown, status = 200) => ({ status, body: Buffer.from(JSON.stringify(body)) })
@@ -118,11 +118,42 @@ describe('native CPA outgoing software identity policy', () => {
     expect(paths.every(path => path.startsWith('/v8/management/'))).toBe(true)
   })
 
-  it('keeps Devin masked internal errors on the next credential without cooling the model down', () => {
+  it('keeps Devin masked, capacity and provider-issue failures on the next credential without cooling the model down', () => {
     const operator = { status: 400, match: ['context_length_exceeded'], action: 'stop' }
     const config = { oauth: { 'request-scoped-errors': { devin: [operator, { status: 502, match: ['an internal error occurred'], action: 'continue-and-cooldown' }], codex: [operator] } } }
-    expect(cpaNexusRoutingPatch(config)).toEqual({ oauth: { 'request-scoped-errors': { devin: [operator, NEXUS_DEVIN_INTERNAL_ERROR_RULE] } } })
-    expect(cpaNexusRoutingPatch({ oauth: { 'request-scoped-errors': { devin: [operator, NEXUS_DEVIN_INTERNAL_ERROR_RULE] } } })).toEqual({})
-    expect(cpaNexusRoutingPatch({})).toEqual({ oauth: { 'request-scoped-errors': { devin: [NEXUS_DEVIN_INTERNAL_ERROR_RULE] } } })
+    expect(cpaNexusRoutingPatch(config)).toEqual({ oauth: { 'request-scoped-errors': { devin: [operator, ...NEXUS_DEVIN_ERROR_RULES] } } })
+    expect(cpaNexusRoutingPatch({ oauth: { 'request-scoped-errors': { devin: [operator, ...NEXUS_DEVIN_ERROR_RULES] } } })).toEqual({})
+    expect(cpaNexusRoutingPatch({})).toEqual({ oauth: { 'request-scoped-errors': { devin: NEXUS_DEVIN_ERROR_RULES } } })
+    // Upgrading from the single-rule layout adds the new rules once and keeps operator rules in place.
+    expect(cpaNexusRoutingPatch({ oauth: { 'request-scoped-errors': { devin: [NEXUS_DEVIN_INTERNAL_ERROR_RULE, operator] } } }))
+      .toEqual({ oauth: { 'request-scoped-errors': { devin: [operator, ...NEXUS_DEVIN_ERROR_RULES] } } })
+    // An operator rule on another status with the same text is not owned by Nexus.
+    const sameTextOtherStatus = { status: 400, match: ['third-party model provider is experiencing issues'], action: 'stop' }
+    expect(cpaNexusRoutingPatch({ oauth: { 'request-scoped-errors': { devin: [sameTextOtherStatus] } } }))
+      .toEqual({ oauth: { 'request-scoped-errors': { devin: [sameTextOtherStatus, ...NEXUS_DEVIN_ERROR_RULES] } } })
+  })
+  it('matches the exact case-sensitive span of each upstream Devin message', () => {
+    const messages = [
+      'devin upstream error (permission_denied): an internal error occurred (trace ID: synthetic-trace)',
+      'devin upstream error (unimplemented): We are currently experiencing capacity issues with this serving model. Please switch to a different model or try again later.',
+      'devin upstream error (unknown): The third-party model provider is experiencing issues. Please try later.',
+    ]
+    NEXUS_DEVIN_ERROR_RULES.forEach((rule, index) => expect(messages[index]).toContain(rule.match[0]))
+  })
+  it('limits Devin credentials to the first retry round unless the operator chose a value', () => {
+    expect(cpaNexusCredentialRoutingPatch({ type: 'devin', session_token: 'synthetic' })).toEqual({ request_retry: 0 })
+    expect(cpaNexusCredentialRoutingPatch({ type: 'Devin' })).toEqual({ request_retry: 0 })
+    expect(cpaNexusCredentialRoutingPatch({ type: 'devin', request_retry: 2 })).toEqual({})
+    expect(cpaNexusCredentialRoutingPatch({ type: 'devin', request_retry: 0 })).toEqual({})
+    expect(cpaNexusCredentialRoutingPatch({ type: 'devin', 'request-retry': 1 })).toEqual({})
+    expect(cpaNexusCredentialRoutingPatch({ type: 'codex' })).toEqual({})
+    expect(() => cpaNexusCredentialRoutingPatch(null)).toThrow('invalid')
+  })
+  it('writes the Devin retry limit with the privacy headers and keeps the session token', async () => {
+    const { client, documents } = fixture()
+    documents.set('devin.json', { type: 'devin', session_token: 'synthetic-devin-session', headers: {} })
+    expect(await applyCpaPrivacyPolicy(client, { fileNames: ['devin.json'] })).toEqual({ changed: true, updatedFiles: 1 })
+    expect(documents.get('devin.json')).toMatchObject({ session_token: 'synthetic-devin-session', request_retry: 0, headers: { 'User-Agent': 'opencode' } })
+    expect(await applyCpaPrivacyPolicy(client, { fileNames: ['devin.json'] })).toEqual({ changed: false, updatedFiles: 0 })
   })
 })

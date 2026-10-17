@@ -51,21 +51,49 @@ export function cpaPrivacyDefaultsPatch(config) {
   return patch
 }
 /**
- * Routing defaults Nexus keeps in the CPA config (merged with operator rules):
- * Devin reports transient backend failures as `permission_denied: an internal
- * error occurred` (HTTP 502 after nexus-devin-errors.patch). Those try the next
- * credential without cooling the model down, so one masked failure cannot make
- * a model unavailable on every Devin credential for a minute.
+ * Routing defaults Nexus keeps in the CPA config (merged with operator rules).
+ * Each rule sends one Devin failure shape to the next credential without
+ * cooling the model, so a single masked or admission failure cannot make a
+ * model unavailable on every Devin credential:
+ * - `permission_denied: an internal error occurred` — transient backend failure
+ *   (HTTP 502 after nexus-devin-errors.patch);
+ * - `unimplemented: … capacity issues with this serving model …` — per-model
+ *   admission rejection with no penalty; it clears on its own;
+ * - `The third-party model provider is experiencing issues … try later` — the
+ *   mask Devin has used since 2026-09-24 for `unknown` provider failures.
+ * The kernel matches substrings case-sensitively, so each text is the exact
+ * lower-case span of the upstream message. A rule with the same status and
+ * text is owned by Nexus and replaced; every other operator rule is kept.
  */
-export const NEXUS_DEVIN_INTERNAL_ERROR_RULE = Object.freeze({ status: 502, match: ['an internal error occurred'], action: 'continue' })
+export const NEXUS_DEVIN_INTERNAL_ERROR_RULE = Object.freeze({ status: 502, match: Object.freeze(['an internal error occurred']), action: 'continue' })
+export const NEXUS_DEVIN_CAPACITY_RULE = Object.freeze({ status: 502, match: Object.freeze(['capacity issues with this serving model']), action: 'continue' })
+export const NEXUS_DEVIN_PROVIDER_ISSUE_RULE = Object.freeze({ status: 502, match: Object.freeze(['third-party model provider is experiencing issues']), action: 'continue' })
+export const NEXUS_DEVIN_ERROR_RULES = Object.freeze([NEXUS_DEVIN_INTERNAL_ERROR_RULE, NEXUS_DEVIN_CAPACITY_RULE, NEXUS_DEVIN_PROVIDER_ISSUE_RULE])
+const ownedByNexus = rule => object(rule) && Array.isArray(rule.match)
+  && NEXUS_DEVIN_ERROR_RULES.some(own => Number(rule.status) === own.status && rule.match.includes(own.match[0]))
 export function cpaNexusRoutingPatch(config) {
   if (!object(config)) throw Error('CPA routing configuration is invalid')
   const scoped = object(config.oauth?.['request-scoped-errors']) ? config.oauth['request-scoped-errors'] : {}
   const current = Array.isArray(scoped.devin) ? scoped.devin : []
-  const isNexusRule = rule => object(rule) && Number(rule.status) === 502 && Array.isArray(rule.match) && rule.match.includes(NEXUS_DEVIN_INTERNAL_ERROR_RULE.match[0])
-  const next = [...current.filter(rule => !isNexusRule(rule)), { ...NEXUS_DEVIN_INTERNAL_ERROR_RULE, match: [...NEXUS_DEVIN_INTERNAL_ERROR_RULE.match] }]
+  const next = [...current.filter(rule => !ownedByNexus(rule)), ...NEXUS_DEVIN_ERROR_RULES.map(rule => ({ ...rule, match: [...rule.match] }))]
   if (equal(current, next)) return {}
   return { oauth: { 'request-scoped-errors': { devin: next } } }
+}
+/**
+ * Devin credentials take part only in CPA's first credential round
+ * (`request_retry: 0`). With the default three extra rounds, a request Devin
+ * can never serve (an unentitled model, a content-policy refusal behind the
+ * same masked text) reached every Devin account four times, and each send
+ * counts against that account's upstream rate limit. One round still fails
+ * over across all eligible accounts; Nexus group failover handles the rest.
+ * An operator's explicit value, including the legacy spelling, is kept.
+ */
+export function cpaNexusCredentialRoutingPatch(document) {
+  if (!object(document)) throw Error('CPA credential document is invalid')
+  if (providerName(document.type) !== 'devin') return {}
+  const explicit = value => value !== undefined && value !== null
+  if (explicit(document.request_retry) || explicit(document['request-retry'])) return {}
+  return { request_retry: 0 }
 }
 export function cpaPrivacyApiKeysPatch(config) {
   if (config === undefined || config === null) return {}
@@ -125,9 +153,10 @@ export async function applyCpaPrivacyPolicy(client, options = {}) {
     if (!Array.isArray(files)) throw Error('CPA privacy credential inventory is invalid')
     fileNames = [...new Set(files.filter(file => file?.source === 'file').map(file => String(file.path || file.name || '').split(/[\\/]/).pop()).filter(Boolean))]
   }
+  const credentialPatch = document => ({ ...cpaPrivacyCredentialPatch(document), ...cpaNexusCredentialRoutingPatch(document) })
   for (const name of fileNames) {
     const document = await readJson(client, 'credentials/download', { name })
-    const patch = cpaPrivacyCredentialPatch(document)
+    const patch = credentialPatch(document)
     if (!Object.keys(patch).length) continue
     const wirePatch = structuredClone(patch)
     if (object(wirePatch.headers) && object(document.headers)) {
@@ -140,10 +169,10 @@ export async function applyCpaPrivacyPolicy(client, options = {}) {
       // Virtual children cannot be patched; the physical source is re-synthesized instead.
       // Read immediately before writing so all latest token and unknown fields survive.
       const current = await readJson(client, 'credentials/download', { name })
-      await writeJson(client, 'credentials', { ...current, ...cpaPrivacyCredentialPatch(current) }, 'POST', { name })
+      await writeJson(client, 'credentials', { ...current, ...credentialPatch(current) }, 'POST', { name })
     } else if (response.status !== 200) throw Error('CPA privacy credential update failed')
     const saved = await readJson(client, 'credentials/download', { name })
-    if (Object.keys(cpaPrivacyCredentialPatch(saved)).length) throw Error('CPA privacy credential update was not persisted')
+    if (Object.keys(credentialPatch(saved)).length) throw Error('CPA privacy credential update was not persisted')
     changed = true; updatedFiles++
   }
   return { changed, updatedFiles }
