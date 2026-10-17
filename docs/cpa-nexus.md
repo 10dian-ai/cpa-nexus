@@ -235,6 +235,17 @@ docker compose --env-file .env --env-file .env.cpa -f compose.yml up -d --build 
 
 edge 自动重新解析服务名。回退需要旧镜像以及匹配的配置、凭证、插件；仅换回镜像不保证旧版能读取新版写入的配置。原生动态库插件也必须匹配 CPU 架构、插件 ABI 和构建环境。
 
+### 维护者：把项目默认内核换到新版本
+
+上面是运维在自己服务器上换内核。要把项目默认固定的内核换成新版本（例如 v8.0.15 → v8.0.32），按下面的顺序做，漏掉任一步都会让已部署的服务器构建失败或悄悄留在旧内核：
+
+1. **定版本**：选上游完整提交 SHA 和同版本官方运行镜像的多架构摘要。同时改 `Dockerfile.cpa`、`compose.yml`、`scripts/setup-cpa.mjs`、`.env.example`、`.github/workflows/check.yml`，以及文档和代码注释里的固定版本链接。
+2. **登记旧版本**：把即将被替换的固定版本加进 `scripts/setup-cpa.mjs` 的 `LEGACY_CPA_PINS`。服务器的 `.env.cpa` 会跨更新保留，`update` 只迁移这里登记过的旧版本；不登记的话，服务器会继续用旧提交构建，而新补丁只适配新提交，`git apply --check` 直接失败。
+3. **重放补丁**：在新提交上按 `nexus-plugins`、`nexus-log-redaction`、`nexus-devin-errors` 的顺序重放 `ops/cpa-nexus/` 的补丁（先在旧提交上把每个补丁各提交一次，再逐个 cherry-pick 到新提交，冲突最少）。解决冲突后，用相邻提交之间的差异重新生成三个补丁文件，并在干净的新提交上依次 `git apply --check` 确认。
+4. **Go 测试**：跑 `check.yml` 里同样的命令。某个上游测试失败时，先在没打补丁的同版本内核上跑一次：上游自己也失败就是上游问题；只有打补丁后失败、原因是 Nexus 有意打码的文本时，才加入 `check.yml` 的跳过列表并写明原因。其余失败都要修补丁。
+5. **Node 测试**：用新内核二进制设置 `TEST_CPA_BINARY`，配好 PostgreSQL 和 Redis，跑 `npm run check`。真实内核集成测试会覆盖管理 API、配置写入、分组路由和凭证字段写入。
+6. **上线**：候选环境按上一段核对通过后再更新生产，并在本节上方补一段这次升级的变化说明。
+
 ## 官方依据
 
 - [CPA 固定版本配置](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.32/config.example.yaml)
