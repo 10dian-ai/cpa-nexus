@@ -122,6 +122,22 @@ Logicc 不返回 usage，而 CPAN 前面是按用量收费的 New API，所以 u
 - 成功响应里的桥接别名 `logicc/<模型>` 会换回模型原名；`/v1/models` 的 `owned_by` 显示模型厂商（openai、anthropic、google…），不显示渠道。
 - 详细原因（中文、含渠道）只保存在请求日志和账号状态里，供管理员排查。
 
+## 上游被 Cloudflare 拦截（403）时的本地中继
+
+**症状**：账号同步报「模型目录 被拦截（HTTP 403）：返回了网页而不是接口数据（Attention Required! | Cloudflare）」，账号卡在 `sync_error`；同一凭据在浏览器里完全正常。
+
+**根因**（2026-10-18 实测）：`app.logicc.com` 的 Cloudflare 按 **TLS 指纹**拦截 Node（undici / `fetch`）发出的请求——补齐浏览器请求头也无法通过；同一出口 IP 下浏览器与 python `urllib` 都不受影响。`clerk.logicc.com`（会话 JWT 刷新）不受影响，所以只有模型目录和对话请求报错。
+
+**方案**：`ops/relay-api.py` 是一个无依赖的 python 中继，用 `urllib` 转发 `/api/*`（SSE 流式透传；进程内强制 IPv4，避开本机 IPv6 黑洞导致的握手吊死）：
+
+```sh
+python3 ops/relay-api.py &      # 监听 127.0.0.1:18790
+# .env 里把模块上游指到中继，重启服务
+LOGICC_API_BASE=http://127.0.0.1:18790/api
+```
+
+Compose 部署时把中继跑在宿主机（或同网络的 sidecar 容器），`LOGICC_API_BASE` 指向宿主机地址即可。该环境变量原本就有（与 Clerk 地址 `LOGICC_CLERK_BASE` 同族），中继只是改变了它的指向。
+
 ## 能力边界
 
 - Logicc 没有原生 function calling。工具调用通过提示词模拟，再把模型的回答解析成标准 `tool_calls`；参数不符合 schema 时返回错误，不会把错误结果当成调用。重度工具客户端（Claude Code、Codex）建议在模块设置里把「客户端工具调用」改为「不处理」，这类请求会交给其他来源。
